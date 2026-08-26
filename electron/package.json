@@ -1,0 +1,35 @@
+{
+  "name": "belsk2-ide",
+  "version": "0.2.0",
+  "description": "IDE for belsk2 programming language",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder --win --linux --mac",
+    "build:go": "cd .. && go build -o electron/bin/belsk2.exe cmd/cli/main.go"
+  },
+  "devDependencies": {
+    "electron-builder": "^24.0.0"
+  },
+  "build": {
+    "appId": "com.belsk2.ide",
+    "productName": "belsk2 IDE",
+    "files": [
+      "main.js",
+      "preload.js",
+      "renderer/**/*",
+      "bin/**/*"
+    ],
+    "extraResources": [],
+    "win": {
+      "target": "nsis",
+      "icon": null
+    },
+    "linux": {
+      "target": "AppImage"
+    },
+    "mac": {
+      "target": "dmg"
+    }
+  }
+}

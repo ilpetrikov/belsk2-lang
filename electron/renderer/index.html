@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; font-src https://cdn.jsdelivr.net; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net;">
+  <title>belsk2 IDE</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="toolbar">
+    <div class="toolbar-left">
+      <button id="btn-open-folder" class="btn-tool" title="Open Folder">&#128193; Open Folder</button>
+      <button id="btn-open-file" class="btn-tool" title="Open File">Open File</button>
+      <button id="btn-save" class="btn-tool" title="Save (Ctrl+S)">Save</button>
+      <span class="separator"></span>
+      <span class="logo">belsk2</span>
+      <span class="version">IDE v0.2</span>
+    </div>
+    <div class="toolbar-center">
+      <button id="btn-run" class="btn btn-start" title="Run (Ctrl+Enter)">
+        <span class="btn-icon">&#9654;</span> Start
+      </button>
+      <button id="btn-stop" class="btn btn-stop" title="Stop (Ctrl+.)" disabled>
+        <span class="btn-icon">&#9632;</span> Stop
+      </button>
+    </div>
+    <div class="toolbar-right">
+      <select id="theme-select" class="theme-select">
+        <option value="dark">Dark</option>
+        <option value="light">Light</option>
+        <option value="yellow">Dark Yellow</option>
+      </select>
+      <span id="status" class="status">Ready</span>
+    </div>
+  </div>
+
+  <div id="workspace">
+    <div id="sidebar">
+      <div id="sidebar-header">
+        <span id="sidebar-title">Explorer</span>
+      </div>
+      <div id="file-tree"></div>
+    </div>
+    <div id="sidebar-splitter"></div>
+    <div id="editor-area">
+      <div id="tabs"></div>
+      <div id="editor-container">
+        <div id="editor"></div>
+      </div>
+      <div id="splitter"></div>
+      <div id="console-container">
+        <div id="console-header">
+          <span>Output</span>
+          <button id="btn-clear" class="btn-small" title="Clear console">Clear</button>
+        </div>
+        <div id="console-output"></div>
+        <div id="console-input-row">
+          <span class="console-input-prompt">&gt;</span>
+          <input id="console-input" type="text" placeholder="input for reab/input... (Enter to send)" autocomplete="off" spellcheck="false" disabled />
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.44.0/min/vs/loader.js"></script>
+  <script src="renderer.js"></script>
+</body>
+</html>
