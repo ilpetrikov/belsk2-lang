@@ -15,4 +15,4 @@ The language has its own IDE built with **Electron**.
 ## Supported Platforms
 
 ![Windows 11](https://img.shields.io/badge/Windows-11-0078D4?logo=windows&logoColor=blue)
-![Homos OS](https://img.shields.io/badge/Homos_OS-1e3a8a?style=flat-square)
+
