@@ -6,7 +6,7 @@
 //!
 //! ```
 //! let mut out = Vec::new();
-//! belsk2::run_source_with_writer("prinb(1 + 2);", &mut out).unwrap();
+//! belsk2::run_source_with_writer("fn main() { prinb(1 + 2); }", &mut out).unwrap();
 //! assert_eq!(String::from_utf8(out).unwrap(), "3\n");
 //! ```
 

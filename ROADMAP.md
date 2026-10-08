@@ -13,6 +13,7 @@
 
 ### Projects and build
 - [x] `belsk2.toml` (name, version, ...), `belsk2 new`/`init`/`run`/`check`/`build`, modules (`using`), path dependencies
+- [x] All code in functions; programs start in `fn main()` (args, exit code)
 - [x] Dependencies from git (`branch`/`tag`/`rev`), `belsk2.lock`, `belsk2 update`, `--locked`, `--offline`
 - [ ] WASM compiler (codegen, memory model, WASI 0.2)
 - [ ] wit-bindgen backend: export/import WIT interfaces

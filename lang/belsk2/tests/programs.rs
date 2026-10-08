@@ -1,10 +1,16 @@
 use belsk2::{ErrorKind, Interpreter, Value};
 
+/// Test snippets are statements; programs keep them in `main`. The
+/// wrapper stays on the first line so line numbers do not change.
+fn in_main(src: &str) -> String {
+    format!("fn main() {{ {src}\n}}")
+}
+
 fn run_with_input(src: &str, input: &str) -> Result<String, belsk2::Error> {
     let mut interp = Interpreter::new();
     interp.set_input(std::io::Cursor::new(input.to_string()));
     let mut out = Vec::new();
-    interp.run_source_with_writer(src, &mut out)?;
+    interp.run_source_with_writer(&in_main(src), &mut out)?;
     Ok(String::from_utf8_lossy(&out).into_owned())
 }
 
@@ -193,14 +199,16 @@ fn repl_keeps_declarations_between_runs() {
     let mut interp = Interpreter::new();
     let mut out = Vec::new();
     let src = "var n = 2; fn sq(x) { return x * x; }";
-    assert!(interp.run_source_with_writer(src, &mut out).is_ok());
-    assert!(interp
-        .run_source_with_writer("prinb(sq(n));", &mut out)
-        .is_ok());
-    let e = interp.run_source_with_writer("prinb(sq(1, 2));", &mut out);
-    assert!(e.is_err_and(|e| e.message.contains("expects 1 argument")));
-    let e = interp.run_source_with_writer(r#"n = "text";"#, &mut out);
-    assert!(e.is_err_and(|e| e.kind == ErrorKind::Type));
+    let mut repl = |src: &str, out: &mut Vec<u8>| {
+        let program = interp.compile_repl(src).map_err(|e| e.into_iter().next())?;
+        interp.run_program(&program, out).map_err(Some)
+    };
+    assert!(repl(src, &mut out).is_ok());
+    assert!(repl("prinb(sq(n));", &mut out).is_ok());
+    let e = repl("prinb(sq(1, 2));", &mut out);
+    assert!(e.is_err_and(|e| e.is_some_and(|e| e.message.contains("expects 1 argument"))));
+    let e = repl(r#"n = "text";"#, &mut out);
+    assert!(e.is_err_and(|e| e.is_some_and(|e| e.kind == ErrorKind::Type)));
     assert_eq!(String::from_utf8_lossy(&out), "4\n");
 }
 
@@ -288,7 +296,7 @@ fn compile_errors() {
 #[test]
 fn compile_reports_every_error() {
     let src = "var a = 1 - \"x\";\nprinb(len(5));\nprinb(nope);";
-    let errors = belsk2::compile(src).err().unwrap_or_default();
+    let errors = belsk2::compile(&in_main(src)).err().unwrap_or_default();
     let lines: Vec<usize> = errors
         .iter()
         .filter_map(|e| e.span)
@@ -354,7 +362,6 @@ fn syntax_errors() {
     for (src, needle) in [
         ("var = 5;", "expected a variable name"),
         ("break;", "outside of a loop"),
-        ("return 1;", "outside of a function"),
         ("while true { fn f() { break; } }", "outside of a loop"),
         ("1 = 2;", "invalid assignment target"),
         ("var x = \"abc", "unterminated string"),
@@ -371,12 +378,30 @@ fn syntax_errors() {
 }
 
 #[test]
+fn return_outside_a_function() {
+    let e = Interpreter::new()
+        .compile_repl("return 1;")
+        .err()
+        .and_then(|e| e.into_iter().next());
+    assert!(e.is_some_and(
+        |e| e.kind == ErrorKind::Syntax && e.message.contains("outside of a function")
+    ));
+}
+
+#[test]
 fn incomplete_input_is_flagged() {
+    // What a REPL sees: unfinished input, not wrapped in `main`.
+    let interp = Interpreter::new();
+    let first_error = |src: &str| {
+        interp
+            .compile_repl(src)
+            .err()
+            .and_then(|e| e.into_iter().next())
+    };
     for src in ["fn f() {", "var x = (1 +", "prinb(\"abc", "/* comment"] {
-        let e = run_err(src);
-        assert!(e.incomplete, "{src}: {e}");
+        assert!(first_error(src).is_some_and(|e| e.incomplete), "{src}");
     }
-    assert!(!run_err("var x = )").incomplete);
+    assert!(first_error("var x = )").is_some_and(|e| !e.incomplete));
 }
 
 #[test]

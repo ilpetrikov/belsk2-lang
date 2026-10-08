@@ -7,7 +7,7 @@
 //!     .map_err(|(errors, _)| format!("{errors:?}"))?;
 //! let errors = project::check(&mut loaded);
 //! assert!(errors.is_empty());
-//! project::run(&loaded, &mut belsk2::Interpreter::new(), &mut std::io::stdout())?;
+//! project::run(&loaded, &mut belsk2::Interpreter::new(), &[], &mut std::io::stdout())?;
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 
@@ -58,6 +58,19 @@ pub fn check(loaded: &mut Loaded) -> Vec<Error> {
         }
         let (errs, items) = checker.check_module(&mut module.program);
         errors.extend(errs);
+        if Some(id) == loaded.entry && !items.iter().any(|(name, _)| name == "main") {
+            errors.push(
+                Error::type_error(format!(
+                    "{} has no `fn main()`; a program starts in `main`",
+                    loaded
+                        .sources
+                        .get(module.file)
+                        .map(|f| f.name.as_str())
+                        .unwrap_or("the entry file")
+                ))
+                .at(belsk2_syntax::Span::in_file(module.file, 1, 1)),
+            );
+        }
         if let Some(slot) = exports.get_mut(id) {
             *slot = Some(items);
         }
@@ -66,8 +79,15 @@ pub fn check(loaded: &mut Loaded) -> Vec<Error> {
 }
 
 /// Runs a checked program: every module the entry point needs, in order,
-/// then the entry point itself.
-pub fn run(loaded: &Loaded, interp: &mut Interpreter, out: &mut dyn Write) -> Result<()> {
+/// then the entry point, then its `main` with `args`. Returns the exit
+/// code if `main` returns an `int`.
+pub fn run(
+    loaded: &Loaded,
+    interp: &mut Interpreter,
+    args: &[String],
+    out: &mut dyn Write,
+) -> Result<Option<i64>> {
+    let mut main = None;
     let mut values: Vec<Option<Vec<(String, Value, Ty)>>> = vec![None; loaded.modules.len()];
     for id in loaded.run_order() {
         let Some(module) = loaded.modules.get(id) else {
@@ -80,11 +100,20 @@ pub fn run(loaded: &Loaded, interp: &mut Interpreter, out: &mut dyn Write) -> Re
             }
         }
         let exports = interp.run_module(&module.program, &imports, out)?;
+        if Some(id) == loaded.entry {
+            main = exports
+                .iter()
+                .find(|(name, ..)| name == "main")
+                .map(|(_, v, _)| v.clone());
+        }
         if let Some(slot) = values.get_mut(id) {
             *slot = Some(exports);
         }
     }
-    Ok(())
+    match main {
+        Some(main) => interp.call_main(&main, args, out),
+        None => Err(Error::runtime("the program has no `fn main()`")),
+    }
 }
 
 /// Number of modules and a summary line, for `belsk2 build`.

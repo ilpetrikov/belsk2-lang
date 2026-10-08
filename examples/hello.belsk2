@@ -1,2 +1,4 @@
 // The classic.
-prinb("Hello, Belsk2!");
+fn main() {
+    prinb("Hello, Belsk2!");
+}

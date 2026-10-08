@@ -2,9 +2,15 @@
 
 use belsk2::{ErrorKind, Interpreter, Value};
 
+/// Test snippets are statements; programs keep them in `main`. The
+/// wrapper stays on the first line so line numbers do not change.
+fn in_main(src: &str) -> String {
+    format!("fn main() {{ {src}\n}}")
+}
+
 fn run(src: &str) -> String {
     let mut out = Vec::new();
-    match Interpreter::new().run_source_with_writer(src, &mut out) {
+    match Interpreter::new().run_source_with_writer(&in_main(src), &mut out) {
         Ok(()) => String::from_utf8_lossy(&out).into_owned(),
         Err(e) => format!("ERROR: {e}"),
     }
@@ -12,7 +18,7 @@ fn run(src: &str) -> String {
 
 fn err(src: &str) -> belsk2::Error {
     let mut out = Vec::new();
-    match Interpreter::new().run_source_with_writer(src, &mut out) {
+    match Interpreter::new().run_source_with_writer(&in_main(src), &mut out) {
         Ok(()) => belsk2::Error::runtime("expected an error"),
         Err(e) => e,
     }

@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
 use belsk2_syntax::ast::{Program, StmtKind};
-use belsk2_syntax::{Error, SourceMap, Span};
+use belsk2_syntax::{Error, FileId, SourceMap, Span};
 
 use crate::git::{self, default_home, normalize_url, GitCache, GitRef};
 use crate::lockfile::{LockedPackage, Lockfile};
@@ -27,6 +27,8 @@ pub struct Module {
     /// Dotted name, e.g. `utils`, `net.http`, `json` (a dependency's root).
     pub name: String,
     pub path: PathBuf,
+    /// The module's file in [`Loaded::sources`].
+    pub file: FileId,
     pub program: Program,
     /// The modules this one imports, in the order of its `using` statements,
     /// with the span of each `using`.
@@ -481,6 +483,7 @@ impl Loader {
             package,
             name,
             path: path.to_path_buf(),
+            file,
             program,
             uses: Vec::new(),
         });

@@ -76,7 +76,7 @@ pub fn create(
     match template {
         Template::Bin => write(
             src.join("main.belsk2"),
-            format!("// Entry point of {name}.\n\nprinb(\"Hello from {name}!\");\n"),
+            format!("// Entry point of {name}.\n\nfn main() {{\n    prinb(\"Hello from {name}!\");\n}}\n"),
         )?,
         Template::Lib => write(
             src.join("lib.belsk2"),

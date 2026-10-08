@@ -96,7 +96,8 @@ impl Interpreter {
         self.run_source_with_writer(source, &mut out)
     }
 
-    /// Parses, checks and runs source code. Returns the first error; use
+    /// Parses, checks and runs source code: its declarations, then `main`
+    /// if it declares one. Returns the first error; use
     /// [`Interpreter::compile`] to get all of them.
     pub fn run_source_with_writer(&mut self, source: &str, out: &mut dyn Write) -> Result<()> {
         let program = self.compile(source).map_err(|errors| {
@@ -105,7 +106,40 @@ impl Interpreter {
                 .next()
                 .unwrap_or_else(|| Error::type_error("invalid program"))
         })?;
-        self.run_program(&program, out)
+        self.run_program(&program, out)?;
+        let declares_main = program
+            .stmts
+            .iter()
+            .any(|s| matches!(&s.kind, StmtKind::FnDecl(f) if f.name == "main"));
+        if declares_main {
+            if let Some(main) = self.get_global("main") {
+                self.call_main(&main, &[], out)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Calls a program's `main` function with command-line arguments.
+    /// Returns its exit code if it returns an `int`.
+    pub fn call_main(
+        &mut self,
+        main: &Value,
+        args: &[String],
+        out: &mut dyn Write,
+    ) -> Result<Option<i64>> {
+        let Value::Function(f) = main else {
+            return Err(Error::runtime("`main` is not a function"));
+        };
+        let values = if f.decl.params.is_empty() {
+            Vec::new()
+        } else {
+            let items = args.iter().map(|a| Value::String(a.clone())).collect();
+            vec![Value::Array(Array::typed(Ty::String, items))]
+        };
+        self.call_depth = 0;
+        let result = self.call(f, values, &[], f.decl.span, out)?;
+        out.flush()?;
+        Ok(result.as_i64())
     }
 
     /// Parses and statically checks source code. Globals that already exist
@@ -113,6 +147,16 @@ impl Interpreter {
     /// are visible to the checker. The returned program carries the types
     /// and conversions the checker added.
     pub fn compile(&self, source: &str) -> std::result::Result<Program, Vec<Error>> {
+        self.compile_with(source, false)
+    }
+
+    /// Like [`Interpreter::compile`], but statements may also appear outside
+    /// functions, as typed into a REPL.
+    pub fn compile_repl(&self, source: &str) -> std::result::Result<Program, Vec<Error>> {
+        self.compile_with(source, true)
+    }
+
+    fn compile_with(&self, source: &str, repl: bool) -> std::result::Result<Program, Vec<Error>> {
         let mut program = belsk2_syntax::parse(source).map_err(|e| vec![e])?;
         if let Some(stmt) = program
             .stmts
@@ -125,6 +169,9 @@ impl Interpreter {
             )]);
         }
         let mut checker = Checker::new();
+        if repl {
+            checker.allow_top_level_statements();
+        }
         for (name, ty) in self.globals.borrow().static_types() {
             checker.declare_global(&name, ty);
         }

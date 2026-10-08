@@ -36,7 +36,7 @@ fn run_loaded(
         return Err(errors.iter().map(|e| e.message.clone()).collect());
     }
     let mut out = Vec::new();
-    project::run(&loaded, &mut Interpreter::new(), &mut out).map_err(|e| vec![e.message])?;
+    project::run(&loaded, &mut Interpreter::new(), &[], &mut out).map_err(|e| vec![e.message])?;
     Ok(String::from_utf8_lossy(&out).into_owned())
 }
 
@@ -104,7 +104,7 @@ fn modules_and_path_dependencies() {
             (
                 "src/main.belsk2",
                 "using text.fmt;\nusing math_utils;\nusing math_utils.stats;\n\
-                 prinb(shout(str(square(4))));\nprinb(mean([1.0, 2, 6]));\nprinb(greeting);\n",
+                 fn main() { prinb(shout(str(square(4)))); prinb(mean([1.0, 2, 6])); prinb(greeting); }\n",
             ),
             (
                 "src/text/fmt.belsk2",
@@ -139,11 +139,17 @@ fn modules_run_once_in_dependency_order() {
         &dir,
         &[
             ("belsk2.toml", MANIFEST),
-            ("src/main.belsk2", "using a;\nusing b;\nprinb(\"main\");\n"),
-            ("src/a.belsk2", "using c;\nprinb(\"a\");\n"),
-            ("src/b.belsk2", "using c;\nprinb(\"b\");\n"),
-            ("src/c.belsk2", "prinb(\"c\");\nvar items: int[] = [];\n"),
-            ("src/unused.belsk2", "prinb(\"never\");\n"),
+            (
+                "src/main.belsk2",
+                "using a;\nusing b;\nusing c;\nfn main() { note(\"main\"); }\n",
+            ),
+            ("src/a.belsk2", "using c;\nvar a_ready = note(\"a\");\n"),
+            ("src/b.belsk2", "using c;\nvar b_ready = note(\"b\");\n"),
+            (
+                "src/c.belsk2",
+                "fn note(s: string): bool { prinb(s); return true; }\nvar c_ready = note(\"c\");\n",
+            ),
+            ("src/unused.belsk2", "var never = prinb(\"never\");\n"),
         ],
     );
     assert_eq!(run_project(&dir), Ok("c\na\nb\nmain\n".to_string()));
@@ -234,7 +240,10 @@ fn errors_point_at_the_right_file() {
         &dir,
         &[
             ("belsk2.toml", MANIFEST),
-            ("src/main.belsk2", "using calc;\nprinb(div(1, 0));\n"),
+            (
+                "src/main.belsk2",
+                "using calc;\nfn main() { prinb(div(1, 0)); }\n",
+            ),
             (
                 "src/calc.belsk2",
                 "fn div(a: int, b: int): int {\n    return a / b;\n}\n",
@@ -248,7 +257,7 @@ fn errors_point_at_the_right_file() {
     };
     assert!(project::check(loaded).is_empty());
     let mut out = Vec::new();
-    let err = project::run(loaded, &mut Interpreter::new(), &mut out).err();
+    let err = project::run(loaded, &mut Interpreter::new(), &[], &mut out).err();
     let rendered = err
         .map(|e| e.render_in(&loaded.sources))
         .unwrap_or_default();
@@ -263,7 +272,7 @@ fn check_all_finds_errors_in_unused_files() {
         &dir,
         &[
             ("belsk2.toml", MANIFEST),
-            ("src/main.belsk2", "prinb(1);\n"),
+            ("src/main.belsk2", "fn main() { prinb(1); }\n"),
             ("src/broken.belsk2", "var x: int = \"s\";\n"),
         ],
     );
@@ -280,7 +289,10 @@ fn single_files_can_use_their_neighbours() {
     write(
         &dir,
         &[
-            ("script.belsk2", "using helpers;\nprinb(twice(21));\n"),
+            (
+                "script.belsk2",
+                "using helpers;\nfn main() { prinb(twice(21)); }\n",
+            ),
             (
                 "helpers.belsk2",
                 "fn twice(x: int): int { return x * 2; }\n",
@@ -359,4 +371,61 @@ fn find_root_walks_up() {
     );
     let found = project::find_root(&dir.join("src").join("deep"));
     assert_eq!(found.map(|p| p.ends_with("find_root")), Some(true));
+}
+
+#[test]
+fn programs_start_in_main() {
+    let dir = temp_dir("main_rules");
+    let cases: [(&str, Result<&str, &str>); 7] = [
+        ("prinb(1);\n", Err("code must be inside a function")),
+        ("var x = 1;\nx = 2;\nfn main() { }\n", Err("code must be inside a function")),
+        ("fn helper() { }\n", Err("has no `fn main()`")),
+        ("fn main(x: int) { }\n", Err("`main` must be declared as")),
+        ("fn main(): string { return \"\"; }\n", Err("`main` must be declared as")),
+        (
+            "var greeting = \"hi\";\nidb 1 = \"banked\";\nfn main() { prinb(greeting); prinb(1); }\n",
+            Ok("hi\nbanked\n"),
+        ),
+        ("fn main(): int { prinb(\"bye\"); return 0; }\n", Ok("bye\n")),
+    ];
+    for (i, (src, expected)) in cases.iter().enumerate() {
+        let file = dir.join(format!("case{i}.belsk2"));
+        write(&dir, &[(&format!("case{i}.belsk2"), src)]);
+        let result = run_loaded(project::load_file(&file));
+        match expected {
+            Ok(out) => assert_eq!(result, Ok(out.to_string()), "{src}"),
+            Err(needle) => assert_err(result, needle),
+        }
+    }
+}
+
+#[test]
+fn main_gets_arguments_and_returns_an_exit_code() {
+    let dir = temp_dir("main_args");
+    write(
+        &dir,
+        &[(
+            "app.belsk2",
+            "fn main(args: string[]): int { for a in args { prinb(a); } return len(args); }\n",
+        )],
+    );
+    let mut loaded = project::load_file(&dir.join("app.belsk2")).ok();
+    assert!(loaded
+        .as_mut()
+        .is_some_and(|l| project::check(l).is_empty()));
+    let Some(loaded) = loaded else {
+        return;
+    };
+    let mut out = Vec::new();
+    let args = ["x".to_string(), "y".to_string()];
+    let code = project::run(&loaded, &mut Interpreter::new(), &args, &mut out);
+    assert_eq!(code.ok(), Some(Some(2)));
+    assert_eq!(String::from_utf8_lossy(&out), "x\ny\n");
+}
+
+#[test]
+fn repl_input_may_have_statements() {
+    let interp = Interpreter::new();
+    assert!(interp.compile_repl("var x = 1; prinb(x);").is_ok());
+    assert!(interp.compile("var x = 1; prinb(x);").is_err());
 }

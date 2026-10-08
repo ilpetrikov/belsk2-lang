@@ -8,10 +8,18 @@ fn fib(n: int): int {
     return fib(n - 1) + fib(n - 2);
 }
 
-for i in [0, 1, 2, 3, 4, 5] {
-    prinb(fib(i));
+fn main() {
+    for i in [0, 1, 2, 3, 4, 5] {
+        prinb(fib(i));
+    }
 }
 ```
+
+All code lives in functions: a file holds declarations (`using`, `fn`,
+variables, `idb`), and a program starts in `fn main()`. `main` may take the
+command-line arguments (`fn main(args: string[])`, run with
+`belsk2 run app.belsk2 -- one two`) and return an `int` exit code. Only the
+REPL accepts statements outside functions.
 
 ## Repository layout
 
@@ -83,12 +91,14 @@ using text.format;   // src/text/format.belsk2
 using utils;         // the `utils` dependency (its src/lib.belsk2)
 using utils.math;    // the dependency's src/math.belsk2
 
-prinb(shout("hi"));
+fn main() {
+    prinb(shout("hi"));
+}
 ```
 
 A module's top-level functions and variables are visible to the files that
-use it (imported variables are read-only). A module's top-level code runs
-once, before the modules that use it. A single file run with `belsk2 run`
+use it (imported variables are read-only). A module's top-level variables
+are initialized once, before the modules that use it. A single file run with `belsk2 run`
 can also use the files next to it.
 
 Programs are checked before they run: wrong argument counts, type

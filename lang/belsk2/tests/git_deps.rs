@@ -82,7 +82,10 @@ fn make_app(dir: &Path, deps: &str) {
                     "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n{deps}\n"
                 ),
             ),
-            ("src/main.belsk2", "using greeter;\nprinb(greet());\n"),
+            (
+                "src/main.belsk2",
+                "using greeter;\nfn main() { prinb(greet()); }\n",
+            ),
         ],
     );
 }
@@ -102,7 +105,7 @@ fn run(app: &Path, opts: &Options) -> Result<String, Vec<String>> {
         return Err(errors.iter().map(|e| e.message.clone()).collect());
     }
     let mut out = Vec::new();
-    project::run(&loaded, &mut Interpreter::new(), &mut out).map_err(|e| vec![e.message])?;
+    project::run(&loaded, &mut Interpreter::new(), &[], &mut out).map_err(|e| vec![e.message])?;
     Ok(String::from_utf8_lossy(&out).into_owned())
 }
 
@@ -286,7 +289,7 @@ fn transitive_dependencies_and_conflicts() {
                 "belsk2.toml",
                 "[package]\nname = \"app\"\nversion = \"0.1.0\"\n[dependencies]\nwrapper = { git = \"../wrapper\" }\n",
             ),
-            ("src/main.belsk2", "using wrapper;\nprinb(wrapped());\n"),
+            ("src/main.belsk2", "using wrapper;\nfn main() { prinb(wrapped()); }\n"),
         ],
     );
     let opts = options(&dir.join("home"));
@@ -305,7 +308,7 @@ fn transitive_dependencies_and_conflicts() {
                 "belsk2.toml",
                 "[package]\nname = \"app\"\nversion = \"0.1.0\"\n[dependencies]\ngreeter = { git = \"../greeter\" }\nwrapper = { git = \"../wrapper\" }\n",
             ),
-            ("src/main.belsk2", "using wrapper;\nprinb(wrapped());\n"),
+            ("src/main.belsk2", "using wrapper;\nfn main() { prinb(wrapped()); }\n"),
         ],
     );
     assert_err(run(&conflict, &opts), "is used from two different sources");

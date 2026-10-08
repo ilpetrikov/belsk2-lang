@@ -81,7 +81,7 @@ fn random_programs() {
 fn deeply_nested_program() {
     let depth = 200;
     let src = format!(
-        "{}prinb(1 - \"a\");{}",
+        "fn main() {{ {}prinb(1 - \"a\");{} }}",
         "if true { ".repeat(depth),
         " }".repeat(depth)
     );

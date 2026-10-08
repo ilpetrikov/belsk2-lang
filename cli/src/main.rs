@@ -52,6 +52,9 @@ enum Command {
     Run {
         /// Source file; `-` reads from stdin
         file: Option<PathBuf>,
+        /// Arguments passed to `main(args: string[])`
+        #[arg(last = true)]
+        args: Vec<String>,
     },
     /// Check the current project (or the given files) without running it
     Check {
@@ -75,10 +78,15 @@ fn main() -> ExitCode {
         ..project::Options::default()
     };
     let result = match (cli.command, cli.file) {
-        (Some(Command::Run { file: Some(file) }), _) | (None, Some(file)) => {
-            run_file(&file, &options)
-        }
-        (Some(Command::Run { file: None }), _) => run_project(&options),
+        (
+            Some(Command::Run {
+                file: Some(file),
+                args,
+            }),
+            _,
+        ) => run_file(&file, &args, &options),
+        (None, Some(file)) => run_file(&file, &[], &options),
+        (Some(Command::Run { file: None, args }), _) => run_project(&args, &options),
         (Some(Command::Check { files }), _) if files.is_empty() => build(false, &options),
         (Some(Command::Check { files }), _) => check_files(&files),
         (Some(Command::Build), _) => build(true, &options),
@@ -87,11 +95,22 @@ fn main() -> ExitCode {
         (Some(Command::Init { name, lib }), _) => init(name, lib),
         (Some(Command::Repl), _) => repl(),
         (None, None) if io::stdin().is_terminal() => repl(),
-        (None, None) => run_file(Path::new("-"), &options),
+        (None, None) => run_file(Path::new("-"), &[], &options).map(|_| ()),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(()) => ExitCode::FAILURE,
+    }
+}
+
+/// The process exit code for what `main` returned.
+fn exit_code(code: Option<i64>) -> Result<(), ()> {
+    match code {
+        None | Some(0) => Ok(()),
+        Some(code) => {
+            let _ = io::stdout().flush();
+            std::process::exit(i32::try_from(code).unwrap_or(1));
+        }
     }
 }
 
@@ -107,7 +126,10 @@ fn report(errors: &[Error], sources: &SourceMap) {
 }
 
 /// Checks and runs a loaded program.
-fn check_and_run(loaded: Result<Loaded, (Vec<Error>, SourceMap)>) -> Result<(), ()> {
+fn check_and_run(
+    loaded: Result<Loaded, (Vec<Error>, SourceMap)>,
+    args: &[String],
+) -> Result<(), ()> {
     let mut loaded = loaded.map_err(|(errors, sources)| report(&errors, &sources))?;
     let errors = project::check(&mut loaded);
     if !errors.is_empty() {
@@ -115,10 +137,12 @@ fn check_and_run(loaded: Result<Loaded, (Vec<Error>, SourceMap)>) -> Result<(), 
         return Err(());
     }
     let mut interp = Interpreter::new();
-    project::run(&loaded, &mut interp, &mut io::stdout()).map_err(|e| report(&[e], &loaded.sources))
+    let code = project::run(&loaded, &mut interp, args, &mut io::stdout())
+        .map_err(|e| report(&[e], &loaded.sources))?;
+    exit_code(code)
 }
 
-fn run_file(file: &Path, options: &project::Options) -> Result<(), ()> {
+fn run_file(file: &Path, args: &[String], options: &project::Options) -> Result<(), ()> {
     if file.is_dir() {
         if !file.join(project::MANIFEST).is_file() {
             eprintln!(
@@ -128,10 +152,10 @@ fn run_file(file: &Path, options: &project::Options) -> Result<(), ()> {
             );
             return Err(());
         }
-        return check_and_run(project::load_with(file, Mode::Run, options));
+        return check_and_run(project::load_with(file, Mode::Run, options), args);
     }
     if file != Path::new("-") {
-        return check_and_run(project::load_file(file));
+        return check_and_run(project::load_file(file), args);
     }
     let mut source = String::new();
     if let Err(e) = io::stdin().read_to_string(&mut source) {
@@ -144,9 +168,18 @@ fn run_file(file: &Path, options: &project::Options) -> Result<(), ()> {
     let program = interp
         .compile(&source)
         .map_err(|errors| report_text(&errors, &source, "<stdin>"))?;
+    let mut out = io::stdout();
     interp
-        .run_program(&program, &mut io::stdout())
-        .map_err(|e| report_text(&[e], &source, "<stdin>"))
+        .run_program(&program, &mut out)
+        .map_err(|e| report_text(&[e], &source, "<stdin>"))?;
+    let Some(main) = interp.get_global("main") else {
+        eprintln!("type error: the program has no `fn main()`");
+        return Err(());
+    };
+    let code = interp
+        .call_main(&main, args, &mut out)
+        .map_err(|e| report_text(&[e], &source, "<stdin>"))?;
+    exit_code(code)
 }
 
 /// Reports errors for source that is not in a file.
@@ -170,9 +203,9 @@ fn project_root() -> Result<PathBuf, ()> {
     })
 }
 
-fn run_project(options: &project::Options) -> Result<(), ()> {
+fn run_project(args: &[String], options: &project::Options) -> Result<(), ()> {
     let root = project_root()?;
-    check_and_run(project::load_with(&root, Mode::Run, options))
+    check_and_run(project::load_with(&root, Mode::Run, options), args)
 }
 
 fn update(options: &project::Options) -> Result<(), ()> {
@@ -334,7 +367,7 @@ fn repl() -> Result<(), ()> {
         buffer.push_str(&line);
 
         // Keep reading while the input is an unfinished statement.
-        let errors = match interp.compile(&buffer) {
+        let errors = match interp.compile_repl(&buffer) {
             Err(errors) if errors.iter().any(|e| e.incomplete) && !line.trim().is_empty() => {
                 continue
             }

@@ -1,20 +1,22 @@
 // Arrays are shared by reference: push, pop and index assignment
 // change the array in place.
-var squares = [];
-var i = 1;
-while i <= 5 {
-    push(squares, i * i);
-    i += 1;
-}
-prinb(squares);
+fn main() {
+    int[] squares = [];
+    var i = 1;
+    while i <= 5 {
+        push(squares, i * i);
+        i += 1;
+    }
+    prinb(squares);
 
-squares[0] = 100;
-prinb("first: " + str(squares[0]));
-prinb("popped: " + str(pop(squares)));
-prinb("length: " + str(len(squares)));
+    squares[0] = 100;
+    prinb("first: " + str(squares[0]));
+    prinb("popped: " + str(pop(squares)));
+    prinb("length: " + str(len(squares)));
 
-var total = 0;
-for n in squares {
-    total += n;
+    var total = 0;
+    for n in squares {
+        total += n;
+    }
+    prinb("total: " + str(total));
 }
-prinb("total: " + str(total));

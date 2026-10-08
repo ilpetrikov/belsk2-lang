@@ -18,6 +18,8 @@ pub struct Checker {
     /// Names imported with `using`, and the module each comes from. They
     /// live in the outermost scope and are read-only.
     imports: HashMap<String, String>,
+    /// Whether statements may appear outside functions (only in the REPL).
+    allow_statements: bool,
     /// Type parameters of the generic functions being checked.
     type_params: Vec<Vec<Rc<str>>>,
     fns: Vec<FnCtx>,
@@ -207,6 +209,7 @@ impl Checker {
         Checker {
             scopes: vec![HashMap::new()],
             imports: HashMap::new(),
+            allow_statements: false,
             type_params: Vec::new(),
             fns: Vec::new(),
             errors: Vec::new(),
@@ -219,6 +222,12 @@ impl Checker {
         if let Some(outer) = self.scopes.first_mut() {
             outer.insert(name.to_string(), ty);
         }
+    }
+
+    /// Lets a program run statements at its top level. Programs keep their
+    /// code in functions; this is for interactive input such as a REPL.
+    pub fn allow_top_level_statements(&mut self) {
+        self.allow_statements = true;
     }
 
     /// Makes a declaration of another module visible (read-only), as
@@ -239,7 +248,31 @@ impl Checker {
     pub fn check_module(mut self, program: &mut Program) -> (Vec<Error>, Vec<(String, Ty)>) {
         // The program gets its own scope so it may shadow predeclared globals.
         self.scopes.push(HashMap::new());
+        if !self.allow_statements {
+            for stmt in &program.stmts {
+                let declaration = matches!(
+                    stmt.kind,
+                    StmtKind::Using(_)
+                        | StmtKind::FnDecl(_)
+                        | StmtKind::VarDecl(_)
+                        | StmtKind::Idb { .. }
+                );
+                if !declaration {
+                    self.type_error(
+                        "code must be inside a function; put it in `fn main() { ... }`",
+                        stmt.span,
+                    );
+                }
+            }
+        }
         self.check_stmts(&mut program.stmts);
+        for stmt in &program.stmts {
+            if let StmtKind::FnDecl(decl) = &stmt.kind {
+                if decl.name == "main" {
+                    self.check_main(decl);
+                }
+            }
+        }
         self.errors.sort_by_key(|e| e.span);
         let exports = self
             .scopes
@@ -576,6 +609,23 @@ impl Checker {
                     c.check_stmts(&mut body.stmts);
                 });
             }
+        }
+    }
+
+    /// `main` is where a program starts: `fn main()`, optionally with
+    /// `args: string[]` and an `int` exit code.
+    fn check_main(&mut self, decl: &FnDecl) {
+        let args_ok = match decl.params.as_slice() {
+            [] => true,
+            [p] => matches!(&p.resolved, Ty::Array(e) if matches!(**e, Ty::String | Ty::Any)),
+            _ => false,
+        };
+        let ret_ok = matches!(decl.ret_resolved, Ty::Any | Ty::Int(_));
+        if !args_ok || !ret_ok || !decl.type_params.is_empty() {
+            self.type_error(
+                "`main` must be declared as `fn main()`, `fn main(args: string[])`, optionally returning an int exit code",
+                decl.span,
+            );
         }
     }
 
