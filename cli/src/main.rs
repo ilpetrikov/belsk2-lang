@@ -27,7 +27,7 @@ enum Command {
         /// Source file; `-` reads from stdin
         file: PathBuf,
     },
-    /// Check a program for syntax errors without running it
+    /// Check a program for errors without running it
     Check {
         /// Source files
         #[arg(required = true)]
@@ -76,6 +76,15 @@ fn read_source(file: &Path) -> Result<(String, String), ()> {
     }
 }
 
+fn report_all(errors: &[Error], source: &str, file: Option<&str>) {
+    for e in errors {
+        report(e, source, file);
+    }
+    if errors.len() > 1 {
+        eprintln!("{} errors", errors.len());
+    }
+}
+
 fn run(file: &Path) -> Result<(), ()> {
     let (source, name) = read_source(file)?;
     let mut interp = Interpreter::new();
@@ -83,8 +92,11 @@ fn run(file: &Path) -> Result<(), ()> {
         // stdin holds the program itself, so `reab`/`input` get no input.
         interp.set_input(io::empty());
     }
+    let program = interp
+        .compile(&source)
+        .map_err(|errors| report_all(&errors, &source, Some(&name)))?;
     interp
-        .run_source(&source)
+        .run_program(&program, &mut io::stdout())
         .map_err(|e| report(&e, &source, Some(&name)))
 }
 
@@ -92,8 +104,8 @@ fn check(files: &[PathBuf]) -> Result<(), ()> {
     let mut ok = true;
     for file in files {
         let (source, name) = read_source(file)?;
-        if let Err(e) = belsk2::check(&source) {
-            report(&e, &source, Some(&name));
+        if let Err(errors) = belsk2::compile(&source) {
+            report_all(&errors, &source, Some(&name));
             ok = false;
         }
     }
@@ -143,12 +155,16 @@ fn repl() -> Result<(), ()> {
         buffer.push_str(&line);
 
         // Keep reading while the input is an unfinished statement.
-        match belsk2::check(&buffer) {
-            Err(e) if e.incomplete && !line.trim().is_empty() => continue,
-            _ => {}
-        }
-        if let Err(e) = interp.run_source(&buffer) {
-            report(&e, &buffer, None);
+        match interp.compile(&buffer) {
+            Err(errors) if errors.iter().any(|e| e.incomplete) && !line.trim().is_empty() => {
+                continue
+            }
+            Err(errors) => report_all(&errors, &buffer, None),
+            Ok(program) => {
+                if let Err(e) = interp.run_program(&program, &mut io::stdout()) {
+                    report(&e, &buffer, None);
+                }
+            }
         }
         buffer.clear();
     }

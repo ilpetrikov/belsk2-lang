@@ -1,6 +1,6 @@
 [package]
-name = "belsk2-interp"
-description = "Tree-walking interpreter for the Belsk2 programming language"
+name = "belsk2-typeck"
+description = "Static checker for the Belsk2 programming language"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -9,7 +9,6 @@ rust-version.workspace = true
 
 [dependencies]
 belsk2-syntax.workspace = true
-belsk2-typeck.workspace = true
 stacker.workspace = true
 
 [lints]

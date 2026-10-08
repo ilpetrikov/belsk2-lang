@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["cli", "lang/syntax", "lang/interp", "lang/belsk2"]
+members = ["cli", "lang/syntax", "lang/typeck", "lang/interp", "lang/belsk2"]
 
 [workspace.package]
 version = "0.4.0"
@@ -12,6 +12,7 @@ rust-version = "1.80"
 [workspace.dependencies]
 belsk2 = { path = "lang/belsk2" }
 belsk2-syntax = { path = "lang/syntax" }
+belsk2-typeck = { path = "lang/typeck" }
 belsk2-interp = { path = "lang/interp" }
 stacker = "0.1"
 clap = { version = "4", features = ["derive"] }

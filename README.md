@@ -18,6 +18,7 @@ for i in [0, 1, 2, 3, 4, 5] {
 | Path | What it is |
 |---|---|
 | `lang/syntax` | `belsk2-syntax`: lexer, parser, AST, error type |
+| `lang/typeck` | `belsk2-typeck`: static checker that runs before the program starts |
 | `lang/interp` | `belsk2-interp`: the interpreter and built-in functions |
 | `lang/belsk2` | `belsk2`: the main crate that re-exports everything (use this from Rust) |
 | `cli` | `belsk2` command-line tool |
@@ -39,19 +40,26 @@ The `belsk2` binary ends up in `target/release/`.
 ```sh
 belsk2 program.belsk2        # run a file
 belsk2 run program.belsk2    # same
-belsk2 check program.belsk2  # syntax check only
+belsk2 check program.belsk2  # compile-time checks only, nothing runs
 belsk2 repl                  # interactive session (also: `belsk2` with no arguments)
 ```
 
-Errors point at the exact place in the source:
+Programs are checked before they run: wrong argument counts, type
+mismatches (`1 - "a"`, `len(5)`, `num("abc")`), undefined names and so on are
+compile errors, all reported at once. Errors point at the exact place in the
+source:
 
 ```text
-runtime error: division by zero
- --> main.belsk2:2:9
+type error: len() expects a string or array, got number
+ --> main.belsk2:2:11
   |
-2 | prinb(x / 0);
-  |         ^
+2 | prinb(len(5));
+  |           ^
 ```
+
+Variables declared with `var` take the type of their initial value, as in C#.
+Use `any` (`var x: any = 1;`) for a variable that may hold different types;
+such values are checked at run time.
 
 ## Using belsk2 from Rust
 

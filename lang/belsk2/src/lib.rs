@@ -1,7 +1,8 @@
 //! The Belsk2 programming language.
 //!
 //! This crate is the main entry point. It re-exports the front end
-//! ([`syntax`]) and the interpreter ([`Interpreter`], [`Value`]).
+//! ([`syntax`]), the static checker ([`typeck`]) and the interpreter
+//! ([`Interpreter`], [`Value`]).
 //!
 //! ```
 //! let mut out = Vec::new();
@@ -13,10 +14,11 @@ use std::io::Write;
 use std::path::Path;
 
 pub use belsk2_interp::{
-    format_number, Array, Error, ErrorKind, Function, Input, Interpreter, Result, Span, Value,
+    format_number, Array, Error, ErrorKind, Function, Input, Interpreter, Result, Span, Ty, Value,
     BUILTINS, DEFAULT_MAX_CALL_DEPTH,
 };
 pub use belsk2_syntax as syntax;
+pub use belsk2_typeck as typeck;
 
 /// The language version.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -39,7 +41,8 @@ pub fn run_file(path: impl AsRef<Path>) -> Result<()> {
     run_source(&source)
 }
 
-/// Checks a program for syntax errors without running it.
-pub fn check(source: &str) -> Result<()> {
-    syntax::parse(source).map(|_| ())
+/// Parses and statically checks a program without running it.
+/// Returns every error found.
+pub fn compile(source: &str) -> std::result::Result<syntax::ast::Program, Vec<Error>> {
+    Interpreter::new().compile(source)
 }

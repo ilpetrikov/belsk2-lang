@@ -9,6 +9,7 @@ rust-version.workspace = true
 
 [dependencies]
 belsk2-syntax.workspace = true
+belsk2-typeck.workspace = true
 belsk2-interp.workspace = true
 
 [lints]

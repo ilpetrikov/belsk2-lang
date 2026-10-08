@@ -571,12 +571,14 @@ impl Parser {
                 TokenKind::LParen => {
                     self.bump();
                     let args = self.parse_list(TokenKind::RParen)?;
+                    // Errors about a call point at the callee, not at '('.
+                    let call_span = node.span;
                     node = self.mk(
                         ExprKind::Call {
                             callee: Box::new(node),
                             args,
                         },
-                        span,
+                        call_span,
                     )?;
                 }
                 TokenKind::Dot => {

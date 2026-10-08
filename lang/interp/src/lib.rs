@@ -18,6 +18,6 @@ mod interpreter;
 mod value;
 
 pub use belsk2_syntax::{Error, ErrorKind, Result, Span};
-pub use builtins::BUILTINS;
+pub use belsk2_typeck::{Ty, BUILTINS};
 pub use interpreter::{Input, Interpreter, DEFAULT_MAX_CALL_DEPTH};
 pub use value::{format_number, Array, Function, Value};

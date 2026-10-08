@@ -5,6 +5,8 @@ use std::rc::Rc;
 use belsk2_syntax::ast::*;
 use belsk2_syntax::{BType, Error, Result, Span};
 
+use belsk2_typeck::Checker;
+
 use crate::builtins;
 use crate::env::{self, Env, EnvRef};
 use crate::value::{is_integral, Function, Value};
@@ -89,14 +91,41 @@ impl Interpreter {
         self.run_source_with_writer(source, &mut out)
     }
 
+    /// Parses, checks and runs source code. Returns the first error; use
+    /// [`Interpreter::compile`] to get all of them.
     pub fn run_source_with_writer(&mut self, source: &str, out: &mut dyn Write) -> Result<()> {
-        let program = belsk2_syntax::parse(source)?;
+        let program = self.compile(source).map_err(|errors| {
+            errors
+                .into_iter()
+                .next()
+                .unwrap_or_else(|| Error::type_error("invalid program"))
+        })?;
         self.run_program(&program, out)
     }
 
+    /// Parses and statically checks source code. Globals that already exist
+    /// in this interpreter (from earlier runs or [`Interpreter::define_global`])
+    /// are visible to the checker.
+    pub fn compile(&self, source: &str) -> std::result::Result<Program, Vec<Error>> {
+        let program = belsk2_syntax::parse(source).map_err(|e| vec![e])?;
+        let mut checker = Checker::new();
+        for (name, ty) in self.globals.borrow().static_types() {
+            checker.declare_global(&name, ty);
+        }
+        let errors = checker.check_program(&program);
+        if errors.is_empty() {
+            Ok(program)
+        } else {
+            Err(errors)
+        }
+    }
+
+    /// Runs an already parsed program. It is not statically checked here;
+    /// [`Interpreter::compile`] does that.
     pub fn run_program(&mut self, program: &Program, out: &mut dyn Write) -> Result<()> {
         let globals = Rc::clone(&self.globals);
         self.call_depth = 0;
+        hoist_functions(&program.stmts, &globals);
         for stmt in &program.stmts {
             match self.exec(stmt, &globals, out)? {
                 Flow::Normal => {}
@@ -146,6 +175,7 @@ impl Interpreter {
 
     fn exec_block(&mut self, block: &Block, env: &EnvRef, out: &mut dyn Write) -> Result<Flow> {
         let scope = Env::child(env);
+        hoist_functions(&block.stmts, &scope);
         for stmt in &block.stmts {
             match self.exec(stmt, &scope, out)? {
                 Flow::Normal => {}
@@ -181,14 +211,8 @@ impl Interpreter {
             StmtKind::CompoundAssign { op, target, value } => {
                 self.compound_assign(*op, target, value, env, out)?;
             }
-            StmtKind::FnDecl(decl) => {
-                let f = Function {
-                    decl: Rc::clone(decl),
-                    env: Rc::clone(env),
-                };
-                env.borrow_mut()
-                    .define(&decl.name, Value::Function(Rc::new(f)), BType::Fn);
-            }
+            // Defined by `hoist_functions` when the block was entered.
+            StmtKind::FnDecl(_) => {}
             StmtKind::Return(value) => {
                 let v = match value {
                     Some(e) => self.eval(e, env, out)?,
@@ -379,7 +403,7 @@ impl Interpreter {
     ) -> Result<Value> {
         // Built-in functions take precedence over user definitions.
         if let ExprKind::Ident(name) = &callee.kind {
-            if builtins::is_builtin(name) {
+            if belsk2_typeck::is_builtin(name) {
                 let values = self.eval_args(args, env, out)?;
                 return builtins::call(self, name, values, out);
             }
@@ -460,6 +484,20 @@ impl Interpreter {
                     .with_context(&format!("return value of '{}'", decl.name))
             }),
             None => Ok(result),
+        }
+    }
+}
+
+/// Functions are visible in their whole block, before their declaration.
+fn hoist_functions(stmts: &[Stmt], env: &EnvRef) {
+    for stmt in stmts {
+        if let StmtKind::FnDecl(decl) = &stmt.kind {
+            let f = Function {
+                decl: Rc::clone(decl),
+                env: Rc::clone(env),
+            };
+            env.borrow_mut()
+                .define(&decl.name, Value::Function(Rc::new(f)), BType::Fn);
         }
     }
 }

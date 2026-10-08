@@ -7,15 +7,6 @@ use belsk2_syntax::{Error, Result};
 use crate::interpreter::Interpreter;
 use crate::value::{is_integral, Value};
 
-pub const BUILTINS: &[&str] = &[
-    "prinb", "reab", "input", "len", "str", "num", "int", "float", "bool", "push", "pop", "substr",
-    "type",
-];
-
-pub fn is_builtin(name: &str) -> bool {
-    BUILTINS.contains(&name)
-}
-
 fn arity(name: &str, args: &[Value], min: usize, max: usize) -> Result<()> {
     if args.len() < min || args.len() > max {
         let expected = if min == max {

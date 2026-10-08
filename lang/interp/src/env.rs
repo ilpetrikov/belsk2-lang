@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use belsk2_syntax::{BType, Error, Result};
+use belsk2_typeck::Ty;
 
 use crate::value::Value;
 
@@ -37,6 +38,25 @@ impl Env {
     /// with the same name. The value must already be checked with [`coerce`].
     pub fn define(&mut self, name: &str, value: Value, ty: BType) {
         self.vars.insert(name.to_string(), Slot { value, ty });
+    }
+
+    /// Static types of the variables in this scope, for the checker.
+    pub fn static_types(&self) -> Vec<(String, Ty)> {
+        self.vars
+            .iter()
+            .map(|(name, slot)| {
+                let ty = match (&slot.value, slot.ty) {
+                    (Value::Function(f), _) => belsk2_typeck::fn_type(&f.decl),
+                    (Value::Null, BType::Any) => Ty::Any,
+                    (Value::Bool(_), BType::Any) => Ty::Bool,
+                    (Value::Number(_), BType::Any) => Ty::Number,
+                    (Value::String(_), BType::Any) => Ty::String,
+                    (Value::Array(_), BType::Any) => Ty::Array,
+                    (_, declared) => Ty::from_btype(declared),
+                };
+                (name.clone(), ty)
+            })
+            .collect()
     }
 }
 

@@ -67,6 +67,7 @@ version = "0.4.0"
 dependencies = [
  "belsk2-interp",
  "belsk2-syntax",
+ "belsk2-typeck",
 ]
 
 [[package]]
@@ -82,6 +83,7 @@ name = "belsk2-interp"
 version = "0.4.0"
 dependencies = [
  "belsk2-syntax",
+ "belsk2-typeck",
  "stacker",
 ]
 
@@ -89,6 +91,14 @@ dependencies = [
 name = "belsk2-syntax"
 version = "0.4.0"
 dependencies = [
+ "stacker",
+]
+
+[[package]]
+name = "belsk2-typeck"
+version = "0.4.0"
+dependencies = [
+ "belsk2-syntax",
  "stacker",
 ]
 

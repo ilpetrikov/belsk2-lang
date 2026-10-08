@@ -177,21 +177,35 @@ fn declared_types_are_checked_on_assignment() {
     assert_eq!(e.kind, ErrorKind::Type);
     let e = run_err("bool b = 1;");
     assert_eq!(e.kind, ErrorKind::Type);
+    // `var` takes the type of its initializer, like C#.
+    let e = run_err(r#"var x = 1; x = "now a string";"#);
+    assert_eq!(e.kind, ErrorKind::Type);
+    assert!(
+        e.message
+            .contains("cannot store string value in 'x' of type number"),
+        "{e}"
+    );
     assert_eq!(
-        run(r#"var x = 1; x = "now a string"; prinb(x);"#),
+        run(r#"var x: any = 1; x = "now a string"; prinb(x);"#),
         "now a string\n"
     );
+    assert_eq!(run("var x = null; x = 5; prinb(x);"), "5\n");
 }
 
 #[test]
-fn function_types_and_arity_are_checked() {
-    let e = run_err(r#"fn f(a: int) { } f("x");"#);
-    assert_eq!(e.kind, ErrorKind::Type);
-    assert!(e.message.contains("argument 'a'"), "{e}");
-    let e = run_err("fn f(a, b) { } f(1);");
-    assert!(e.message.contains("expects 2 arguments"), "{e}");
-    let e = run_err(r#"fn f(): int { return "s"; } f();"#);
-    assert!(e.message.contains("return value"), "{e}");
+fn repl_keeps_declarations_between_runs() {
+    let mut interp = Interpreter::new();
+    let mut out = Vec::new();
+    let src = "var n = 2; fn sq(x) { return x * x; }";
+    assert!(interp.run_source_with_writer(src, &mut out).is_ok());
+    assert!(interp
+        .run_source_with_writer("prinb(sq(n));", &mut out)
+        .is_ok());
+    let e = interp.run_source_with_writer("prinb(sq(1, 2));", &mut out);
+    assert!(e.is_err_and(|e| e.message.contains("expects 1 argument")));
+    let e = interp.run_source_with_writer(r#"n = "text";"#, &mut out);
+    assert!(e.is_err_and(|e| e.kind == ErrorKind::Type));
+    assert_eq!(String::from_utf8_lossy(&out), "4\n");
 }
 
 #[test]
@@ -222,34 +236,114 @@ fn calling_the_result_of_a_call() {
 
 #[test]
 fn errors_have_locations() {
-    let e = run_err("var x = 1;\nprinb(x / 0);");
+    let e = run_err("var x = 1;\nvar zero = 0;\nprinb(x / zero);");
     assert_eq!(e.kind, ErrorKind::Runtime);
+    assert_eq!(e.span.map(|s| s.line), Some(3));
+    let e = run_err("var x = 1;\nprinb(x / 0);");
+    assert_eq!(e.kind, ErrorKind::Type);
     assert_eq!(e.span.map(|s| s.line), Some(2));
-    let e = run_err("var x = 1 % 0;");
-    assert!(e.message.contains("division by zero"));
 }
 
+/// Mistakes that are caught before the program starts.
 #[test]
-fn runtime_errors() {
+fn compile_errors() {
     for (src, needle) in [
         ("prinb(y);", "undefined variable"),
         ("y = 1;", "undefined variable"),
-        ("var a = [1]; prinb(a[1]);", "out of bounds"),
-        ("var a = [1]; prinb(a[-1]);", "out of bounds"),
-        ("var a = [1]; prinb(a[0.5]);", "whole number"),
-        ("prinb(1 - \"a\");", "cannot apply"),
+        ("prinb(1 - \"a\");", "cannot apply '-' to number and string"),
+        ("prinb(true + 1);", "cannot apply '+'"),
+        ("prinb([1] < [2]);", "cannot apply '<'"),
         ("prinb(-\"a\");", "cannot negate"),
         ("for x in 5 { }", "cannot iterate"),
         ("var x = 5; x();", "not a function"),
-        ("prinb(num(\"abc\"));", "cannot convert"),
-        ("prinb(len(5));", "expects a string or array"),
+        ("prinb(num(\"abc\"));", "is not a number"),
+        ("prinb(int(\"12x\"));", "is not a number"),
+        ("prinb(len(5));", "expects a string or array, got number"),
         ("prinb(1, 2);", "expects 0 to 1 arguments"),
+        ("push([1]);", "expects 2 arguments"),
+        ("substr(\"abc\", \"1\", 2);", "a number for start"),
         ("var s = \"ab\"; s[0] = \"x\";", "immutable"),
         ("var a = [1]; prinb(a.length);", "no member"),
+        ("var a = [1]; prinb(a[\"0\"]);", "index must be a number"),
+        ("fn f(a, b) { } f(1);", "expects 2 arguments, got 1"),
+        (
+            "fn f(a: int) { } f(\"x\");",
+            "argument 1 of 'f' must be number",
+        ),
+        ("fn f(): string { return 1; }", "return value of 'f'"),
+        ("fn f() { } f = 5;", "of type fn"),
+        ("var x = 1; var x = 2;", "already declared"),
+        ("fn f() { } fn f() { }", "already declared"),
+        ("var f = len;", "can only be called"),
+        ("bel b = 5; b = 2000;", "exceeds"),
+        ("ster s = null;", "cannot be null"),
+        ("var x = 10 % 0;", "division by zero"),
     ] {
         let e = run_err(src);
+        assert_eq!(e.kind, ErrorKind::Type, "{src}: {e}");
         assert!(e.message.contains(needle), "{src}: {e}");
     }
+}
+
+#[test]
+fn compile_reports_every_error() {
+    let src = "var a = 1 - \"x\";\nprinb(len(5));\nprinb(nope);";
+    let errors = belsk2::compile(src).err().unwrap_or_default();
+    let lines: Vec<usize> = errors
+        .iter()
+        .filter_map(|e| e.span)
+        .map(|s| s.line)
+        .collect();
+    assert_eq!(lines, [1, 2, 3]);
+}
+
+#[test]
+fn nothing_runs_when_compilation_fails() {
+    let mut interp = Interpreter::new();
+    let mut out = Vec::new();
+    let r = interp.run_source_with_writer("prinb(1); prinb(1 - \"a\");", &mut out);
+    assert!(r.is_err());
+    assert!(out.is_empty());
+}
+
+/// Values of type `any` are checked when the program runs.
+#[test]
+fn runtime_errors() {
+    for (src, needle) in [
+        ("var a = [1]; prinb(a[1]);", "out of bounds"),
+        ("var a = [1]; prinb(a[-1]);", "out of bounds"),
+        ("var a = [1]; prinb(a[0.5]);", "whole number"),
+        (
+            "var a = [1, \"a\"]; prinb(a[0] - a[1]);",
+            "cannot apply '-' to int and string",
+        ),
+        ("var a = [\"abc\"]; prinb(num(a[0]));", "cannot convert"),
+        (
+            "var a = [5]; prinb(len(a[0]));",
+            "expects a string or array",
+        ),
+        ("fn f(x) { return -x; } f(\"s\");", "cannot negate"),
+        ("fn f(g) { g(); } f(1);", "not a function"),
+        ("fn f(a: int) { } var v: any = \"x\"; f(v);", "argument 'a'"),
+        ("var zero = 0; prinb(1 / zero);", "division by zero"),
+    ] {
+        let e = run_err(src);
+        assert_ne!(e.kind, ErrorKind::Syntax, "{src}: {e}");
+        assert!(e.message.contains(needle), "{src}: {e}");
+    }
+}
+
+#[test]
+fn functions_are_hoisted() {
+    let src = r#"
+        prinb(twice(4));
+        fn twice(n) { return n * 2; }
+        if true {
+            prinb(inner());
+            fn inner() { return "inner"; }
+        }
+    "#;
+    assert_eq!(run(src), "8\ninner\n");
 }
 
 #[test]
@@ -318,8 +412,8 @@ fn self_containing_and_deeply_nested_arrays_are_safe() {
 fn host_api() {
     let mut interp = Interpreter::new();
     let mut out = Vec::new();
-    interp.define_global("_dt", Value::from(0.5));
-    let src = "var total = 0; fn tick(n) { total += n * _dt; return total; }";
+    interp.define_global("scale", Value::from(0.5));
+    let src = "var total = 0; fn tick(n) { total += n * scale; return total; }";
     assert!(interp.run_source_with_writer(src, &mut out).is_ok());
     assert!(interp.has_function("tick"));
     assert!(!interp.has_function("total"));
