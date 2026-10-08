@@ -15,8 +15,8 @@ use std::collections::HashMap;
 use std::io::Write;
 
 pub use belsk2_project::{
-    create, find_root, load, load_file, module_name, Dependency, Loaded, Manifest, Mode, Module,
-    ModuleId, Package, PackageInfo, Template, MANIFEST,
+    create, find_root, load, load_file, load_with, module_name, Dependency, Loaded, Lockfile,
+    Manifest, Mode, Module, ModuleId, Options, Package, PackageInfo, Template, LOCKFILE, MANIFEST,
 };
 use belsk2_syntax::Ty;
 use belsk2_typeck::Checker;

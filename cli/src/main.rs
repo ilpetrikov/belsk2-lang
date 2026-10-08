@@ -17,6 +17,14 @@ struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
 
+    /// Do not use the network: only dependencies that are already downloaded
+    #[arg(long, global = true)]
+    offline: bool,
+
+    /// Fail if belsk2.lock would change (useful in CI)
+    #[arg(long, global = true)]
+    locked: bool,
+
     /// Program to run (shorthand for `belsk2 run <FILE>`)
     file: Option<PathBuf>,
 }
@@ -52,23 +60,34 @@ enum Command {
     },
     /// Build the current project
     Build,
+    /// Move git dependencies to the newest commit of their branch or tag
+    /// and rewrite belsk2.lock
+    Update,
     /// Start an interactive session
     Repl,
 }
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
+    let options = project::Options {
+        offline: cli.offline,
+        locked: cli.locked,
+        ..project::Options::default()
+    };
     let result = match (cli.command, cli.file) {
-        (Some(Command::Run { file: Some(file) }), _) | (None, Some(file)) => run_file(&file),
-        (Some(Command::Run { file: None }), _) => run_project(),
-        (Some(Command::Check { files }), _) if files.is_empty() => build(false),
+        (Some(Command::Run { file: Some(file) }), _) | (None, Some(file)) => {
+            run_file(&file, &options)
+        }
+        (Some(Command::Run { file: None }), _) => run_project(&options),
+        (Some(Command::Check { files }), _) if files.is_empty() => build(false, &options),
         (Some(Command::Check { files }), _) => check_files(&files),
-        (Some(Command::Build), _) => build(true),
+        (Some(Command::Build), _) => build(true, &options),
+        (Some(Command::Update), _) => update(&options),
         (Some(Command::New { name, lib }), _) => new_project(&PathBuf::from(&name), &name, lib),
         (Some(Command::Init { name, lib }), _) => init(name, lib),
         (Some(Command::Repl), _) => repl(),
         (None, None) if io::stdin().is_terminal() => repl(),
-        (None, None) => run_file(Path::new("-")),
+        (None, None) => run_file(Path::new("-"), &options),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -99,7 +118,7 @@ fn check_and_run(loaded: Result<Loaded, (Vec<Error>, SourceMap)>) -> Result<(), 
     project::run(&loaded, &mut interp, &mut io::stdout()).map_err(|e| report(&[e], &loaded.sources))
 }
 
-fn run_file(file: &Path) -> Result<(), ()> {
+fn run_file(file: &Path, options: &project::Options) -> Result<(), ()> {
     if file.is_dir() {
         if !file.join(project::MANIFEST).is_file() {
             eprintln!(
@@ -109,7 +128,7 @@ fn run_file(file: &Path) -> Result<(), ()> {
             );
             return Err(());
         }
-        return check_and_run(project::load(file, Mode::Run));
+        return check_and_run(project::load_with(file, Mode::Run, options));
     }
     if file != Path::new("-") {
         return check_and_run(project::load_file(file));
@@ -151,9 +170,48 @@ fn project_root() -> Result<PathBuf, ()> {
     })
 }
 
-fn run_project() -> Result<(), ()> {
+fn run_project(options: &project::Options) -> Result<(), ()> {
     let root = project_root()?;
-    check_and_run(project::load(&root, Mode::Run))
+    check_and_run(project::load_with(&root, Mode::Run, options))
+}
+
+fn update(options: &project::Options) -> Result<(), ()> {
+    let root = project_root()?;
+    let options = project::Options {
+        update: true,
+        ..options.clone()
+    };
+    let before = project::Lockfile::load(&root).unwrap_or_default();
+    project::load_with(&root, Mode::All, &options)
+        .map_err(|(errors, sources)| report(&errors, &sources))?;
+    let after = project::Lockfile::load(&root).unwrap_or_default();
+    let mut changed = 0;
+    for p in &after.packages {
+        match before.find(&p.git, &p.reference) {
+            Some(old) if old.commit == p.commit => {}
+            Some(old) => {
+                changed += 1;
+                println!(
+                    "Updated {} {} -> {}",
+                    p.name,
+                    short(&old.commit),
+                    short(&p.commit)
+                );
+            }
+            None => {
+                changed += 1;
+                println!("Added {} at {}", p.name, short(&p.commit));
+            }
+        }
+    }
+    if changed == 0 {
+        println!("All git dependencies are up to date");
+    }
+    Ok(())
+}
+
+fn short(commit: &str) -> &str {
+    commit.get(..8).unwrap_or(commit)
 }
 
 fn check_files(files: &[PathBuf]) -> Result<(), ()> {
@@ -179,10 +237,10 @@ fn check_files(files: &[PathBuf]) -> Result<(), ()> {
 }
 
 /// Checks every module of the current project.
-fn build(is_build: bool) -> Result<(), ()> {
+fn build(is_build: bool, options: &project::Options) -> Result<(), ()> {
     let root = project_root()?;
-    let mut loaded =
-        project::load(&root, Mode::All).map_err(|(errors, sources)| report(&errors, &sources))?;
+    let mut loaded = project::load_with(&root, Mode::All, options)
+        .map_err(|(errors, sources)| report(&errors, &sources))?;
     let errors = project::check(&mut loaded);
     if !errors.is_empty() {
         report(&errors, &loaded.sources);

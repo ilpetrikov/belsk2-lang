@@ -44,6 +44,7 @@ cd hello
 belsk2 run                   # run the project
 belsk2 check                 # check every file of the project, nothing runs
 belsk2 build                 # check the project and its dependencies
+belsk2 update                # move git dependencies to their newest commits
 
 belsk2 run program.belsk2    # run a single file (also: `belsk2 program.belsk2`)
 belsk2 check a.belsk2        # check single files
@@ -61,7 +62,17 @@ version = "0.1.0"
 
 [dependencies]
 utils = { path = "../utils" }
+json = { git = "https://github.com/someone/json.belsk2", tag = "v1.0.0" }
 ```
+
+Dependencies come from a local `path` or from `git` (with an optional
+`branch`, `tag` or `rev`; the default branch otherwise). Git dependencies are
+downloaded with the `git` command into `~/.belsk2/git` (set `BELSK2_HOME` to
+change that), and the exact commit of each is recorded in `belsk2.lock`.
+Commit that file: the project then builds the same way everywhere until
+`belsk2 update` moves the dependencies forward. `--locked` makes any command
+fail instead of changing `belsk2.lock` (useful in CI), and `--offline` uses
+only what is already downloaded.
 
 `src/main.belsk2` is where a program starts; a library has `src/lib.belsk2`.
 Every other file under `src` is a module that other files import with

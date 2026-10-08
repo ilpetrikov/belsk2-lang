@@ -13,7 +13,7 @@
 
 ### Projects and build
 - [x] `belsk2.toml` (name, version, ...), `belsk2 new`/`init`/`run`/`check`/`build`, modules (`using`), path dependencies
-- [ ] Dependencies from git, lock file
+- [x] Dependencies from git (`branch`/`tag`/`rev`), `belsk2.lock`, `belsk2 update`, `--locked`, `--offline`
 - [ ] WASM compiler (codegen, memory model, WASI 0.2)
 - [ ] wit-bindgen backend: export/import WIT interfaces
 - [ ] WASI 0.3, if the toolchain supports it
@@ -50,4 +50,8 @@
 - [ ] `belsk2 build` only checks the project; it should produce output once the WASM backend exists.
 - [ ] Access modifiers for modules: today every top-level function and variable is exported.
       Add `public`/`private` together with the class access modifiers.
+- [ ] `belsk2.lock` stores a relative git URL (a local path) as an absolute path, so such a
+      lock file is machine-specific. Fine for remote URLs.
+- [ ] Two git URLs that are spelled differently but mean the same repository count as
+      different sources.
 - [ ] The IDE runs a temporary file, so `using` does not work there; the Tauri IDE should run projects.

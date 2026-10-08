@@ -11,12 +11,17 @@
 //! [`load`] reads a project and everything it uses and returns the parsed
 //! modules in dependency order.
 
+pub mod git;
 mod loader;
+pub mod lockfile;
 pub mod manifest;
 
 use std::path::{Path, PathBuf};
 
-pub use loader::{display_path, load, load_file, Loaded, Mode, Module, ModuleId, Package};
+pub use loader::{
+    display_path, load, load_file, load_with, Loaded, Mode, Module, ModuleId, Options, Package,
+};
+pub use lockfile::{Lockfile, LOCKFILE};
 pub use manifest::{module_name, valid_package_name, Dependency, Manifest, PackageInfo, MANIFEST};
 
 /// Looks for `belsk2.toml` in `start` and its parent directories.

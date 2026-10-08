@@ -4,6 +4,8 @@ use std::path::{Path, PathBuf};
 use belsk2_syntax::ast::{Program, StmtKind};
 use belsk2_syntax::{Error, SourceMap, Span};
 
+use crate::git::{self, default_home, normalize_url, GitCache, GitRef};
+use crate::lockfile::{LockedPackage, Lockfile};
 use crate::manifest::{module_name, Dependency, Manifest, MANIFEST};
 
 pub type ModuleId = usize;
@@ -74,6 +76,31 @@ impl Loaded {
     }
 }
 
+/// How dependencies are fetched.
+#[derive(Debug, Clone)]
+pub struct Options {
+    /// Where downloaded dependencies are cached (see [`default_home`]).
+    pub home: PathBuf,
+    /// Never use the network; only what is already downloaded.
+    pub offline: bool,
+    /// Fail instead of changing `belsk2.lock`.
+    pub locked: bool,
+    /// Ignore `belsk2.lock` and move git dependencies to the newest commit
+    /// of their branch or tag.
+    pub update: bool,
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Options {
+            home: default_home(),
+            offline: false,
+            locked: false,
+            update: false,
+        }
+    }
+}
+
 /// What to load.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
@@ -84,6 +111,15 @@ pub enum Mode {
 }
 
 struct Loader {
+    git: GitCache,
+    update: bool,
+    old_lock: Lockfile,
+    new_lock: Vec<LockedPackage>,
+    /// Dependencies that could not be loaded (package, import name), so
+    /// their `using`s do not cause a second error.
+    failed_deps: Vec<(usize, String)>,
+    /// Package name -> (git URL, commit) it was loaded from.
+    git_sources: HashMap<String, (String, String)>,
     packages: Vec<Package>,
     package_by_root: HashMap<PathBuf, usize>,
     modules: Vec<Module>,
@@ -110,6 +146,11 @@ fn canonical(path: &Path) -> PathBuf {
     std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
+/// The first characters of a commit hash, for messages.
+fn short(commit: &str) -> &str {
+    commit.get(..8).unwrap_or(commit)
+}
+
 /// Path of the file for module `parts` inside `src`.
 fn module_file(src: &Path, parts: &[String]) -> PathBuf {
     let mut path = src.to_path_buf();
@@ -120,10 +161,40 @@ fn module_file(src: &Path, parts: &[String]) -> PathBuf {
     path
 }
 
-/// Loads the project whose `belsk2.toml` is in `root`.
+/// Loads the project whose `belsk2.toml` is in `root`, fetching git
+/// dependencies as needed and keeping `belsk2.lock` up to date.
 pub fn load(root: &Path, mode: Mode) -> Result<Loaded, (Vec<Error>, SourceMap)> {
-    let mut loader = Loader::new();
-    let Some(pkg) = loader.load_package(root) else {
+    load_with(root, mode, &Options::default())
+}
+
+pub fn load_with(
+    root: &Path,
+    mode: Mode,
+    options: &Options,
+) -> Result<Loaded, (Vec<Error>, SourceMap)> {
+    let mut loader = Loader::new(options);
+    match Lockfile::load(root) {
+        Ok(lock) => loader.old_lock = lock,
+        Err(e) => loader.errors.push(e),
+    }
+    let pkg = loader.load_package(root);
+    if loader.errors.is_empty() {
+        let new_lock = Lockfile {
+            version: 1,
+            packages: std::mem::take(&mut loader.new_lock),
+        };
+        if !new_lock.same_as(&loader.old_lock) {
+            if options.locked {
+                loader.errors.push(Error::project(format!(
+                    "{} needs to be updated, but --locked was given",
+                    root.join(crate::lockfile::LOCKFILE).display()
+                )));
+            } else if let Err(e) = new_lock.save(root) {
+                loader.errors.push(e);
+            }
+        }
+    }
+    let Some(pkg) = pkg else {
         return Err((loader.errors, loader.sources));
     };
     let src = loader
@@ -180,7 +251,7 @@ pub fn load(root: &Path, mode: Mode) -> Result<Loaded, (Vec<Error>, SourceMap)> 
 /// Loads a single file as a program. Modules it uses are looked up next to
 /// it (`using utils;` reads `utils.belsk2` from the same directory).
 pub fn load_file(file: &Path) -> Result<Loaded, (Vec<Error>, SourceMap)> {
-    let mut loader = Loader::new();
+    let mut loader = Loader::new(&Options::default());
     let dir = file.parent().map(Path::to_path_buf).unwrap_or_default();
     let name = file
         .file_stem()
@@ -212,8 +283,14 @@ fn collect_files(dir: &Path, out: &mut Vec<PathBuf>) {
 }
 
 impl Loader {
-    fn new() -> Self {
+    fn new(options: &Options) -> Self {
         Loader {
+            git: GitCache::new(&options.home, options.offline),
+            update: options.update,
+            old_lock: Lockfile::default(),
+            new_lock: Vec::new(),
+            git_sources: HashMap::new(),
+            failed_deps: Vec::new(),
             packages: Vec::new(),
             package_by_root: HashMap::new(),
             modules: Vec::new(),
@@ -260,10 +337,17 @@ impl Loader {
             deps: BTreeMap::new(),
         });
         for (name, spec) in &manifest.dependencies {
-            let Some(dep_root) = self.locate_dependency(root, name, spec) else {
+            let Some((dep_root, locked)) = self.locate_dependency(root, name, spec) else {
+                self.failed_deps.push((idx, module_name(name)));
                 continue;
             };
             if let Some(dep) = self.load_package(&dep_root) {
+                if let (Some(mut entry), Some(p)) = (locked, self.packages.get(dep)) {
+                    entry.version = p.version.clone();
+                    if !self.new_lock.contains(&entry) {
+                        self.new_lock.push(entry);
+                    }
+                }
                 let actual = self
                     .packages
                     .get(dep)
@@ -283,8 +367,14 @@ impl Loader {
         Some(idx)
     }
 
-    /// The directory a dependency lives in.
-    fn locate_dependency(&mut self, root: &Path, name: &str, spec: &Dependency) -> Option<PathBuf> {
+    /// The directory a dependency lives in, and for git dependencies the
+    /// entry for `belsk2.lock`.
+    fn locate_dependency(
+        &mut self,
+        root: &Path,
+        name: &str,
+        spec: &Dependency,
+    ) -> Option<(PathBuf, Option<LockedPackage>)> {
         if let Some(path) = &spec.path {
             let dir = root.join(path);
             if !dir.join(MANIFEST).is_file() {
@@ -295,13 +385,64 @@ impl Loader {
                 )));
                 return None;
             }
-            return Some(dir);
+            return Some((dir, None));
         }
-        self.errors.push(Error::project(format!(
-            "{}: dependency \"{name}\": git dependencies are not supported yet",
-            root.join(MANIFEST).display()
-        )));
-        None
+        let manifest = root.join(MANIFEST);
+        let url = normalize_url(spec.git.as_deref().unwrap_or_default(), root);
+        let reference = GitRef::of(spec);
+        let reference_key = reference.to_lock();
+        let locked = if self.update {
+            None
+        } else {
+            self.old_lock
+                .find(&url, &reference_key)
+                .map(|p| p.commit.clone())
+        };
+        let commit = match locked {
+            Some(c) => c,
+            None => match self.git.resolve(&url, &reference) {
+                Ok(c) => c,
+                Err(msg) => {
+                    self.errors.push(git::error(&manifest, name, msg));
+                    return None;
+                }
+            },
+        };
+        if let Some((other_url, other_commit)) = self.git_sources.get(name) {
+            if *other_url != url || *other_commit != commit {
+                self.errors.push(Error::project(format!(
+                    "package \"{name}\" is used from two different sources: {other_url} at {} and {url} at {}",
+                    short(other_commit),
+                    short(&commit)
+                )));
+                return None;
+            }
+        }
+        self.git_sources
+            .insert(name.to_string(), (url.clone(), commit.clone()));
+        let dir = match self.git.checkout(&url, &commit) {
+            Ok(d) => d,
+            Err(msg) => {
+                self.errors.push(git::error(&manifest, name, msg));
+                return None;
+            }
+        };
+        if !dir.join(MANIFEST).is_file() {
+            self.errors.push(git::error(
+                &manifest,
+                name,
+                format!("{url} has no {MANIFEST} at its root"),
+            ));
+            return None;
+        }
+        let entry = LockedPackage {
+            name: name.to_string(),
+            version: String::new(),
+            git: url,
+            reference: reference_key,
+            commit,
+        };
+        Some((dir, Some(entry)))
     }
 
     /// Reads and parses a module, then the modules it uses.
@@ -367,6 +508,13 @@ impl Loader {
     fn resolve_using(&mut self, package: usize, parts: &[String], span: Span) -> Option<ModuleId> {
         let pkg = self.packages.get(package)?;
         let (first, rest) = parts.split_first()?;
+        if self
+            .failed_deps
+            .iter()
+            .any(|(p, n)| *p == package && n == first)
+        {
+            return None;
+        }
         let dotted = parts.join(".");
         let local = module_file(&pkg.src, parts);
 
