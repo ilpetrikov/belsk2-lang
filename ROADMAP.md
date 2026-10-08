@@ -12,7 +12,7 @@
 ## Next
 
 ### Projects and build
-- [ ] `belsk2.toml` (name, version, ...), `belsk2 new`, `belsk2 run` for a project
+- [x] `belsk2.toml` (name, version, ...), `belsk2 new`/`init`/`run`/`check`/`build`, modules (`using`), path dependencies
 - [ ] Dependencies from git, lock file
 - [ ] WASM compiler (codegen, memory model, WASI 0.2)
 - [ ] wit-bindgen backend: export/import WIT interfaces
@@ -47,3 +47,7 @@
       with `.Key` and `.Value`. Switch to that once `struct` exists
       (and update `examples/collections.belsk2` and the tests).
 - [ ] Function types (`fn(int): bool`) instead of the untyped `fn`; comes with lambdas.
+- [ ] `belsk2 build` only checks the project; it should produce output once the WASM backend exists.
+- [ ] Access modifiers for modules: today every top-level function and variable is exported.
+      Add `public`/`private` together with the class access modifiers.
+- [ ] The IDE runs a temporary file, so `using` does not work there; the Tauri IDE should run projects.

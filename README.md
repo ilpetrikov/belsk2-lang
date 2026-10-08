@@ -19,6 +19,7 @@ for i in [0, 1, 2, 3, 4, 5] {
 |---|---|
 | `lang/syntax` | `belsk2-syntax`: lexer, parser, AST, error type |
 | `lang/typeck` | `belsk2-typeck`: static checker that runs before the program starts |
+| `lang/project` | `belsk2-project`: `belsk2.toml`, modules and dependencies |
 | `lang/interp` | `belsk2-interp`: the interpreter and built-in functions |
 | `lang/belsk2` | `belsk2`: the main crate that re-exports everything (use this from Rust) |
 | `cli` | `belsk2` command-line tool |
@@ -38,11 +39,46 @@ The `belsk2` binary ends up in `target/release/`.
 ## Usage
 
 ```sh
-belsk2 program.belsk2        # run a file
-belsk2 run program.belsk2    # same
-belsk2 check program.belsk2  # compile-time checks only, nothing runs
+belsk2 new hello             # create a project (--lib for a library)
+cd hello
+belsk2 run                   # run the project
+belsk2 check                 # check every file of the project, nothing runs
+belsk2 build                 # check the project and its dependencies
+
+belsk2 run program.belsk2    # run a single file (also: `belsk2 program.belsk2`)
+belsk2 check a.belsk2        # check single files
 belsk2 repl                  # interactive session (also: `belsk2` with no arguments)
 ```
+
+## Projects and modules
+
+A project is a directory with a `belsk2.toml`:
+
+```toml
+[package]
+name = "hello"
+version = "0.1.0"
+
+[dependencies]
+utils = { path = "../utils" }
+```
+
+`src/main.belsk2` is where a program starts; a library has `src/lib.belsk2`.
+Every other file under `src` is a module that other files import with
+`using`:
+
+```belsk2
+using text.format;   // src/text/format.belsk2
+using utils;         // the `utils` dependency (its src/lib.belsk2)
+using utils.math;    // the dependency's src/math.belsk2
+
+prinb(shout("hi"));
+```
+
+A module's top-level functions and variables are visible to the files that
+use it (imported variables are read-only). A module's top-level code runs
+once, before the modules that use it. A single file run with `belsk2 run`
+can also use the files next to it.
 
 Programs are checked before they run: wrong argument counts, type
 mismatches (`1 - "a"`, `len(5)`, `num("abc")`), undefined names and so on are

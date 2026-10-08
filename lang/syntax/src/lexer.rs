@@ -1,8 +1,9 @@
 use crate::error::{Error, Result};
-use crate::span::Span;
+use crate::span::{FileId, Span};
 use crate::token::{Token, TokenKind};
 
 pub struct Lexer {
+    file: FileId,
     input: Vec<char>,
     pos: usize,
     line: usize,
@@ -14,9 +15,17 @@ pub fn tokenize(source: &str) -> Result<Vec<Token>> {
     Lexer::new(source).tokenize()
 }
 
+/// Like [`tokenize`], with spans pointing into file `file`.
+pub fn tokenize_file(source: &str, file: FileId) -> Result<Vec<Token>> {
+    let mut lexer = Lexer::new(source);
+    lexer.file = file;
+    lexer.tokenize()
+}
+
 impl Lexer {
     pub fn new(source: &str) -> Self {
         Lexer {
+            file: 0,
             input: source.chars().collect(),
             pos: 0,
             line: 1,
@@ -33,7 +42,7 @@ impl Lexer {
     }
 
     fn span(&self) -> Span {
-        Span::new(self.line, self.col)
+        Span::in_file(self.file, self.line, self.col)
     }
 
     fn bump(&mut self) -> Option<char> {

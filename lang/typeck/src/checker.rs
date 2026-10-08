@@ -15,6 +15,9 @@ struct FnCtx {
 /// and collects every error it finds.
 pub struct Checker {
     scopes: Vec<HashMap<String, Ty>>,
+    /// Names imported with `using`, and the module each comes from. They
+    /// live in the outermost scope and are read-only.
+    imports: HashMap<String, String>,
     /// Type parameters of the generic functions being checked.
     type_params: Vec<Vec<Rc<str>>>,
     fns: Vec<FnCtx>,
@@ -203,6 +206,7 @@ impl Checker {
     pub fn new() -> Self {
         Checker {
             scopes: vec![HashMap::new()],
+            imports: HashMap::new(),
             type_params: Vec::new(),
             fns: Vec::new(),
             errors: Vec::new(),
@@ -217,14 +221,32 @@ impl Checker {
         }
     }
 
+    /// Makes a declaration of another module visible (read-only), as
+    /// `using` does.
+    pub fn declare_import(&mut self, name: &str, ty: Ty, module: &str) {
+        self.declare_global(name, ty);
+        self.imports.insert(name.to_string(), module.to_string());
+    }
+
     /// Checks a program, filling in types and implicit conversions.
     /// Returns all errors, in source order.
-    pub fn check_program(mut self, program: &mut Program) -> Vec<Error> {
+    pub fn check_program(self, program: &mut Program) -> Vec<Error> {
+        self.check_module(program).0
+    }
+
+    /// Like [`Checker::check_program`], also returning the types of the
+    /// program's top-level declarations, which other modules can import.
+    pub fn check_module(mut self, program: &mut Program) -> (Vec<Error>, Vec<(String, Ty)>) {
         // The program gets its own scope so it may shadow predeclared globals.
         self.scopes.push(HashMap::new());
         self.check_stmts(&mut program.stmts);
         self.errors.sort_by_key(|e| e.span);
-        self.errors
+        let exports = self
+            .scopes
+            .pop()
+            .map(|s| s.into_iter().collect())
+            .unwrap_or_default();
+        (self.errors, exports)
     }
 
     fn error(&mut self, e: Error) {
@@ -233,6 +255,12 @@ impl Checker {
 
     fn type_error(&mut self, msg: impl Into<String>, span: Span) {
         self.error(Error::type_error(msg).at(span));
+    }
+
+    /// Whether `name` currently refers to an imported declaration.
+    fn is_import(&self, name: &str) -> bool {
+        let innermost = self.scopes.iter().rposition(|s| s.contains_key(name));
+        innermost == Some(0) && self.imports.contains_key(name)
     }
 
     fn lookup(&self, name: &str) -> Option<&Ty> {
@@ -428,6 +456,8 @@ impl Checker {
     fn check_stmt(&mut self, stmt: &mut Stmt) {
         let span = stmt.span;
         match &mut stmt.kind {
+            // Resolved by the project loader before checking.
+            StmtKind::Using(_) => {}
             StmtKind::Expr(e) => {
                 self.expr(e);
             }
@@ -589,14 +619,22 @@ impl Checker {
     fn place(&mut self, target: &mut Expr) -> Option<Ty> {
         let span = target.span;
         let ty = match &mut target.kind {
-            ExprKind::Ident(name) => match self.lookup(name).cloned() {
-                Some(ty) => Some(ty),
-                None => {
-                    let msg = format!("undefined variable '{name}'");
-                    self.type_error(msg, span);
-                    None
+            ExprKind::Ident(name) => {
+                match self.lookup(name).cloned() {
+                    Some(_) if self.is_import(name) => {
+                        let module = self.imports.get(name.as_str()).cloned().unwrap_or_default();
+                        let msg = format!("'{name}' is imported from module '{module}' and cannot be assigned here");
+                        self.type_error(msg, span);
+                        None
+                    }
+                    Some(ty) => Some(ty),
+                    None => {
+                        let msg = format!("undefined variable '{name}'");
+                        self.type_error(msg, span);
+                        None
+                    }
                 }
-            },
+            }
             ExprKind::Index { object, index } => {
                 let obj = self.expr(object);
                 if matches!(obj, Ty::String | Ty::Ster) {

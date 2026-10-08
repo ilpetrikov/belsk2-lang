@@ -1,0 +1,17 @@
+[package]
+name = "belsk2-project"
+description = "Projects (belsk2.toml), modules and dependencies for Belsk2"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+belsk2-syntax.workspace = true
+serde.workspace = true
+toml.workspace = true
+semver.workspace = true
+
+[lints]
+workspace = true

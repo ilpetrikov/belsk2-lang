@@ -114,6 +114,16 @@ impl Interpreter {
     /// and conversions the checker added.
     pub fn compile(&self, source: &str) -> std::result::Result<Program, Vec<Error>> {
         let mut program = belsk2_syntax::parse(source).map_err(|e| vec![e])?;
+        if let Some(stmt) = program
+            .stmts
+            .iter()
+            .find(|s| matches!(s.kind, StmtKind::Using(_)))
+        {
+            return Err(vec![Error::syntax(
+                "'using' needs a file or a project; run the program with `belsk2 run`",
+                stmt.span,
+            )]);
+        }
         let mut checker = Checker::new();
         for (name, ty) in self.globals.borrow().static_types() {
             checker.declare_global(&name, ty);
@@ -142,6 +152,37 @@ impl Interpreter {
         }
         out.flush()?;
         Ok(())
+    }
+
+    /// Runs one module of a multi-file program in its own scope. `imports`
+    /// are the declarations its `using` statements bring in. Returns the
+    /// module's top-level declarations, for modules that import it.
+    pub fn run_module(
+        &mut self,
+        program: &Program,
+        imports: &[(String, Value, Ty)],
+        out: &mut dyn Write,
+    ) -> Result<Vec<(String, Value, Ty)>> {
+        let import_env = Env::child(&self.globals);
+        for (name, value, ty) in imports {
+            import_env
+                .borrow_mut()
+                .define(name, value.clone(), ty.clone());
+        }
+        let module_env = Env::child(&import_env);
+        self.call_depth = 0;
+        hoist_functions(&program.stmts, &module_env);
+        for stmt in &program.stmts {
+            match self.exec(stmt, &module_env, out)? {
+                Flow::Normal => {}
+                Flow::Return(_) | Flow::Break | Flow::Continue => {
+                    return Err(Error::runtime("unexpected control flow at top level").at(stmt.span))
+                }
+            }
+        }
+        out.flush()?;
+        let exports = module_env.borrow().entries();
+        Ok(exports)
     }
 
     /// Defines (or overwrites) a global variable. Unlike `=` assignment this
@@ -199,6 +240,8 @@ impl Interpreter {
 
     fn exec_inner(&mut self, stmt: &Stmt, env: &EnvRef, out: &mut dyn Write) -> Result<Flow> {
         match &stmt.kind {
+            // Imports are bound by `run_module` before the module runs.
+            StmtKind::Using(_) => {}
             StmtKind::Expr(e) => {
                 self.eval(e, env, out)?;
             }

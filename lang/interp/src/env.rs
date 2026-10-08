@@ -41,6 +41,14 @@ impl Env {
         self.vars.insert(name.to_string(), Slot { value, ty });
     }
 
+    /// The variables declared in this scope: name, value and type.
+    pub fn entries(&self) -> Vec<(String, Value, Ty)> {
+        self.vars
+            .iter()
+            .map(|(name, slot)| (name.clone(), slot.value.clone(), slot.ty.clone()))
+            .collect()
+    }
+
     /// Static types of the variables in this scope, for the checker.
     pub fn static_types(&self) -> Vec<(String, Ty)> {
         self.vars

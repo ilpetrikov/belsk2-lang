@@ -13,11 +13,14 @@
 use std::io::Write;
 use std::path::Path;
 
+pub mod project;
+
 pub use belsk2_interp::{
     format_float, Array, Error, ErrorKind, FloatKind, Function, Input, IntKind, Interpreter,
     Result, Span, Ty, Value, BUILTINS, DEFAULT_MAX_CALL_DEPTH,
 };
 pub use belsk2_syntax as syntax;
+pub use belsk2_syntax::{SourceFile, SourceMap};
 pub use belsk2_typeck as typeck;
 
 /// The language version.

@@ -1,6 +1,6 @@
 use std::fmt;
 
-use crate::span::Span;
+use crate::span::{SourceMap, Span};
 
 /// Which stage of the toolchain produced an [`Error`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -13,6 +13,8 @@ pub enum ErrorKind {
     Runtime,
     /// Reading or writing failed (files, stdin, stdout).
     Io,
+    /// A problem with `belsk2.toml`, modules or dependencies.
+    Project,
 }
 
 impl ErrorKind {
@@ -22,6 +24,7 @@ impl ErrorKind {
             ErrorKind::Type => "type error",
             ErrorKind::Runtime => "runtime error",
             ErrorKind::Io => "io error",
+            ErrorKind::Project => "project error",
         }
     }
 }
@@ -66,6 +69,10 @@ impl Error {
         Error::new(ErrorKind::Io, message)
     }
 
+    pub fn project(message: impl Into<String>) -> Self {
+        Error::new(ErrorKind::Project, message)
+    }
+
     /// Sets the location of the error.
     pub fn at(mut self, span: Span) -> Self {
         self.span = Some(span);
@@ -90,6 +97,14 @@ impl Error {
     /// 3 | var x = 10 / 0;
     ///   |            ^
     /// ```
+    /// Renders the error using the file its span points to.
+    pub fn render_in(&self, sources: &SourceMap) -> String {
+        match self.span.and_then(|s| sources.get(s.file)) {
+            Some(f) => self.render(&f.text, Some(&f.name)),
+            None => self.render("", None),
+        }
+    }
+
     pub fn render(&self, source: &str, file: Option<&str>) -> String {
         let mut out = format!("{}: {}", self.kind.name(), self.message);
         let Some(span) = self.span else {

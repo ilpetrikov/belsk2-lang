@@ -22,6 +22,8 @@ pub struct Stmt {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum StmtKind {
+    /// `using a.b;` — makes the declarations of module `a.b` visible.
+    Using(Vec<String>),
     Expr(Expr),
     /// `var x = e`, `var x: T = e`, `T x = e`
     VarDecl(VarDecl),

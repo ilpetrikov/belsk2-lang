@@ -2,8 +2,8 @@ use std::rc::Rc;
 
 use crate::ast::*;
 use crate::error::{Error, Result};
-use crate::lexer::tokenize;
-use crate::span::Span;
+use crate::lexer::{tokenize, tokenize_file};
+use crate::span::{FileId, Span};
 use crate::token::{Token, TokenKind};
 use crate::types::{FloatKind, IntKind, Ty, TypeExpr, TypeExprKind};
 
@@ -14,13 +14,19 @@ pub const MAX_NESTING: usize = 256;
 
 /// Words that cannot be used as names.
 pub const KEYWORDS: &[&str] = &[
-    "var", "fn", "if", "else", "while", "for", "in", "return", "break", "continue", "idb", "true",
-    "false", "null",
+    "using", "var", "fn", "if", "else", "while", "for", "in", "return", "break", "continue", "idb",
+    "true", "false", "null",
 ];
 
 /// Parses a whole program.
 pub fn parse(source: &str) -> Result<Program> {
     let tokens = tokenize(source)?;
+    Parser::new(tokens).parse_program()
+}
+
+/// Parses a file; spans in the result (and in errors) point into `file`.
+pub fn parse_file(source: &str, file: FileId) -> Result<Program> {
+    let tokens = tokenize_file(source, file)?;
     Parser::new(tokens).parse_program()
 }
 
@@ -196,6 +202,7 @@ impl Parser {
                 "for" => return self.parse_for(),
                 "return" => return self.parse_return(),
                 "idb" => return self.parse_idb(),
+                "using" => return self.parse_using(),
                 "break" | "continue" => {
                     let is_break = t.text == "break";
                     if self.loop_depth == 0 {
@@ -399,6 +406,27 @@ impl Parser {
                 resolved: Ty::Any,
                 value,
             }),
+            span,
+        })
+    }
+
+    /// `using utils;`, `using net.http;`
+    fn parse_using(&mut self) -> Result<Stmt> {
+        let span = self.bump().span;
+        // `parse_stmt` counts as one level, so 1 is the top of the file.
+        if self.nesting != 1 || self.fn_depth > 0 {
+            return Err(Error::syntax(
+                "'using' must be at the top level of a file",
+                span,
+            ));
+        }
+        let mut path = vec![self.expect_name("a module name")?];
+        while self.eat(TokenKind::Dot) {
+            path.push(self.expect_name("a module name")?);
+        }
+        self.end_stmt();
+        Ok(Stmt {
+            kind: StmtKind::Using(path),
             span,
         })
     }

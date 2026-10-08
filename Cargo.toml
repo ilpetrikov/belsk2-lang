@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["cli", "lang/syntax", "lang/typeck", "lang/interp", "lang/belsk2"]
+members = ["cli", "lang/syntax", "lang/typeck", "lang/interp", "lang/project", "lang/belsk2"]
 
 [workspace.package]
 version = "0.4.0"
@@ -14,8 +14,12 @@ belsk2 = { path = "lang/belsk2" }
 belsk2-syntax = { path = "lang/syntax" }
 belsk2-typeck = { path = "lang/typeck" }
 belsk2-interp = { path = "lang/interp" }
+belsk2-project = { path = "lang/project" }
 stacker = "0.1"
 indexmap = "2"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+semver = "1"
 clap = { version = "4", features = ["derive"] }
 
 # The whole toolchain is panic-free: every failure is reported as a
