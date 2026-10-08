@@ -14,8 +14,8 @@ use std::io::Write;
 use std::path::Path;
 
 pub use belsk2_interp::{
-    format_number, Array, Error, ErrorKind, Function, Input, Interpreter, Result, Span, Ty, Value,
-    BUILTINS, DEFAULT_MAX_CALL_DEPTH,
+    format_float, Array, Error, ErrorKind, FloatKind, Function, Input, IntKind, Interpreter,
+    Result, Span, Ty, Value, BUILTINS, DEFAULT_MAX_CALL_DEPTH,
 };
 pub use belsk2_syntax as syntax;
 pub use belsk2_typeck as typeck;

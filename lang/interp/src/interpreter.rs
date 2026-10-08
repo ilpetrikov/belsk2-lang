@@ -3,13 +3,13 @@ use std::io::{BufRead, Write};
 use std::rc::Rc;
 
 use belsk2_syntax::ast::*;
-use belsk2_syntax::{BType, Error, Result, Span};
-
+use belsk2_syntax::{Error, Result, Span, Ty};
 use belsk2_typeck::Checker;
 
 use crate::builtins;
 use crate::env::{self, Env, EnvRef};
-use crate::value::{is_integral, Function, Value};
+use crate::num::{self, coerce, convert};
+use crate::value::{Function, Value};
 
 /// Default limit for nested function calls.
 pub const DEFAULT_MAX_CALL_DEPTH: usize = 10_000;
@@ -105,14 +105,15 @@ impl Interpreter {
 
     /// Parses and statically checks source code. Globals that already exist
     /// in this interpreter (from earlier runs or [`Interpreter::define_global`])
-    /// are visible to the checker.
+    /// are visible to the checker. The returned program carries the types
+    /// and conversions the checker added.
     pub fn compile(&self, source: &str) -> std::result::Result<Program, Vec<Error>> {
-        let program = belsk2_syntax::parse(source).map_err(|e| vec![e])?;
+        let mut program = belsk2_syntax::parse(source).map_err(|e| vec![e])?;
         let mut checker = Checker::new();
         for (name, ty) in self.globals.borrow().static_types() {
             checker.declare_global(&name, ty);
         }
-        let errors = checker.check_program(&program);
+        let errors = checker.check_program(&mut program);
         if errors.is_empty() {
             Ok(program)
         } else {
@@ -120,8 +121,7 @@ impl Interpreter {
         }
     }
 
-    /// Runs an already parsed program. It is not statically checked here;
-    /// [`Interpreter::compile`] does that.
+    /// Runs a program produced by [`Interpreter::compile`].
     pub fn run_program(&mut self, program: &Program, out: &mut dyn Write) -> Result<()> {
         let globals = Rc::clone(&self.globals);
         self.call_depth = 0;
@@ -141,9 +141,9 @@ impl Interpreter {
 
     /// Defines (or overwrites) a global variable. Unlike `=` assignment this
     /// never fails on a missing variable, which makes it suitable for
-    /// injecting host-side values.
+    /// injecting host-side values. Its static type is the type of `value`.
     pub fn define_global(&mut self, name: &str, value: Value) {
-        self.globals.borrow_mut().define(name, value, BType::Any);
+        self.globals.borrow_mut().define(name, value, Ty::Any);
     }
 
     pub fn get_global(&self, name: &str) -> Option<Value> {
@@ -155,7 +155,9 @@ impl Interpreter {
         matches!(self.get_global(name), Some(Value::Function(_)))
     }
 
-    /// Calls a global function by name and returns its result.
+    /// Calls a global function by name and returns its result. Arguments
+    /// are converted to the parameter types (`Value::from(7.0)` is accepted
+    /// for an `int` parameter only if it is a whole number).
     pub fn call_function(
         &mut self,
         name: &str,
@@ -166,7 +168,8 @@ impl Interpreter {
             return Err(Error::runtime(format!("undefined function '{name}'")));
         };
         self.call_depth = 0;
-        let result = self.call(&f, args.to_vec(), f.decl.span, out)?;
+        let args = args.iter().map(|a| host_arg(a.clone())).collect();
+        let result = self.call(&f, args, f.decl.span, out)?;
         out.flush()?;
         Ok(result)
     }
@@ -196,9 +199,8 @@ impl Interpreter {
             }
             StmtKind::VarDecl(d) => {
                 let value = self.eval(&d.value, env, out)?;
-                let ty = d.ty.unwrap_or(BType::Any);
-                let value = env::coerce(ty, value, &d.name)?;
-                env.borrow_mut().define(&d.name, value, ty);
+                let value = coerce(&d.resolved, value, &format!("'{}'", d.name))?;
+                env.borrow_mut().define(&d.name, value, d.resolved.clone());
             }
             StmtKind::Idb { id, value } => {
                 let value = self.eval(value, env, out)?;
@@ -208,8 +210,13 @@ impl Interpreter {
                 let value = self.eval(value, env, out)?;
                 self.assign(target, value, env, out)?;
             }
-            StmtKind::CompoundAssign { op, target, value } => {
-                self.compound_assign(*op, target, value, env, out)?;
+            StmtKind::CompoundAssign {
+                op,
+                target,
+                value,
+                cast,
+            } => {
+                self.compound_assign(*op, target, value, cast, env, out)?;
             }
             // Defined by `hoist_functions` when the block was entered.
             StmtKind::FnDecl(_) => {}
@@ -244,10 +251,15 @@ impl Interpreter {
                     }
                 }
             }
-            StmtKind::For { var, iter, body } => {
+            StmtKind::For {
+                var,
+                var_ty,
+                iter,
+                body,
+            } => {
                 let items: Vec<Value> = match self.eval(iter, env, out)? {
                     Value::Array(a) => a.snapshot()?,
-                    Value::String(s) => s.chars().map(|c| Value::String(c.to_string())).collect(),
+                    Value::String(s) => s.chars().map(Value::Char).collect(),
                     other => {
                         return Err(Error::type_error(format!(
                             "cannot iterate over {}",
@@ -258,7 +270,8 @@ impl Interpreter {
                 };
                 for item in items {
                     let scope = Env::child(env);
-                    scope.borrow_mut().define(var, item, BType::Any);
+                    let item = coerce(var_ty, item, &format!("'{var}'"))?;
+                    scope.borrow_mut().define(var, item, var_ty.clone());
                     match self.exec_block(body, &scope, out)? {
                         Flow::Break => break,
                         Flow::Normal | Flow::Continue => {}
@@ -298,23 +311,34 @@ impl Interpreter {
         op: BinOp,
         target: &Expr,
         value: &Expr,
+        cast: &Ty,
         env: &EnvRef,
         out: &mut dyn Write,
     ) -> Result<()> {
+        let at = |e: Error| e.or_at(target.span);
+        // `x op= y` converts the result back to the type of `x`, which may
+        // narrow (`byte b; b += 1;`).
+        let finish = |v: Value| {
+            if cast.is_any() {
+                Ok(v)
+            } else {
+                convert(v, cast)
+            }
+        };
         match &target.kind {
             ExprKind::Index { object, index } => {
                 // Evaluate the array and index only once.
                 let obj = self.eval(object, env, out)?;
                 let idx = self.eval(index, env, out)?;
-                let current = get_index(&obj, &idx).map_err(|e| e.or_at(target.span))?;
+                let current = get_index(&obj, &idx).map_err(at)?;
                 let rhs = self.eval(value, env, out)?;
-                let new = binary(op, &current, &rhs).map_err(|e| e.or_at(target.span))?;
-                set_index(&obj, &idx, new).map_err(|e| e.or_at(target.span))
+                let new = binary(op, &current, &rhs).and_then(finish).map_err(at)?;
+                set_index(&obj, &idx, new).map_err(at)
             }
             _ => {
                 let current = self.eval(target, env, out)?;
                 let rhs = self.eval(value, env, out)?;
-                let new = binary(op, &current, &rhs).map_err(|e| e.or_at(target.span))?;
+                let new = binary(op, &current, &rhs).and_then(finish).map_err(at)?;
                 self.assign(target, new, env, out)
             }
         }
@@ -328,12 +352,17 @@ impl Interpreter {
 
     fn eval_inner(&mut self, expr: &Expr, env: &EnvRef, out: &mut dyn Write) -> Result<Value> {
         match &expr.kind {
-            ExprKind::Number(n) => Ok(Value::Number(*n)),
+            ExprKind::Int(v, k) => Ok(Value::Int(*v, *k)),
+            ExprKind::Float(v, k) => Ok(Value::Float(*v, *k)),
             ExprKind::String(s) => Ok(Value::String(s.clone())),
             ExprKind::Bool(b) => Ok(Value::Bool(*b)),
             ExprKind::Null => Ok(Value::Null),
             ExprKind::Ident(name) => env::lookup(env, name)
                 .ok_or_else(|| Error::runtime(format!("undefined variable '{name}'"))),
+            ExprKind::Convert { expr: inner, to } => {
+                let v = self.eval(inner, env, out)?;
+                convert(v, to)
+            }
             ExprKind::Array(items) => {
                 let mut values = Vec::with_capacity(items.len());
                 for item in items {
@@ -343,13 +372,10 @@ impl Interpreter {
             }
             ExprKind::Unary { op, expr: inner } => {
                 let v = self.eval(inner, env, out)?;
-                match (op, v) {
-                    (UnaryOp::Not, v) => Ok(Value::Bool(!v.is_truthy())),
-                    (UnaryOp::Neg, Value::Number(n)) => Ok(Value::Number(-n)),
-                    (UnaryOp::Neg, v) => Err(Error::type_error(format!(
-                        "cannot negate {}",
-                        v.type_name()
-                    ))),
+                match op {
+                    UnaryOp::Not => Ok(Value::Bool(!v.is_truthy())),
+                    UnaryOp::Neg => num::negate(&v),
+                    UnaryOp::BitNot => num::bit_not(&v),
                 }
             }
             ExprKind::Binary {
@@ -462,12 +488,11 @@ impl Interpreter {
 
         let scope = Env::child(&f.env);
         for (param, arg) in decl.params.iter().zip(args) {
-            let ty = param.ty.unwrap_or(BType::Any);
-            let value = env::coerce(ty, arg, &param.name).map_err(|e| {
-                e.or_at(span)
-                    .with_context(&format!("argument '{}' of '{}'", param.name, decl.name))
-            })?;
-            scope.borrow_mut().define(&param.name, value, ty);
+            let what = format!("argument '{}' of '{}'", param.name, decl.name);
+            let value = coerce(&param.resolved, arg, &what).map_err(|e| e.or_at(span))?;
+            scope
+                .borrow_mut()
+                .define(&param.name, value, param.resolved.clone());
         }
 
         self.call_depth += 1;
@@ -478,13 +503,24 @@ impl Interpreter {
             Flow::Return(v) => v,
             _ => Value::Null,
         };
-        match decl.ret {
-            Some(ty) => env::coerce(ty, result, "return value").map_err(|e| {
-                e.or_at(span)
-                    .with_context(&format!("return value of '{}'", decl.name))
-            }),
-            None => Ok(result),
+        let what = format!("the return value of '{}'", decl.name);
+        coerce(&decl.ret_resolved, result, &what).map_err(|e| e.or_at(span))
+    }
+}
+
+/// Values handed in by the host are converted to the most natural Belsk2
+/// type: a whole `double` becomes an `int` (or `long`) so that
+/// `call_function("f", &[Value::from(7.0)])` works for `fn f(x: int)`.
+fn host_arg(v: Value) -> Value {
+    match v {
+        Value::Float(f, _) if f.fract() == 0.0 && f.abs() <= i64::MAX as f64 => {
+            let i = f as i64;
+            match i32::try_from(i) {
+                Ok(small) => Value::int(small),
+                Err(_) => Value::from(i),
+            }
         }
+        v => v,
     }
 }
 
@@ -496,43 +532,26 @@ fn hoist_functions(stmts: &[Stmt], env: &EnvRef) {
                 decl: Rc::clone(decl),
                 env: Rc::clone(env),
             };
+            let ty = belsk2_typeck::fn_type(decl);
             env.borrow_mut()
-                .define(&decl.name, Value::Function(Rc::new(f)), BType::Fn);
+                .define(&decl.name, Value::Function(Rc::new(f)), ty);
         }
     }
 }
 
-trait WithContext {
-    fn with_context(self, ctx: &str) -> Self;
-}
-
-impl WithContext for Error {
-    fn with_context(mut self, ctx: &str) -> Self {
-        self.message = format!("{} (in {ctx})", self.message);
-        self
-    }
-}
-
-/// Converts an index value to a position, rejecting fractions and negatives.
+/// Converts an index value to a position, rejecting non-integers and
+/// out-of-range values.
 fn to_index(idx: &Value, len: usize) -> Result<usize> {
-    let Value::Number(n) = idx else {
+    let Value::Int(i, _) = idx else {
         return Err(Error::type_error(format!(
-            "index must be a number, got {}",
+            "index must be an integer, got {}",
             idx.type_name()
         )));
     };
-    if !is_integral(*n) {
-        return Err(Error::type_error(format!(
-            "index must be a whole number, got {n}"
-        )));
-    }
-    if *n < 0.0 || *n >= len as f64 {
-        return Err(Error::runtime(format!(
-            "index {} is out of bounds (length {len})",
-            crate::value::format_number(*n)
-        )));
-    }
-    Ok(*n as usize)
+    usize::try_from(*i)
+        .ok()
+        .filter(|&i| i < len)
+        .ok_or_else(|| Error::runtime(format!("index {i} is out of bounds (length {len})")))
 }
 
 pub(crate) fn get_index(obj: &Value, idx: &Value) -> Result<Value> {
@@ -550,7 +569,7 @@ pub(crate) fn get_index(obj: &Value, idx: &Value) -> Result<Value> {
             let i = to_index(idx, len)?;
             s.chars()
                 .nth(i)
-                .map(|c| Value::String(c.to_string()))
+                .map(Value::Char)
                 .ok_or_else(|| Error::runtime("index out of bounds"))
         }
         other => Err(Error::type_error(format!(
@@ -581,6 +600,10 @@ fn set_index(obj: &Value, idx: &Value, value: Value) -> Result<()> {
     }
 }
 
+fn is_text(v: &Value) -> bool {
+    matches!(v, Value::String(_))
+}
+
 pub(crate) fn binary(op: BinOp, l: &Value, r: &Value) -> Result<Value> {
     use Value::*;
     let mismatch = || {
@@ -591,45 +614,45 @@ pub(crate) fn binary(op: BinOp, l: &Value, r: &Value) -> Result<Value> {
             r.type_name()
         ))
     };
-    Ok(match op {
-        BinOp::Eq => Bool(l == r),
-        BinOp::Ne => Bool(l != r),
-        BinOp::And => Bool(l.is_truthy() && r.is_truthy()),
-        BinOp::Or => Bool(l.is_truthy() || r.is_truthy()),
-        BinOp::Add => match (l, r) {
-            (Number(a), Number(b)) => Number(a + b),
-            (String(_), _) | (_, String(_)) => String(format!("{l}{r}")),
-            _ => return Err(mismatch()),
-        },
-        BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Rem => {
-            let (Number(a), Number(b)) = (l, r) else {
-                return Err(mismatch());
-            };
-            match op {
-                BinOp::Sub => Number(a - b),
-                BinOp::Mul => Number(a * b),
-                BinOp::Div if *b == 0.0 => return Err(Error::runtime("division by zero")),
-                BinOp::Div => Number(a / b),
-                BinOp::Rem if *b == 0.0 => return Err(Error::runtime("division by zero")),
-                _ => Number(a % b),
-            }
+    match op {
+        BinOp::Eq => return Ok(Bool(l == r)),
+        BinOp::Ne => return Ok(Bool(l != r)),
+        BinOp::And => return Ok(Bool(l.is_truthy() && r.is_truthy())),
+        BinOp::Or => return Ok(Bool(l.is_truthy() || r.is_truthy())),
+        BinOp::Add if is_text(l) || is_text(r) || matches!((l, r), (Char(_), Char(_))) => {
+            return Ok(String(format!("{l}{r}")))
         }
         BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge => {
             let ord = match (l, r) {
-                (Number(a), Number(b)) => a.partial_cmp(b),
                 (String(a), String(b)) => Some(a.cmp(b)),
-                _ => return Err(mismatch()),
+                (Char(a), Char(b)) => Some(a.cmp(b)),
+                _ => match num::compare(l, r) {
+                    Some(o) => Some(o),
+                    // Comparisons with NaN are always false.
+                    None if l.as_f64().is_some() && r.as_f64().is_some() => None,
+                    None => return Err(mismatch()),
+                },
             };
             let Some(ord) = ord else {
-                // Comparisons with NaN are always false.
                 return Ok(Bool(false));
             };
-            Bool(match op {
+            return Ok(Bool(match op {
                 BinOp::Lt => ord.is_lt(),
                 BinOp::Gt => ord.is_gt(),
                 BinOp::Le => ord.is_le(),
                 _ => ord.is_ge(),
-            })
+            }));
         }
-    })
+        BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor => {
+            if let (Bool(a), Bool(b)) = (l, r) {
+                return Ok(Bool(match op {
+                    BinOp::BitAnd => a & b,
+                    BinOp::BitOr => a | b,
+                    _ => a ^ b,
+                }));
+            }
+        }
+        _ => {}
+    }
+    num::arith(op, l, r).unwrap_or_else(|| Err(mismatch()))
 }

@@ -2,9 +2,9 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use belsk2_syntax::{BType, Error, Result};
-use belsk2_typeck::Ty;
+use belsk2_syntax::{Error, Result, Ty};
 
+use crate::num::coerce;
 use crate::value::Value;
 
 /// Environments are shared: a block, loop body or closure sees (and can
@@ -13,7 +13,7 @@ pub type EnvRef = Rc<RefCell<Env>>;
 
 struct Slot {
     value: Value,
-    ty: BType,
+    ty: Ty,
 }
 
 #[derive(Default)]
@@ -35,8 +35,9 @@ impl Env {
     }
 
     /// Declares a variable in this scope, replacing any earlier declaration
-    /// with the same name. The value must already be checked with [`coerce`].
-    pub fn define(&mut self, name: &str, value: Value, ty: BType) {
+    /// with the same name. The value must already have type `ty`
+    /// (see [`coerce`]).
+    pub fn define(&mut self, name: &str, value: Value, ty: Ty) {
         self.vars.insert(name.to_string(), Slot { value, ty });
     }
 
@@ -45,14 +46,11 @@ impl Env {
         self.vars
             .iter()
             .map(|(name, slot)| {
-                let ty = match (&slot.value, slot.ty) {
+                let ty = match (&slot.value, &slot.ty) {
                     (Value::Function(f), _) => belsk2_typeck::fn_type(&f.decl),
-                    (Value::Null, BType::Any) => Ty::Any,
-                    (Value::Bool(_), BType::Any) => Ty::Bool,
-                    (Value::Number(_), BType::Any) => Ty::Number,
-                    (Value::String(_), BType::Any) => Ty::String,
-                    (Value::Array(_), BType::Any) => Ty::Array,
-                    (_, declared) => Ty::from_btype(declared),
+                    (Value::Null, Ty::Any) => Ty::Any,
+                    (v, Ty::Any) => v.ty(),
+                    (_, declared) => declared.clone(),
                 };
                 (name.clone(), ty)
             })
@@ -82,7 +80,7 @@ pub fn assign(env: &EnvRef, name: &str, value: Value) -> Result<()> {
         let next = {
             let mut e = cur.borrow_mut();
             if let Some(slot) = e.vars.get_mut(name) {
-                slot.value = coerce(slot.ty, value, name)?;
+                slot.value = coerce(&slot.ty, value, &format!("'{name}'"))?;
                 return Ok(());
             }
             e.parent.clone()
@@ -91,24 +89,5 @@ pub fn assign(env: &EnvRef, name: &str, value: Value) -> Result<()> {
             Some(p) => cur = p,
             None => return Err(Error::runtime(format!("undefined variable '{name}'"))),
         }
-    }
-}
-
-/// Checks that `value` can be stored in a variable of type `ty` and converts
-/// it if needed (`int` drops the fractional part).
-pub fn coerce(ty: BType, value: Value, name: &str) -> Result<Value> {
-    if !value.fits(ty) {
-        return Err(Error::type_error(format!(
-            "cannot store {} value in '{name}' of type {ty}",
-            value.type_name()
-        )));
-    }
-    match (ty, value) {
-        (BType::Int, Value::Number(n)) => Ok(Value::Number(n.trunc())),
-        (BType::Bel, Value::Number(n)) if n > 1000.0 => Err(Error::type_error(format!(
-            "bel value {} exceeds the maximum of 1000 for '{name}'",
-            crate::value::format_number(n)
-        ))),
-        (_, v) => Ok(v),
     }
 }

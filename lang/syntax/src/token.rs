@@ -34,6 +34,20 @@ pub enum TokenKind {
     Or,
     Not,
     Arrow,
+    Amp,
+    Pipe,
+    Caret,
+    Tilde,
+    /// `<<`. There is no `>>` token: the parser joins two adjacent `>` so
+    /// that `List<List<int>>` lexes naturally.
+    Shl,
+    StarEq,
+    SlashEq,
+    PercentEq,
+    AmpEq,
+    PipeEq,
+    CaretEq,
+    ShlEq,
 }
 
 impl TokenKind {
@@ -71,6 +85,18 @@ impl TokenKind {
             TokenKind::Or => "'||'",
             TokenKind::Not => "'!'",
             TokenKind::Arrow => "'->'",
+            TokenKind::Amp => "'&'",
+            TokenKind::Pipe => "'|'",
+            TokenKind::Caret => "'^'",
+            TokenKind::Tilde => "'~'",
+            TokenKind::Shl => "'<<'",
+            TokenKind::StarEq => "'*='",
+            TokenKind::SlashEq => "'/='",
+            TokenKind::PercentEq => "'%='",
+            TokenKind::AmpEq => "'&='",
+            TokenKind::PipeEq => "'|='",
+            TokenKind::CaretEq => "'^='",
+            TokenKind::ShlEq => "'<<='",
         }
     }
 }

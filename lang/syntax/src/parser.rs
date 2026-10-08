@@ -5,7 +5,7 @@ use crate::error::{Error, Result};
 use crate::lexer::tokenize;
 use crate::span::Span;
 use crate::token::{Token, TokenKind};
-use crate::types::BType;
+use crate::types::{FloatKind, IntKind, Ty, TypeExpr, TypeExprKind};
 
 /// Maximum height of a single expression tree.
 pub const MAX_EXPR_DEPTH: u32 = 512;
@@ -215,21 +215,26 @@ impl Parser {
                 }
                 _ => {}
             }
-            // `int x = 5` — a type name directly followed by a name.
-            if let Some(ty) = BType::from_name(&t.text) {
-                if ty != BType::Fn && self.peek_at(1).kind == TokenKind::Ident {
-                    self.bump();
-                    return self.parse_typed_decl(ty, span);
-                }
+            // `int x = 5`, `string[] names = ...`
+            if let Some(ty) = self.try_decl_type() {
+                return self.parse_typed_decl(ty, span);
             }
         }
 
         let expr = self.parse_expr()?;
-        let assign_op = match self.kind() {
-            TokenKind::Eq => Some(None),
-            TokenKind::PlusEq => Some(Some(BinOp::Add)),
-            TokenKind::MinusEq => Some(Some(BinOp::Sub)),
-            _ => None,
+        let (assign_op, op_tokens) = match self.kind() {
+            TokenKind::Eq => (Some(None), 1),
+            TokenKind::PlusEq => (Some(Some(BinOp::Add)), 1),
+            TokenKind::MinusEq => (Some(Some(BinOp::Sub)), 1),
+            TokenKind::StarEq => (Some(Some(BinOp::Mul)), 1),
+            TokenKind::SlashEq => (Some(Some(BinOp::Div)), 1),
+            TokenKind::PercentEq => (Some(Some(BinOp::Rem)), 1),
+            TokenKind::AmpEq => (Some(Some(BinOp::BitAnd)), 1),
+            TokenKind::PipeEq => (Some(Some(BinOp::BitOr)), 1),
+            TokenKind::CaretEq => (Some(Some(BinOp::BitXor)), 1),
+            TokenKind::ShlEq => (Some(Some(BinOp::Shl)), 1),
+            TokenKind::Gt if self.adjacent(TokenKind::Gte) => (Some(Some(BinOp::Shr)), 2),
+            _ => (None, 0),
         };
         let Some(op) = assign_op else {
             self.end_stmt();
@@ -241,7 +246,9 @@ impl Parser {
         if !expr.is_place() {
             return Err(Error::syntax("invalid assignment target", expr.span));
         }
-        self.bump();
+        for _ in 0..op_tokens {
+            self.bump();
+        }
         let value = self.parse_expr()?;
         self.end_stmt();
         let kind = match op {
@@ -253,6 +260,7 @@ impl Parser {
                 op,
                 target: expr,
                 value,
+                cast: Ty::Any,
             },
         };
         Ok(Stmt { kind, span })
@@ -271,15 +279,66 @@ impl Parser {
         Ok(Block { stmts, span })
     }
 
-    fn parse_type(&mut self) -> Result<BType> {
+    /// Whether the next token is `kind` and directly touches the current
+    /// one (no space between), as the second `>` of `>>`.
+    fn adjacent(&self, kind: TokenKind) -> bool {
+        let (a, b) = (self.peek(), self.peek_at(1));
+        b.kind == kind && a.span.line == b.span.line && a.span.col + 1 == b.span.col
+    }
+
+    /// Parses a type: `int`, `string[]`, `List<int>`, `Dictionary<string, int[]>`.
+    fn parse_type(&mut self) -> Result<TypeExpr> {
+        self.enter()?;
+        let r = with_stack(|| self.parse_type_inner());
+        self.leave();
+        r
+    }
+
+    fn parse_type_inner(&mut self) -> Result<TypeExpr> {
         let t = self.peek().clone();
-        if t.kind != TokenKind::Ident {
+        if t.kind != TokenKind::Ident || (KEYWORDS.contains(&t.text.as_str()) && t.text != "fn") {
             return Err(self.unexpected("a type"));
         }
-        let ty = BType::from_name(&t.text)
-            .ok_or_else(|| Error::syntax(format!("unknown type '{}'", t.text), t.span))?;
         self.bump();
+        let mut args = Vec::new();
+        if self.kind() == TokenKind::Lt {
+            self.bump();
+            loop {
+                args.push(self.parse_type()?);
+                if !self.eat(TokenKind::Comma) {
+                    break;
+                }
+            }
+            self.expect(TokenKind::Gt)?;
+        }
+        let mut ty = TypeExpr {
+            kind: TypeExprKind::Named { name: t.text, args },
+            span: t.span,
+        };
+        while self.kind() == TokenKind::LBracket && self.peek_at(1).kind == TokenKind::RBracket {
+            self.bump();
+            self.bump();
+            ty = TypeExpr {
+                kind: TypeExprKind::Array(Box::new(ty)),
+                span: t.span,
+            };
+        }
         Ok(ty)
+    }
+
+    /// At the start of a statement: if it is a declaration like
+    /// `int x = ...` or `List<int> xs = ...`, consumes and returns the type.
+    /// Otherwise leaves the position unchanged.
+    fn try_decl_type(&mut self) -> Option<TypeExpr> {
+        let (pos, nesting) = (self.pos, self.nesting);
+        if let Ok(ty) = self.parse_type() {
+            if self.kind() == TokenKind::Ident && self.peek_at(1).kind == TokenKind::Eq {
+                return Some(ty);
+            }
+        }
+        self.pos = pos;
+        self.nesting = nesting;
+        None
     }
 
     fn parse_var_decl(&mut self) -> Result<Stmt> {
@@ -294,12 +353,17 @@ impl Parser {
         let value = self.parse_expr()?;
         self.end_stmt();
         Ok(Stmt {
-            kind: StmtKind::VarDecl(VarDecl { name, ty, value }),
+            kind: StmtKind::VarDecl(VarDecl {
+                name,
+                ty,
+                resolved: Ty::Any,
+                value,
+            }),
             span,
         })
     }
 
-    fn parse_typed_decl(&mut self, ty: BType, span: Span) -> Result<Stmt> {
+    fn parse_typed_decl(&mut self, ty: TypeExpr, span: Span) -> Result<Stmt> {
         let name = self.expect_name("a variable name")?;
         self.expect(TokenKind::Eq)?;
         let value = self.parse_expr()?;
@@ -308,6 +372,7 @@ impl Parser {
             kind: StmtKind::VarDecl(VarDecl {
                 name,
                 ty: Some(ty),
+                resolved: Ty::Any,
                 value,
             }),
             span,
@@ -317,7 +382,7 @@ impl Parser {
     fn parse_idb(&mut self) -> Result<Stmt> {
         let span = self.bump().span;
         let num = self.expect(TokenKind::Number)?;
-        let id = num.text.parse::<i64>().map_err(|_| {
+        let id = num.text.replace('_', "").parse::<i64>().map_err(|_| {
             Error::syntax(
                 format!("idb slot must be a whole number, found {}", num.text),
                 num.span,
@@ -355,6 +420,7 @@ impl Parser {
                 params.push(Param {
                     name: pname,
                     ty,
+                    resolved: Ty::Any,
                     span: pspan,
                 });
                 if !self.eat(TokenKind::Comma) {
@@ -381,6 +447,7 @@ impl Parser {
                 name,
                 params,
                 ret,
+                ret_resolved: Ty::Any,
                 body,
                 span,
             })),
@@ -444,7 +511,12 @@ impl Parser {
         let iter = self.parse_expr()?;
         let body = self.parse_loop_body()?;
         Ok(Stmt {
-            kind: StmtKind::For { var, iter, body },
+            kind: StmtKind::For {
+                var,
+                var_ty: Ty::Any,
+                iter,
+                body,
+            },
             span,
         })
     }
@@ -500,7 +572,19 @@ impl Parser {
     }
 
     fn parse_and(&mut self) -> Result<Expr> {
-        self.binary_level(&[(TokenKind::And, BinOp::And)], Self::parse_equality)
+        self.binary_level(&[(TokenKind::And, BinOp::And)], Self::parse_bit_or)
+    }
+
+    fn parse_bit_or(&mut self) -> Result<Expr> {
+        self.binary_level(&[(TokenKind::Pipe, BinOp::BitOr)], Self::parse_bit_xor)
+    }
+
+    fn parse_bit_xor(&mut self) -> Result<Expr> {
+        self.binary_level(&[(TokenKind::Caret, BinOp::BitXor)], Self::parse_bit_and)
+    }
+
+    fn parse_bit_and(&mut self) -> Result<Expr> {
+        self.binary_level(&[(TokenKind::Amp, BinOp::BitAnd)], Self::parse_equality)
     }
 
     fn parse_equality(&mut self) -> Result<Expr> {
@@ -511,15 +595,52 @@ impl Parser {
     }
 
     fn parse_relational(&mut self) -> Result<Expr> {
-        self.binary_level(
-            &[
-                (TokenKind::Lt, BinOp::Lt),
-                (TokenKind::Gt, BinOp::Gt),
-                (TokenKind::Lte, BinOp::Le),
-                (TokenKind::Gte, BinOp::Ge),
-            ],
-            Self::parse_additive,
-        )
+        let mut lhs = self.parse_shift()?;
+        loop {
+            let op = match self.kind() {
+                TokenKind::Lt => BinOp::Lt,
+                TokenKind::Lte => BinOp::Le,
+                TokenKind::Gte => BinOp::Ge,
+                // `>` directly followed by `>=` is the `>>=` operator.
+                TokenKind::Gt if !self.adjacent(TokenKind::Gte) => BinOp::Gt,
+                _ => return Ok(lhs),
+            };
+            let span = self.bump().span;
+            let rhs = self.parse_shift()?;
+            lhs = self.mk(
+                ExprKind::Binary {
+                    op,
+                    lhs: Box::new(lhs),
+                    rhs: Box::new(rhs),
+                },
+                span,
+            )?;
+        }
+    }
+
+    /// `<<` and `>>`. `>>` is two adjacent `>` tokens (see [`TokenKind::Shl`]).
+    fn parse_shift(&mut self) -> Result<Expr> {
+        let mut lhs = self.parse_additive()?;
+        loop {
+            let op = match self.kind() {
+                TokenKind::Shl => BinOp::Shl,
+                TokenKind::Gt if self.adjacent(TokenKind::Gt) => BinOp::Shr,
+                _ => return Ok(lhs),
+            };
+            let span = self.bump().span;
+            if op == BinOp::Shr {
+                self.bump();
+            }
+            let rhs = self.parse_additive()?;
+            lhs = self.mk(
+                ExprKind::Binary {
+                    op,
+                    lhs: Box::new(lhs),
+                    rhs: Box::new(rhs),
+                },
+                span,
+            )?;
+        }
     }
 
     fn parse_additive(&mut self) -> Result<Expr> {
@@ -547,6 +668,7 @@ impl Parser {
         let op = match self.kind() {
             TokenKind::Minus => UnaryOp::Neg,
             TokenKind::Not => UnaryOp::Not,
+            TokenKind::Tilde => UnaryOp::BitNot,
             _ => return self.parse_postfix(),
         };
         let span = self.bump().span;
@@ -633,10 +755,9 @@ impl Parser {
             }
             TokenKind::Number => {
                 self.bump();
-                let n = t.text.parse::<f64>().map_err(|_| {
-                    Error::syntax(format!("invalid number literal '{}'", t.text), span)
-                })?;
-                self.mk(ExprKind::Number(n), span)
+                let kind = parse_number(&t.text)
+                    .map_err(|msg| Error::syntax(format!("{msg}: '{}'", t.text), span))?;
+                self.mk(kind, span)
             }
             TokenKind::Ident => {
                 let kind = match t.text.as_str() {
@@ -665,4 +786,58 @@ impl Parser {
             _ => Err(self.unexpected("an expression")),
         }
     }
+}
+
+/// Interprets a number literal as C# does: an integer without suffix is the
+/// first of `int`, `uint`, `long`, `ulong` that can hold it; `u`, `l`, `ul`
+/// select unsigned/long types; a fraction or exponent makes a `double`, and
+/// `f`/`d` select `float`/`double`.
+fn parse_number(text: &str) -> std::result::Result<ExprKind, &'static str> {
+    let clean: String = text.chars().filter(|&c| c != '_').collect();
+    if text.ends_with('_') || text.contains("_.") || text.contains("._") {
+        return Err("misplaced '_' in number");
+    }
+    let lower = clean.to_ascii_lowercase();
+    let (radix, body) = if let Some(rest) = lower.strip_prefix("0x") {
+        (16, rest)
+    } else if let Some(rest) = lower.strip_prefix("0b") {
+        (2, rest)
+    } else {
+        (10, lower.as_str())
+    };
+    let is_digit =
+        |c: char| c.is_digit(radix) || (radix == 10 && matches!(c, '.' | 'e' | '+' | '-'));
+    let split = body.find(|c: char| !is_digit(c)).unwrap_or(body.len());
+    let (digits, suffix) = body.split_at(split);
+    if digits.is_empty() {
+        return Err("invalid number");
+    }
+
+    let is_float = radix == 10 && (digits.contains('.') || digits.contains('e'));
+    let float_kind = match suffix {
+        "f" if radix == 10 => Some(FloatKind::F32),
+        "d" if radix == 10 => Some(FloatKind::F64),
+        "" if is_float => Some(FloatKind::F64),
+        _ if is_float => return Err("invalid suffix for a floating-point number"),
+        _ => None,
+    };
+    if let Some(kind) = float_kind {
+        let v: f64 = digits.parse().map_err(|_| "invalid number")?;
+        return Ok(ExprKind::Float(kind.round(v), kind));
+    }
+
+    let v = u128::from_str_radix(digits, radix).map_err(|_| "integer literal is too large")?;
+    let v = i128::try_from(v).map_err(|_| "integer literal is too large")?;
+    let candidates: &[IntKind] = match suffix {
+        "" => &[IntKind::I32, IntKind::U32, IntKind::I64, IntKind::U64],
+        "u" => &[IntKind::U32, IntKind::U64],
+        "l" => &[IntKind::I64, IntKind::U64],
+        "ul" | "lu" => &[IntKind::U64],
+        _ => return Err("invalid number suffix"),
+    };
+    candidates
+        .iter()
+        .find(|k| k.fits(v))
+        .map(|&k| ExprKind::Int(v, k))
+        .ok_or("integer literal is too large")
 }

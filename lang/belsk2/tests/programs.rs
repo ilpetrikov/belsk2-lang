@@ -128,7 +128,7 @@ fn int_declarations_and_conversion_calls() {
     let src = r#"
         int x = 5;
         float(3);
-        int y = 7.9;
+        int y = int(7.9);
         prinb(x + y);
         prinb(int("42") + 1);
     "#;
@@ -141,7 +141,7 @@ fn type_reports_int_and_float() {
         run(
             r#"prinb(type(1)); prinb(type(1.5)); prinb(type("a")); prinb(type(null)); prinb(type([]));"#
         ),
-        "int\nfloat\nstring\nnull\narray\n"
+        "int\ndouble\nstring\nnull\narray\n"
     );
 }
 
@@ -180,11 +180,7 @@ fn declared_types_are_checked_on_assignment() {
     // `var` takes the type of its initializer, like C#.
     let e = run_err(r#"var x = 1; x = "now a string";"#);
     assert_eq!(e.kind, ErrorKind::Type);
-    assert!(
-        e.message
-            .contains("cannot store string value in 'x' of type number"),
-        "{e}"
-    );
+    assert!(e.message.contains("cannot use string as int in 'x'"), "{e}");
     assert_eq!(
         run(r#"var x: any = 1; x = "now a string"; prinb(x);"#),
         "now a string\n"
@@ -250,7 +246,7 @@ fn compile_errors() {
     for (src, needle) in [
         ("prinb(y);", "undefined variable"),
         ("y = 1;", "undefined variable"),
-        ("prinb(1 - \"a\");", "cannot apply '-' to number and string"),
+        ("prinb(1 - \"a\");", "cannot apply '-' to int and string"),
         ("prinb(true + 1);", "cannot apply '+'"),
         ("prinb([1] < [2]);", "cannot apply '<'"),
         ("prinb(-\"a\");", "cannot negate"),
@@ -258,20 +254,21 @@ fn compile_errors() {
         ("var x = 5; x();", "not a function"),
         ("prinb(num(\"abc\"));", "is not a number"),
         ("prinb(int(\"12x\"));", "is not a number"),
-        ("prinb(len(5));", "expects a string or array, got number"),
+        ("prinb(len(5));", "expects a string or array, got int"),
         ("prinb(1, 2);", "expects 0 to 1 arguments"),
         ("push([1]);", "expects 2 arguments"),
-        ("substr(\"abc\", \"1\", 2);", "a number for start"),
+        ("substr(\"abc\", \"1\", 2);", "an integer for start"),
         ("var s = \"ab\"; s[0] = \"x\";", "immutable"),
         ("var a = [1]; prinb(a.length);", "no member"),
-        ("var a = [1]; prinb(a[\"0\"]);", "index must be a number"),
+        ("var a = [1]; prinb(a[\"0\"]);", "index must be an integer"),
         ("fn f(a, b) { } f(1);", "expects 2 arguments, got 1"),
         (
             "fn f(a: int) { } f(\"x\");",
-            "argument 1 of 'f' must be number",
+            "cannot use string as int in argument 1 of 'f'",
         ),
         ("fn f(): string { return 1; }", "return value of 'f'"),
-        ("fn f() { } f = 5;", "of type fn"),
+        ("fn f() { } f = 5;", "cannot use int as fn"),
+        ("var x: number = 1;", "unknown type 'number'"),
         ("var x = 1; var x = 2;", "already declared"),
         ("fn f() { } fn f() { }", "already declared"),
         ("var f = len;", "can only be called"),
@@ -312,7 +309,10 @@ fn runtime_errors() {
     for (src, needle) in [
         ("var a = [1]; prinb(a[1]);", "out of bounds"),
         ("var a = [1]; prinb(a[-1]);", "out of bounds"),
-        ("var a = [1]; prinb(a[0.5]);", "whole number"),
+        (
+            "var a = [1]; var i: any = 0.5; prinb(a[i]);",
+            "index must be an integer",
+        ),
         (
             "var a = [1, \"a\"]; prinb(a[0] - a[1]);",
             "cannot apply '-' to int and string",
@@ -355,12 +355,10 @@ fn syntax_errors() {
         ("while true { fn f() { break; } }", "outside of a loop"),
         ("1 = 2;", "invalid assignment target"),
         ("var x = \"abc", "unterminated string"),
-        ("var x = 1 & 2;", "'&&'"),
         ("var x = @;", "unexpected character"),
         ("for x of [1] { }", "expected 'in'"),
         ("var if = 1;", "keyword"),
         ("fn f(a, a) { }", "duplicate parameter"),
-        ("var x: number = 1;", "unknown type"),
         ("prinb(\"\\q\");", "unknown escape"),
     ] {
         let e = run_err(src);

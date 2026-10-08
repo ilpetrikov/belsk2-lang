@@ -3,7 +3,7 @@ use std::fmt;
 use std::rc::Rc;
 
 use belsk2_syntax::ast::FnDecl;
-use belsk2_syntax::{BType, Error, Result};
+use belsk2_syntax::{Error, FloatKind, IntKind, Result, Sig, Ty};
 
 use crate::env::EnvRef;
 
@@ -79,7 +79,11 @@ impl Drop for Array {
 pub enum Value {
     Null,
     Bool(bool),
-    Number(f64),
+    /// An integer of the given type; always within that type's range.
+    Int(i128, IntKind),
+    /// A floating-point number; `float` values are rounded to 32 bits.
+    Float(f64, FloatKind),
+    Char(char),
     String(String),
     Array(Array),
     Function(Rc<Function>),
@@ -104,16 +108,38 @@ impl Value {
         Value::String(s.into())
     }
 
-    /// The runtime type, as reported by `type(x)`.
-    pub fn type_name(&self) -> &'static str {
+    pub fn int(v: i32) -> Value {
+        Value::Int(v.into(), IntKind::I32)
+    }
+
+    pub fn double(v: f64) -> Value {
+        Value::Float(v, FloatKind::F64)
+    }
+
+    /// The runtime type.
+    pub fn ty(&self) -> Ty {
         match self {
-            Value::Null => "null",
-            Value::Bool(_) => "bool",
-            Value::Number(n) if is_integral(*n) => "int",
-            Value::Number(_) => "float",
-            Value::String(_) => "string",
-            Value::Array(_) => "array",
-            Value::Function(_) => "fn",
+            Value::Null => Ty::Null,
+            Value::Bool(_) => Ty::Bool,
+            Value::Int(_, k) => Ty::Int(*k),
+            Value::Float(_, k) => Ty::Float(*k),
+            Value::Char(_) => Ty::Char,
+            Value::String(_) => Ty::String,
+            Value::Array(_) => Ty::array(Ty::Any),
+            Value::Function(f) => Ty::Fn(Some(Rc::new(Sig {
+                name: f.decl.name.clone(),
+                params: f.decl.params.iter().map(|p| p.resolved.clone()).collect(),
+                ret: f.decl.ret_resolved.clone(),
+            }))),
+        }
+    }
+
+    /// The name of the runtime type, as reported by `type(x)`.
+    pub fn type_name(&self) -> String {
+        match self {
+            Value::Array(_) => "array".to_string(),
+            Value::Function(_) => "fn".to_string(),
+            v => v.ty().to_string(),
         }
     }
 
@@ -121,16 +147,28 @@ impl Value {
         match self {
             Value::Null => false,
             Value::Bool(b) => *b,
-            Value::Number(n) => *n != 0.0,
+            Value::Int(i, _) => *i != 0,
+            Value::Float(f, _) => *f != 0.0,
+            Value::Char(c) => *c != '\0',
             Value::String(s) => !s.is_empty(),
             Value::Array(a) => !a.is_empty(),
             Value::Function(_) => true,
         }
     }
 
-    pub fn as_number(&self) -> Option<f64> {
+    /// The value as an `i64`, if it is an integer that fits.
+    pub fn as_i64(&self) -> Option<i64> {
         match self {
-            Value::Number(n) => Some(*n),
+            Value::Int(i, _) => i64::try_from(*i).ok(),
+            _ => None,
+        }
+    }
+
+    /// The value as an `f64`, if it is a number.
+    pub fn as_f64(&self) -> Option<f64> {
+        match self {
+            Value::Int(i, _) => Some(*i as f64),
+            Value::Float(f, _) => Some(*f),
             _ => None,
         }
     }
@@ -142,17 +180,18 @@ impl Value {
         }
     }
 
-    /// Whether a value of this kind may be stored in a variable of type `ty`.
-    pub fn fits(&self, ty: BType) -> bool {
-        match (ty, self) {
-            (BType::Any, _) => true,
-            (BType::Bel | BType::Ster, Value::Null) => false,
-            (_, Value::Null) => true,
-            (BType::Int | BType::Float | BType::Bel, Value::Number(_)) => true,
-            (BType::String | BType::Ster, Value::String(_)) => true,
-            (BType::Bool, Value::Bool(_)) => true,
-            (BType::Array, Value::Array(_)) => true,
-            (BType::Fn, Value::Function(_)) => true,
+    /// Whether this value already has type `ty` (no conversion needed).
+    pub fn fits(&self, ty: &Ty) -> bool {
+        match (ty.canonical(), self) {
+            (Ty::Any, _) => true,
+            (t, Value::Null) => t.nullable(),
+            (Ty::Bool, Value::Bool(_)) => true,
+            (Ty::Int(k), Value::Int(_, vk)) => k == *vk,
+            (Ty::Float(k), Value::Float(_, vk)) => k == *vk,
+            (Ty::Char, Value::Char(_)) => true,
+            (Ty::String, Value::String(_)) => true,
+            (Ty::Array(_), Value::Array(_)) => true,
+            (Ty::Fn(_), Value::Function(_)) => true,
             _ => false,
         }
     }
@@ -161,7 +200,9 @@ impl Value {
         match self {
             Value::Null => f.write_str("null"),
             Value::Bool(b) => write!(f, "{b}"),
-            Value::Number(n) => f.write_str(&format_number(*n)),
+            Value::Int(i, _) => write!(f, "{i}"),
+            Value::Float(v, k) => f.write_str(&format_float(*v, *k)),
+            Value::Char(c) => write!(f, "{c}"),
             Value::String(s) => f.write_str(s),
             Value::Function(func) => write!(f, "<fn {}>", func.decl.name),
             Value::Array(items) => {
@@ -194,11 +235,16 @@ impl fmt::Debug for Value {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Value::String(s) => write!(f, "{s:?}"),
+            Value::Char(c) => write!(f, "{c:?}"),
+            Value::Int(i, k) => write!(f, "{i}({})", k.name()),
+            Value::Float(v, k) => write!(f, "{}({})", format_float(*v, *k), k.name()),
             other => write!(f, "{other}"),
         }
     }
 }
 
+/// Numbers compare by value across types (`1 == 1.0`); a one-character
+/// string equals the same `char`.
 impl PartialEq for Value {
     fn eq(&self, other: &Self) -> bool {
         values_equal(self, other, 0)
@@ -207,10 +253,21 @@ impl PartialEq for Value {
 
 fn values_equal(a: &Value, b: &Value, depth: usize) -> bool {
     match (a, b) {
+        (Value::Char(x), Value::Char(y)) => return x == y,
+        _ => {
+            if let Some(eq) = crate::num::num_eq(a, b) {
+                return eq;
+            }
+        }
+    }
+    match (a, b) {
         (Value::Null, Value::Null) => true,
         (Value::Bool(x), Value::Bool(y)) => x == y,
-        (Value::Number(x), Value::Number(y)) => x == y,
         (Value::String(x), Value::String(y)) => x == y,
+        (Value::Char(c), Value::String(s)) | (Value::String(s), Value::Char(c)) => {
+            let mut chars = s.chars();
+            chars.next() == Some(*c) && chars.next().is_none()
+        }
         (Value::Function(x), Value::Function(y)) => Rc::ptr_eq(x, y),
         (Value::Array(x), Value::Array(y)) => {
             if x.ptr_eq(y) {
@@ -231,28 +288,52 @@ fn values_equal(a: &Value, b: &Value, depth: usize) -> bool {
     }
 }
 
-pub(crate) fn is_integral(n: f64) -> bool {
-    n.is_finite() && n.fract() == 0.0
-}
-
-/// Whole numbers print without a decimal point (`3`, not `3.0`).
-pub fn format_number(n: f64) -> String {
-    if is_integral(n) && n.abs() < 1e15 {
-        format!("{}", n as i64)
-    } else {
-        format!("{n}")
+/// Formats a floating-point number the way C# does by default: whole
+/// numbers without a decimal point (`3`), the shortest text that reads back
+/// as the same value otherwise (`0.1`, not `0.1000000015` for a `float`).
+pub fn format_float(v: f64, kind: FloatKind) -> String {
+    if v.is_nan() {
+        return "NaN".to_string();
+    }
+    if v.is_infinite() {
+        return if v > 0.0 { "Infinity" } else { "-Infinity" }.to_string();
+    }
+    if v.fract() == 0.0 && v.abs() < 1e15 {
+        return format!("{}", v as i64);
+    }
+    match kind {
+        FloatKind::F32 => format!("{}", v as f32),
+        FloatKind::F64 => format!("{v}"),
     }
 }
 
-impl From<f64> for Value {
-    fn from(n: f64) -> Self {
-        Value::Number(n)
+impl From<i32> for Value {
+    fn from(n: i32) -> Self {
+        Value::int(n)
     }
 }
 
 impl From<i64> for Value {
     fn from(n: i64) -> Self {
-        Value::Number(n as f64)
+        Value::Int(n.into(), IntKind::I64)
+    }
+}
+
+impl From<f64> for Value {
+    fn from(n: f64) -> Self {
+        Value::double(n)
+    }
+}
+
+impl From<f32> for Value {
+    fn from(n: f32) -> Self {
+        Value::Float(n.into(), FloatKind::F32)
+    }
+}
+
+impl From<char> for Value {
+    fn from(c: char) -> Self {
+        Value::Char(c)
     }
 }
 

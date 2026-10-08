@@ -136,13 +136,39 @@ impl Lexer {
         out
     }
 
+    /// Reads a number literal as written: `42`, `1_000`, `0xFF`, `0b1010`,
+    /// `3.14`, `1e-9`, with an optional suffix (`10L`, `2.5f`, ...). The
+    /// parser interprets the text.
     fn read_number(&mut self) -> String {
-        let mut text = self.read_while(|c| c.is_ascii_digit());
-        if self.peek() == Some('.') && self.peek_at(1).is_some_and(|c| c.is_ascii_digit()) {
-            self.bump();
-            text.push('.');
-            text.push_str(&self.read_while(|c| c.is_ascii_digit()));
+        let digit_or_sep = |c: char| c.is_ascii_digit() || c == '_';
+        if self.peek() == Some('0') && matches!(self.peek_at(1), Some('x' | 'X' | 'b' | 'B')) {
+            let mut text = String::new();
+            text.extend(self.bump());
+            text.extend(self.bump());
+            text.push_str(&self.read_while(|c| c.is_ascii_alphanumeric() || c == '_'));
+            return text;
         }
+        let mut text = self.read_while(digit_or_sep);
+        if self.peek() == Some('.') && self.peek_at(1).is_some_and(|c| c.is_ascii_digit()) {
+            text.extend(self.bump());
+            text.push_str(&self.read_while(digit_or_sep));
+        }
+        let exp_digit_at = match self.peek_at(1) {
+            Some('+' | '-') => 2,
+            _ => 1,
+        };
+        if matches!(self.peek(), Some('e' | 'E'))
+            && self
+                .peek_at(exp_digit_at)
+                .is_some_and(|c| c.is_ascii_digit())
+        {
+            for _ in 0..exp_digit_at {
+                text.extend(self.bump());
+            }
+            text.push_str(&self.read_while(digit_or_sep));
+        }
+        // Suffix (validated by the parser).
+        text.push_str(&self.read_while(|c| c.is_alphanumeric() || c == '_'));
         text
     }
 
@@ -183,6 +209,14 @@ impl Lexer {
                 ('=', Some('=')) => (TokenKind::EqEq, 2),
                 ('<', Some('=')) => (TokenKind::Lte, 2),
                 ('>', Some('=')) => (TokenKind::Gte, 2),
+                ('<', Some('<')) if self.peek_at(2) == Some('=') => (TokenKind::ShlEq, 3),
+                ('<', Some('<')) => (TokenKind::Shl, 2),
+                ('*', Some('=')) => (TokenKind::StarEq, 2),
+                ('/', Some('=')) => (TokenKind::SlashEq, 2),
+                ('%', Some('=')) => (TokenKind::PercentEq, 2),
+                ('&', Some('=')) => (TokenKind::AmpEq, 2),
+                ('|', Some('=')) => (TokenKind::PipeEq, 2),
+                ('^', Some('=')) => (TokenKind::CaretEq, 2),
                 ('(', _) => (TokenKind::LParen, 1),
                 (')', _) => (TokenKind::RParen, 1),
                 ('{', _) => (TokenKind::LBrace, 1),
@@ -202,8 +236,10 @@ impl Lexer {
                 ('%', _) => (TokenKind::Percent, 1),
                 ('<', _) => (TokenKind::Lt, 1),
                 ('>', _) => (TokenKind::Gt, 1),
-                ('&', _) => return Err(Error::syntax("unexpected '&' (did you mean '&&'?)", span)),
-                ('|', _) => return Err(Error::syntax("unexpected '|' (did you mean '||'?)", span)),
+                ('&', _) => (TokenKind::Amp, 1),
+                ('|', _) => (TokenKind::Pipe, 1),
+                ('^', _) => (TokenKind::Caret, 1),
+                ('~', _) => (TokenKind::Tilde, 1),
                 _ => {
                     return Err(Error::syntax(
                         format!("unexpected character '{}'", ch.escape_debug()),

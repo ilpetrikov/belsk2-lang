@@ -1,11 +1,14 @@
-//! Built-in functions available in every program.
+//! Built-in functions available in every program. Their static signatures
+//! live in `belsk2-typeck`; these checks only matter for values of type
+//! `any`.
 
 use std::io::Write;
 
-use belsk2_syntax::{Error, Result};
+use belsk2_syntax::{Error, Result, Ty};
 
 use crate::interpreter::Interpreter;
-use crate::value::{is_integral, Value};
+use crate::num::convert;
+use crate::value::Value;
 
 fn arity(name: &str, args: &[Value], min: usize, max: usize) -> Result<()> {
     if args.len() < min || args.len() > max {
@@ -14,9 +17,9 @@ fn arity(name: &str, args: &[Value], min: usize, max: usize) -> Result<()> {
         } else {
             format!("{min} to {max}")
         };
+        let plural = if min == max && max == 1 { "" } else { "s" };
         return Err(Error::runtime(format!(
-            "{name}() expects {expected} argument{}, got {}",
-            if min == max && max == 1 { "" } else { "s" },
+            "{name}() expects {expected} argument{plural}, got {}",
             args.len()
         )));
     }
@@ -30,16 +33,21 @@ fn wrong_type(name: &str, expected: &str, got: &Value) -> Error {
     ))
 }
 
-fn parse_number(name: &str, s: &str) -> Result<f64> {
-    s.trim()
-        .parse::<f64>()
-        .map_err(|_| Error::runtime(format!("{name}(): cannot convert \"{s}\" to a number")))
+/// An integer argument as `i64` (saturating for huge `ulong` values).
+fn int_arg(name: &str, what: &str, v: &Value) -> Result<i64> {
+    match v {
+        Value::Int(i, _) => Ok(i64::try_from(*i).unwrap_or(i64::MAX)),
+        other => Err(wrong_type(name, what, other)),
+    }
 }
 
-fn slot_id(name: &str, v: &Value) -> Result<i64> {
+/// A whole number naming an idb slot. Whole `double`s are accepted for
+/// compatibility with older programs.
+fn slot_of(v: &Value) -> Option<i64> {
     match v {
-        Value::Number(n) if is_integral(*n) => Ok(*n as i64),
-        other => Err(wrong_type(name, "a whole number (idb slot)", other)),
+        Value::Int(i, _) => i64::try_from(*i).ok(),
+        Value::Float(f, _) if f.fract() == 0.0 && f.abs() < 9e15 => Some(*f as i64),
+        _ => None,
     }
 }
 
@@ -49,10 +57,18 @@ pub fn call(
     args: Vec<Value>,
     out: &mut dyn Write,
 ) -> Result<Value> {
-    let mut it = args.iter();
-    let first = it.next();
-    let second = it.next();
-    let third = it.next();
+    let first = args.first();
+
+    if let Some(target) = Ty::from_name(name).filter(|t| t.num().is_some() || *t == Ty::Char) {
+        arity(name, &args, 1, 1)?;
+        return match first {
+            Some(v) => convert(v.clone(), &target).map_err(|e| Error {
+                message: format!("{name}(): {}", e.message),
+                ..e
+            }),
+            None => Ok(Value::Null),
+        };
+    }
 
     match name {
         // prinb(x) prints x. A whole number naming an idb slot prints the
@@ -62,10 +78,7 @@ pub fn call(
             match first {
                 None => writeln!(out)?,
                 Some(v) => {
-                    let banked = match v {
-                        Value::Number(n) if is_integral(*n) => interp.id_bank.get(&(*n as i64)),
-                        _ => None,
-                    };
+                    let banked = slot_of(v).and_then(|id| interp.id_bank.get(&id));
                     writeln!(out, "{}", banked.unwrap_or(v))?;
                 }
             }
@@ -74,7 +87,9 @@ pub fn call(
         // reab(slot) reads a line from input into an idb slot and returns it.
         "reab" => {
             arity(name, &args, 1, 1)?;
-            let id = slot_id(name, first.unwrap_or(&Value::Null))?;
+            let id = first.and_then(slot_of).ok_or_else(|| {
+                wrong_type(name, "an integer (idb slot)", first.unwrap_or(&Value::Null))
+            })?;
             out.flush()?;
             let line = interp.input.read_line()?.unwrap_or_default();
             let v = Value::String(line);
@@ -91,12 +106,13 @@ pub fn call(
         }
         "len" => {
             arity(name, &args, 1, 1)?;
-            match first {
-                Some(Value::String(s)) => Ok(Value::from(s.chars().count() as i64)),
-                Some(Value::Array(a)) => Ok(Value::from(a.borrow()?.len() as i64)),
-                Some(v) => Err(wrong_type(name, "a string or array", v)),
-                None => Ok(Value::Null),
-            }
+            let n = match first {
+                Some(Value::String(s)) => s.chars().count(),
+                Some(Value::Array(a)) => a.borrow()?.len(),
+                Some(v) => return Err(wrong_type(name, "a string or array", v)),
+                None => 0,
+            };
+            Ok(Value::int(i32::try_from(n).unwrap_or(i32::MAX)))
         }
         "str" => {
             arity(name, &args, 1, 1)?;
@@ -104,23 +120,10 @@ pub fn call(
                 first.map(|v| v.to_string()).unwrap_or_default(),
             ))
         }
-        "num" | "float" => {
+        "num" => {
             arity(name, &args, 1, 1)?;
             match first {
-                Some(Value::Number(n)) => Ok(Value::Number(*n)),
-                Some(Value::String(s)) => Ok(Value::Number(parse_number(name, s)?)),
-                Some(Value::Bool(b)) => Ok(Value::Number(if *b { 1.0 } else { 0.0 })),
-                Some(v) => Err(wrong_type(name, "a number, string or bool", v)),
-                None => Ok(Value::Null),
-            }
-        }
-        "int" => {
-            arity(name, &args, 1, 1)?;
-            match first {
-                Some(Value::Number(n)) => Ok(Value::Number(n.trunc())),
-                Some(Value::String(s)) => Ok(Value::Number(parse_number(name, s)?.trunc())),
-                Some(Value::Bool(b)) => Ok(Value::Number(if *b { 1.0 } else { 0.0 })),
-                Some(v) => Err(wrong_type(name, "a number, string or bool", v)),
+                Some(v) => convert(v.clone(), &Ty::DOUBLE),
                 None => Ok(Value::Null),
             }
         }
@@ -132,7 +135,7 @@ pub fn call(
         // `push(a, x)` and `a = push(a, x)` work.
         "push" => {
             arity(name, &args, 2, 2)?;
-            match (first, second) {
+            match (first, args.get(1)) {
                 (Some(Value::Array(a)), Some(v)) => {
                     a.borrow_mut()?.push(v.clone());
                     Ok(Value::Array(a.clone()))
@@ -154,21 +157,21 @@ pub fn call(
         // parts are clipped.
         "substr" => {
             arity(name, &args, 3, 3)?;
-            let (Some(Value::String(s)), Some(start), Some(length)) = (first, second, third) else {
+            let Some(Value::String(s)) = first else {
                 return Err(wrong_type(name, "a string", first.unwrap_or(&Value::Null)));
             };
-            let (Value::Number(start), Value::Number(length)) = (start, length) else {
-                return Err(Error::type_error(
-                    "substr() expects numbers for start and length",
-                ));
-            };
-            let start = start.max(0.0) as usize;
-            let length = length.max(0.0) as usize;
+            let null = Value::Null;
+            let start = int_arg(name, "an integer for start", args.get(1).unwrap_or(&null))?;
+            let length = int_arg(name, "an integer for length", args.get(2).unwrap_or(&null))?;
+            let start = usize::try_from(start.max(0)).unwrap_or(usize::MAX);
+            let length = usize::try_from(length.max(0)).unwrap_or(usize::MAX);
             Ok(Value::String(s.chars().skip(start).take(length).collect()))
         }
         "type" => {
             arity(name, &args, 1, 1)?;
-            Ok(Value::string(first.map(Value::type_name).unwrap_or("null")))
+            Ok(Value::String(
+                first.map(Value::type_name).unwrap_or_else(|| "null".into()),
+            ))
         }
         _ => Err(Error::runtime(format!("unknown built-in '{name}'"))),
     }

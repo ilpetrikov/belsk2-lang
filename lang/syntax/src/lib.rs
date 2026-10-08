@@ -17,4 +17,4 @@ pub use error::{Error, ErrorKind, Result};
 pub use lexer::tokenize;
 pub use parser::parse;
 pub use span::Span;
-pub use types::BType;
+pub use types::{FloatKind, IntKind, NumTy, Sig, Ty, TypeExpr, TypeExprKind};

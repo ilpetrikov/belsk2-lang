@@ -1,7 +1,7 @@
 use std::rc::Rc;
 
 use crate::span::Span;
-use crate::types::BType;
+use crate::types::{FloatKind, IntKind, Ty, TypeExpr};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Program {
@@ -40,6 +40,9 @@ pub enum StmtKind {
         op: BinOp,
         target: Expr,
         value: Expr,
+        /// The type of `target`; the result is converted back to it
+        /// (filled in by the checker).
+        cast: Ty,
     },
     FnDecl(Rc<FnDecl>),
     Return(Option<Expr>),
@@ -57,6 +60,8 @@ pub enum StmtKind {
     },
     For {
         var: String,
+        /// Type of the loop variable, filled in by the checker.
+        var_ty: Ty,
         iter: Expr,
         body: Block,
     },
@@ -66,14 +71,18 @@ pub enum StmtKind {
 #[derive(Debug, Clone, PartialEq)]
 pub struct VarDecl {
     pub name: String,
-    pub ty: Option<BType>,
+    pub ty: Option<TypeExpr>,
+    /// The variable's type, filled in by the checker (inferred for `var`).
+    pub resolved: Ty,
     pub value: Expr,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Param {
     pub name: String,
-    pub ty: Option<BType>,
+    pub ty: Option<TypeExpr>,
+    /// Filled in by the checker; `any` when no type is written.
+    pub resolved: Ty,
     pub span: Span,
 }
 
@@ -81,7 +90,9 @@ pub struct Param {
 pub struct FnDecl {
     pub name: String,
     pub params: Vec<Param>,
-    pub ret: Option<BType>,
+    pub ret: Option<TypeExpr>,
+    /// Filled in by the checker; `any` when no type is written.
+    pub ret_resolved: Ty,
     pub body: Block,
     pub span: Span,
 }
@@ -90,6 +101,8 @@ pub struct FnDecl {
 pub struct Expr {
     pub kind: ExprKind,
     pub span: Span,
+    /// The static type, filled in by the checker (`any` before that).
+    pub ty: Ty,
     /// Height of this expression tree. The parser bounds it so that every
     /// recursive pass over the AST (including `Drop`) stays within the stack.
     pub depth: u32,
@@ -97,7 +110,10 @@ pub struct Expr {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ExprKind {
-    Number(f64),
+    /// An integer literal and its type (`1` is `int`, `1L` is `long`, ...).
+    Int(i128, IntKind),
+    /// A floating-point literal (`1.5` is `double`, `1.5f` is `float`).
+    Float(f64, FloatKind),
     String(String),
     Bool(bool),
     Null,
@@ -124,12 +140,19 @@ pub enum ExprKind {
         object: Box<Expr>,
         index: Box<Expr>,
     },
+    /// An implicit conversion inserted by the checker (`int` to `double`,
+    /// one-character string to `char`, ...).
+    Convert {
+        expr: Box<Expr>,
+        to: Ty,
+    },
 }
 
 impl Expr {
     pub fn new(kind: ExprKind, span: Span) -> Self {
         let child_depth = match &kind {
-            ExprKind::Number(_)
+            ExprKind::Int(..)
+            | ExprKind::Float(..)
             | ExprKind::String(_)
             | ExprKind::Bool(_)
             | ExprKind::Null
@@ -140,10 +163,12 @@ impl Expr {
             ExprKind::Call { callee, args } => callee.depth.max(max_depth(args.iter())),
             ExprKind::Member { object, .. } => object.depth,
             ExprKind::Index { object, index } => object.depth.max(index.depth),
+            ExprKind::Convert { expr, .. } => expr.depth,
         };
         Expr {
             kind,
             span,
+            ty: Ty::Any,
             depth: child_depth.saturating_add(1),
         }
     }
@@ -165,6 +190,8 @@ fn max_depth<'a>(items: impl Iterator<Item = &'a Expr>) -> u32 {
 pub enum UnaryOp {
     Neg,
     Not,
+    /// `~`
+    BitNot,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -182,6 +209,11 @@ pub enum BinOp {
     Ge,
     And,
     Or,
+    BitAnd,
+    BitOr,
+    BitXor,
+    Shl,
+    Shr,
 }
 
 impl BinOp {
@@ -200,6 +232,11 @@ impl BinOp {
             BinOp::Ge => ">=",
             BinOp::And => "&&",
             BinOp::Or => "||",
+            BinOp::BitAnd => "&",
+            BinOp::BitOr => "|",
+            BinOp::BitXor => "^",
+            BinOp::Shl => "<<",
+            BinOp::Shr => ">>",
         }
     }
 }
@@ -209,6 +246,7 @@ impl UnaryOp {
         match self {
             UnaryOp::Neg => "-",
             UnaryOp::Not => "!",
+            UnaryOp::BitNot => "~",
         }
     }
 }

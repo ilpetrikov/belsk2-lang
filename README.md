@@ -57,6 +57,31 @@ type error: len() expects a string or array, got number
   |           ^
 ```
 
+## Numbers
+
+Belsk2 has the numeric types of C#, with the same rules:
+
+| Type | Size | Literal |
+|---|---|---|
+| `sbyte` / `byte` | 8-bit | `byte b = 255;` |
+| `short` / `ushort` | 16-bit | `short s = -5;` |
+| `int` / `uint` | 32-bit | `42`, `42u`, `0xFF`, `0b1010`, `1_000_000` |
+| `long` / `ulong` | 64-bit | `42L`, `42UL` |
+| `float` | 32-bit floating point | `1.5f` |
+| `double` | 64-bit floating point | `1.5`, `1e-9`, `2d` |
+| `char` | a Unicode character | `s[0]`, `char c = 'x';` |
+
+- Integer division truncates: `7 / 2 == 3`, `7 / 2.0 == 3.5`.
+- Mixing types widens automatically (`int + long` is `long`, `int + double` is
+  `double`). Narrowing needs an explicit conversion: `int(2.9)`, `byte(300)`,
+  `long(x)`, `char(65)`.
+- Integers wrap around on overflow, as in C# by default.
+- Bitwise operators `& | ^ ~ << >>` and compound assignments
+  (`+= -= *= /= %= &= |= ^= <<= >>=`) are available.
+- Numbers, `bool` and `char` can never be `null`.
+- Single-quoted literals are strings, as before; a one-character one can be
+  used where a `char` is expected (`char c = 'x';`).
+
 Variables declared with `var` take the type of their initial value, as in C#.
 Use `any` (`var x: any = 1;`) for a variable that may hold different types;
 such values are checked at run time.

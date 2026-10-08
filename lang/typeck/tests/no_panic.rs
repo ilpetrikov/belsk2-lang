@@ -47,6 +47,15 @@ const STMTS: &[&str] = &[
     "var x = null;",
     "x = len;",
     "a = 1 / 0;",
+    "byte by = 300;",
+    "long l = a; a = l;",
+    "a <<= 1L; a >>= s;",
+    "float fl = 1.5; double db = fl; fl = db;",
+    "char ch = s[0]; ch += 1; s = ch + ch;",
+    "ulong u = 1; prinb(u + a); prinb(-u);",
+    "prinb(~1.5 & true ^ 'c' | 2);",
+    "fn h(x: long): byte { if x > 0 { return x; } }",
+    "a = int(\"7\") + char(65) + double(s);",
 ];
 
 #[test]
@@ -55,8 +64,8 @@ fn random_programs() {
     for _ in 0..20_000 {
         let n = (rng.next() % 12) as usize;
         let src: Vec<&str> = (0..n).map(|_| rng.pick(STMTS)).collect();
-        if let Ok(program) = belsk2_syntax::parse(&src.join("\n")) {
-            let _ = belsk2_typeck::check(&program);
+        if let Ok(mut program) = belsk2_syntax::parse(&src.join("\n")) {
+            let _ = belsk2_typeck::check(&mut program);
         }
     }
 }
@@ -70,5 +79,5 @@ fn deeply_nested_program() {
         " }".repeat(depth)
     );
     let program = belsk2_syntax::parse(&src);
-    assert!(program.is_ok_and(|p| belsk2_typeck::check(&p).len() == 1));
+    assert!(program.is_ok_and(|mut p| belsk2_typeck::check(&mut p).len() == 1));
 }
