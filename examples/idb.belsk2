@@ -1,0 +1,7 @@
+// idb slots: a numbered bank of values.
+// prinb(n) prints the value stored in slot n, if there is one.
+idb 1 = "Who are you?";
+prinb(1);
+reab(2);
+prinb("Hi, " + str(input("Repeat your name: ")) + "!");
+prinb(2);

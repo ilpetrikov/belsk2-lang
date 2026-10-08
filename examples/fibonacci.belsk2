@@ -1,0 +1,12 @@
+fn fib(n: bel): bel {
+    if (n <= 1) {
+        return n;
+    }
+    return fib(n - 1) + fib(n - 2);
+}
+
+prinb("belsk2 - fibonacci");
+
+for i in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10] {
+    prinb(fib(i));
+}

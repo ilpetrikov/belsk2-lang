@@ -1,0 +1,19 @@
+[package]
+name = "belsk2-cli"
+description = "Command-line tool for the Belsk2 programming language"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "belsk2"
+path = "src/main.rs"
+
+[dependencies]
+belsk2.workspace = true
+clap.workspace = true
+
+[lints]
+workspace = true

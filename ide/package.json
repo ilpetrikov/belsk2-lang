@@ -6,7 +6,7 @@
   "scripts": {
     "start": "electron .",
     "build": "electron-builder --win --linux --mac",
-    "build:go": "cd .. && go build -o electron/bin/belsk2.exe cmd/cli/main.go"
+    "build:cli": "cargo build --release -p belsk2-cli && node -e \"const fs=require('fs'),p=require('path'),e=process.platform==='win32'?'belsk2.exe':'belsk2';fs.mkdirSync('bin',{recursive:true});fs.copyFileSync(p.join('..','target','release',e),p.join('bin',e))\""
   },
   "devDependencies": {
     "electron-builder": "^24.0.0"

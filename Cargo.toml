@@ -1,6 +1,32 @@
-[package]
-name = "belsk2"
-version = "0.3.0"
-edition = "2021"
+[workspace]
+resolver = "2"
+members = ["cli", "lang/syntax", "lang/interp", "lang/belsk2"]
 
-[dependencies]
+[workspace.package]
+version = "0.4.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/ilpetrikov/belsk2-lang"
+rust-version = "1.80"
+
+[workspace.dependencies]
+belsk2 = { path = "lang/belsk2" }
+belsk2-syntax = { path = "lang/syntax" }
+belsk2-interp = { path = "lang/interp" }
+stacker = "0.1"
+clap = { version = "4", features = ["derive"] }
+
+# The whole toolchain is panic-free: every failure is reported as a
+# `belsk2::Error`. These lints keep it that way.
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+indexing_slicing = "deny"
+string_slice = "deny"
+unreachable = "deny"
+todo = "deny"
+unimplemented = "deny"
+
+[profile.release]
+lto = "thin"

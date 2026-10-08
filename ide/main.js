@@ -5,14 +5,17 @@ const os = require('os');
 const { spawn } = require('child_process');
 
 let mainWindow;
-let goProcess = null;
+let runProcess = null;
 
-function getGoBinaryPath() {
-  const binDir = path.join(__dirname, 'bin');
-  if (process.platform === 'win32') {
-    return path.join(binDir, 'belsk2.exe');
-  }
-  return path.join(binDir, 'belsk2');
+// The `belsk2` CLI: a bundled copy in ide/bin, otherwise the cargo build output.
+function getCliPath() {
+  const exe = process.platform === 'win32' ? 'belsk2.exe' : 'belsk2';
+  const candidates = [
+    path.join(__dirname, 'bin', exe),
+    path.join(__dirname, '..', 'target', 'release', exe),
+    path.join(__dirname, '..', 'target', 'debug', exe),
+  ];
+  return candidates.find((p) => fs.existsSync(p)) || candidates[0];
 }
 
 function createWindow() {
@@ -39,9 +42,9 @@ function createWindow() {
 }
 
 function stopProcess() {
-  if (goProcess) {
-    goProcess.kill();
-    goProcess = null;
+  if (runProcess) {
+    runProcess.kill();
+    runProcess = null;
   }
 }
 
@@ -122,10 +125,10 @@ ipcMain.handle('run-code', async (event, code) => {
   return new Promise((resolve) => {
     stopProcess();
 
-    const binaryPath = getGoBinaryPath();
+    const binaryPath = getCliPath();
 
     if (!fs.existsSync(binaryPath)) {
-      resolve({ output: '', error: `Go binary not found: ${binaryPath}\nRun: go build -o electron/bin/belsk2.exe cmd/cli/main.go` });
+      resolve({ output: '', error: `belsk2 CLI not found: ${binaryPath}\nRun: cargo build --release -p belsk2-cli` });
       return;
     }
 
@@ -138,29 +141,29 @@ ipcMain.handle('run-code', async (event, code) => {
     }
 
     // Run from a temp file so stdin stays open for `reab`/`input`.
-    goProcess = spawn(binaryPath, [tmpFile], {
+    runProcess = spawn(binaryPath, [tmpFile], {
       stdio: ['pipe', 'pipe', 'pipe'],
     });
 
     let stdout = '';
     let stderr = '';
 
-    goProcess.stdout.on('data', (data) => {
+    runProcess.stdout.on('data', (data) => {
       stdout += data.toString();
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('output-chunk', data.toString());
       }
     });
 
-    goProcess.stderr.on('data', (data) => {
+    runProcess.stderr.on('data', (data) => {
       stderr += data.toString();
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('error-chunk', data.toString());
       }
     });
 
-    goProcess.on('close', (code) => {
-      goProcess = null;
+    runProcess.on('close', (code) => {
+      runProcess = null;
       try { fs.unlinkSync(tmpFile); } catch (e) { /* ignore */ }
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('process-exited', code);
@@ -168,8 +171,8 @@ ipcMain.handle('run-code', async (event, code) => {
       resolve({ output: stdout, error: stderr, exitCode: code });
     });
 
-    goProcess.on('error', (err) => {
-      goProcess = null;
+    runProcess.on('error', (err) => {
+      runProcess = null;
       try { fs.unlinkSync(tmpFile); } catch (e) { /* ignore */ }
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('error-chunk', err.message);
@@ -181,8 +184,8 @@ ipcMain.handle('run-code', async (event, code) => {
 });
 
 ipcMain.on('send-input', (event, line) => {
-  if (goProcess && goProcess.stdin && goProcess.stdin.writable) {
-    goProcess.stdin.write(line + '\n');
+  if (runProcess && runProcess.stdin && runProcess.stdin.writable) {
+    runProcess.stdin.write(line + '\n');
   }
 });
 
