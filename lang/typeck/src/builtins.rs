@@ -10,6 +10,7 @@ use crate::checker::{const_of, Const};
 pub const BUILTINS: &[&str] = &[
     "prinb", "reab", "input", "len", "str", "num", "bool", "push", "pop", "substr", "type",
     "sbyte", "byte", "short", "ushort", "int", "uint", "long", "ulong", "float", "double", "char",
+    "has", "remove", "keys", "values",
 ];
 
 pub fn is_builtin(name: &str) -> bool {
@@ -72,8 +73,8 @@ pub fn check(name: &str, args: &[Expr]) -> Result<Ty> {
         }
         "len" => {
             arity(name, n, 1, 1)?;
-            expect(name, args, 0, "a string or array", |t| {
-                is_string(t) || matches!(t, Ty::Array(_))
+            expect(name, args, 0, "a string, array or dictionary", |t| {
+                is_string(t) || matches!(t, Ty::Array(_) | Ty::Map(..))
             })?;
             Ok(Ty::INT)
         }
@@ -110,6 +111,21 @@ pub fn check(name: &str, args: &[Expr]) -> Result<Ty> {
         "type" => {
             arity(name, n, 1, 1)?;
             Ok(Ty::String)
+        }
+        // has(dict, key) / remove(dict, key): whether the key is (was) there.
+        "has" | "remove" => {
+            arity(name, n, 2, 2)?;
+            expect(name, args, 0, "a dictionary", |t| matches!(t, Ty::Map(..)))?;
+            Ok(Ty::Bool)
+        }
+        "keys" | "values" => {
+            arity(name, n, 1, 1)?;
+            expect(name, args, 0, "a dictionary", |t| matches!(t, Ty::Map(..)))?;
+            Ok(match (name, args.first().map(|a| &a.ty)) {
+                ("keys", Some(Ty::Map(k, _))) => Ty::Array(k.clone()),
+                (_, Some(Ty::Map(_, v))) => Ty::Array(v.clone()),
+                _ => Ty::array(Ty::Any),
+            })
         }
         _ => Err(Error::type_error(format!("unknown built-in '{name}'"))),
     }

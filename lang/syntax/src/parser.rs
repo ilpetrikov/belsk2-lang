@@ -400,6 +400,24 @@ impl Parser {
     fn parse_fn_decl(&mut self) -> Result<Stmt> {
         let span = self.bump().span;
         let name = self.expect_name("a function name")?;
+        let mut type_params: Vec<String> = Vec::new();
+        if self.eat(TokenKind::Lt) {
+            loop {
+                let tspan = self.span();
+                let t = self.expect_name("a type parameter")?;
+                if type_params.contains(&t) {
+                    return Err(Error::syntax(
+                        format!("duplicate type parameter '{t}'"),
+                        tspan,
+                    ));
+                }
+                type_params.push(t);
+                if !self.eat(TokenKind::Comma) {
+                    break;
+                }
+            }
+            self.expect(TokenKind::Gt)?;
+        }
         self.expect(TokenKind::LParen)?;
         let mut params: Vec<Param> = Vec::new();
         if self.kind() != TokenKind::RParen {
@@ -445,6 +463,7 @@ impl Parser {
         Ok(Stmt {
             kind: StmtKind::FnDecl(Rc::new(FnDecl {
                 name,
+                type_params,
                 params,
                 ret,
                 ret_resolved: Ty::Any,
@@ -782,6 +801,21 @@ impl Parser {
                 self.bump();
                 let items = self.parse_list(TokenKind::RBracket)?;
                 self.mk(ExprKind::Array(items), span)
+            }
+            TokenKind::LBrace => {
+                self.bump();
+                let mut entries = Vec::new();
+                while self.kind() != TokenKind::RBrace {
+                    let key = self.parse_expr()?;
+                    self.expect(TokenKind::Colon)?;
+                    let value = self.parse_expr()?;
+                    entries.push((key, value));
+                    if !self.eat(TokenKind::Comma) {
+                        break;
+                    }
+                }
+                self.expect(TokenKind::RBrace)?;
+                self.mk(ExprKind::Map(entries), span)
             }
             _ => Err(self.unexpected("an expression")),
         }

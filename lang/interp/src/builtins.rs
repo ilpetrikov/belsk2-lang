@@ -6,6 +6,7 @@ use std::io::Write;
 
 use belsk2_syntax::{Error, Result, Ty};
 
+use crate::collections::Array;
 use crate::interpreter::Interpreter;
 use crate::num::convert;
 use crate::value::Value;
@@ -109,7 +110,8 @@ pub fn call(
             let n = match first {
                 Some(Value::String(s)) => s.chars().count(),
                 Some(Value::Array(a)) => a.borrow()?.len(),
-                Some(v) => return Err(wrong_type(name, "a string or array", v)),
+                Some(Value::Map(m)) => m.len(),
+                Some(v) => return Err(wrong_type(name, "a string, array or dictionary", v)),
                 None => 0,
             };
             Ok(Value::int(i32::try_from(n).unwrap_or(i32::MAX)))
@@ -137,7 +139,7 @@ pub fn call(
             arity(name, &args, 2, 2)?;
             match (first, args.get(1)) {
                 (Some(Value::Array(a)), Some(v)) => {
-                    a.borrow_mut()?.push(v.clone());
+                    a.push(v.clone())?;
                     Ok(Value::Array(a.clone()))
                 }
                 (Some(v), _) => Err(wrong_type(name, "an array", v)),
@@ -166,6 +168,32 @@ pub fn call(
             let start = usize::try_from(start.max(0)).unwrap_or(usize::MAX);
             let length = usize::try_from(length.max(0)).unwrap_or(usize::MAX);
             Ok(Value::String(s.chars().skip(start).take(length).collect()))
+        }
+        "has" | "remove" | "keys" | "values" => {
+            arity(
+                name,
+                &args,
+                if matches!(name, "has" | "remove") {
+                    2
+                } else {
+                    1
+                },
+                2,
+            )?;
+            let Some(Value::Map(m)) = first else {
+                return Err(wrong_type(
+                    name,
+                    "a dictionary",
+                    first.unwrap_or(&Value::Null),
+                ));
+            };
+            let key = args.get(1).unwrap_or(&Value::Null);
+            Ok(match name {
+                "has" => Value::Bool(m.contains(key)?),
+                "remove" => Value::Bool(m.remove(key)?),
+                "keys" => Value::Array(Array::typed(m.key_ty().clone(), m.keys()?)),
+                _ => Value::Array(Array::typed(m.value_ty().clone(), m.values()?)),
+            })
         }
         "type" => {
             arity(name, &args, 1, 1)?;

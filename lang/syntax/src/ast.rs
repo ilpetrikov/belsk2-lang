@@ -89,6 +89,8 @@ pub struct Param {
 #[derive(Debug, Clone, PartialEq)]
 pub struct FnDecl {
     pub name: String,
+    /// `T` and `U` in `fn f<T, U>(...)`.
+    pub type_params: Vec<String>,
     pub params: Vec<Param>,
     pub ret: Option<TypeExpr>,
     /// Filled in by the checker; `any` when no type is written.
@@ -119,6 +121,8 @@ pub enum ExprKind {
     Null,
     Ident(String),
     Array(Vec<Expr>),
+    /// `{ key: value, ... }`, a dictionary literal.
+    Map(Vec<(Expr, Expr)>),
     Unary {
         op: UnaryOp,
         expr: Box<Expr>,
@@ -158,6 +162,7 @@ impl Expr {
             | ExprKind::Null
             | ExprKind::Ident(_) => 0,
             ExprKind::Array(items) => max_depth(items.iter()),
+            ExprKind::Map(entries) => max_depth(entries.iter().flat_map(|(k, v)| [k, v])),
             ExprKind::Unary { expr, .. } => expr.depth,
             ExprKind::Binary { lhs, rhs, .. } => lhs.depth.max(rhs.depth),
             ExprKind::Call { callee, args } => callee.depth.max(max_depth(args.iter())),

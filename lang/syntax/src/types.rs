@@ -242,6 +242,10 @@ pub enum Ty {
     Ster,
     /// An array with elements of the given type.
     Array(Rc<Ty>),
+    /// `Dictionary<K, V>`: a hash map that keeps insertion order.
+    Map(Rc<Ty>, Rc<Ty>),
+    /// A type parameter of a generic function (`T` in `fn f<T>(x: T)`).
+    Param(Rc<str>),
     /// A function; the signature is known for named declarations.
     Fn(Option<Rc<Sig>>),
 }
@@ -249,6 +253,8 @@ pub enum Ty {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Sig {
     pub name: String,
+    /// Type parameters of a generic function, in declaration order.
+    pub type_params: Vec<Rc<str>>,
     pub params: Vec<Ty>,
     pub ret: Ty,
 }
@@ -259,6 +265,38 @@ impl Ty {
 
     pub fn array(elem: Ty) -> Ty {
         Ty::Array(Rc::new(elem))
+    }
+
+    pub fn map(key: Ty, value: Ty) -> Ty {
+        Ty::Map(Rc::new(key), Rc::new(value))
+    }
+
+    /// Whether values of this type can be dictionary keys.
+    pub fn is_key(&self) -> bool {
+        matches!(
+            self.canonical(),
+            Ty::Any | Ty::Bool | Ty::Int(_) | Ty::Char | Ty::String | Ty::Param(_)
+        )
+    }
+
+    /// Whether this type mentions a type parameter.
+    pub fn has_params(&self) -> bool {
+        match self {
+            Ty::Param(_) => true,
+            Ty::Array(elem) => elem.has_params(),
+            Ty::Map(k, v) => k.has_params() || v.has_params(),
+            _ => false,
+        }
+    }
+
+    /// Replaces type parameters using `subst`.
+    pub fn substitute(&self, subst: &dyn Fn(&str) -> Option<Ty>) -> Ty {
+        match self {
+            Ty::Param(name) => subst(name).unwrap_or_else(|| self.clone()),
+            Ty::Array(elem) => Ty::array(elem.substitute(subst)),
+            Ty::Map(k, v) => Ty::map(k.substitute(subst), v.substitute(subst)),
+            t => t.clone(),
+        }
     }
 
     /// The type named by a built-in type keyword.
@@ -314,7 +352,7 @@ impl Ty {
     pub fn nullable(&self) -> bool {
         matches!(
             self,
-            Ty::Any | Ty::Null | Ty::String | Ty::Array(_) | Ty::Fn(_)
+            Ty::Any | Ty::Null | Ty::String | Ty::Array(_) | Ty::Map(..) | Ty::Fn(_) | Ty::Param(_)
         )
     }
 }
@@ -332,6 +370,8 @@ impl fmt::Display for Ty {
             Ty::Bel => f.write_str("bel"),
             Ty::Ster => f.write_str("ster"),
             Ty::Array(elem) => write!(f, "{elem}[]"),
+            Ty::Map(k, v) => write!(f, "Dictionary<{k}, {v}>"),
+            Ty::Param(name) => f.write_str(name),
             Ty::Fn(_) => f.write_str("fn"),
         }
     }

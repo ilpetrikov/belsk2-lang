@@ -82,6 +82,27 @@ Belsk2 has the numeric types of C#, with the same rules:
 - Single-quoted literals are strings, as before; a one-character one can be
   used where a `char` is expected (`char c = 'x';`).
 
+## Collections and generics
+
+```belsk2
+int[] xs = [1, 2, 3];          // the type of [1, 2, 3] is inferred as int[]
+List<string> names = [];       // List<T> is another name for T[]
+push(names, "ann");
+double[] ds = [1, 2.5];        // ints convert to double
+
+var ages = {"ann": 30};        // Dictionary<string, int>
+ages["bob"] = 25;
+if has(ages, "ann") { remove(ages, "ann"); }
+prinb(keys(ages));             // [bob]
+
+fn first<T>(items: T[]): T { return items[0]; }
+int n = first([10, 20]);       // T is inferred from the argument
+```
+
+Arrays and dictionaries know their element types, so adding a wrong value
+is a compile error (or, for values of type `any`, a run-time error). A
+literal with mixed element types, such as `[1, "two"]`, is an `any[]`.
+
 Variables declared with `var` take the type of their initial value, as in C#.
 Use `any` (`var x: any = 1;`) for a variable that may hold different types;
 such values are checked at run time.

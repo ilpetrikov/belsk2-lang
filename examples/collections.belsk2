@@ -1,0 +1,39 @@
+// Typed arrays, dictionaries and a generic function.
+
+fn max_of<T>(items: T[], better: fn): T {
+    var best = items[0];
+    for item in items {
+        if better(item, best) {
+            best = item;
+        }
+    }
+    return best;
+}
+
+fn longer(a: string, b: string): bool {
+    return len(a) > len(b);
+}
+
+string[] words = ["belsk2", "is", "a", "language"];
+prinb("longest word: " + max_of(words, longer));
+
+// Count letters.
+Dictionary<char, int> counts = {};
+for word in words {
+    for c in word {
+        if has(counts, c) {
+            counts[c] += 1;
+        } else {
+            counts[c] = 1;
+        }
+    }
+}
+prinb(counts);
+
+// Average of a double[].
+double[] scores = [7, 9.5, 8];
+double total = 0;
+for s in scores {
+    total += s;
+}
+prinb("average: " + str(total / len(scores)));

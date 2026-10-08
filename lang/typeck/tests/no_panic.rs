@@ -56,6 +56,13 @@ const STMTS: &[&str] = &[
     "prinb(~1.5 & true ^ 'c' | 2);",
     "fn h(x: long): byte { if x > 0 { return x; } }",
     "a = int(\"7\") + char(65) + double(s);",
+    "int[] xs = [1, s]; push(xs, arr); xs[s] = pop(xs);",
+    "var m = {\"k\": 1, 2: [3]}; m[1] = m; has(m, arr); keys(m)[0] += 1;",
+    "Dictionary<List<int>, T> bad = {};",
+    "fn g2<T, U>(x: T, y: U[]): Dictionary<T, U> { return {x: y[0]}; }",
+    "g2(1, [\"a\"])[1] = g2(arr, s);",
+    "for k in {1: 2} { a = k; }",
+    "List<List<int>> nested = [[1], []];",
 ];
 
 #[test]

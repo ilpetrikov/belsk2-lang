@@ -1,78 +1,11 @@
-use std::cell::{Ref, RefCell, RefMut};
 use std::fmt;
 use std::rc::Rc;
 
 use belsk2_syntax::ast::FnDecl;
-use belsk2_syntax::{Error, FloatKind, IntKind, Result, Sig, Ty};
+use belsk2_syntax::{FloatKind, IntKind, Ty};
 
+pub use crate::collections::{Array, Map};
 use crate::env::EnvRef;
-
-/// Arrays are reference types: copies of a value share the same elements,
-/// so `push(a, x)` or `a[0] = x` is visible through every alias.
-#[derive(Clone, Default)]
-pub struct Array(Rc<RefCell<Vec<Value>>>);
-
-impl Array {
-    pub fn new(items: Vec<Value>) -> Self {
-        Array(Rc::new(RefCell::new(items)))
-    }
-
-    /// Reads the elements. Fails only if the array is being modified at the
-    /// same moment, which the interpreter never does.
-    pub fn borrow(&self) -> Result<Ref<'_, Vec<Value>>> {
-        self.0
-            .try_borrow()
-            .map_err(|_| Error::runtime("array is being modified"))
-    }
-
-    pub fn borrow_mut(&self) -> Result<RefMut<'_, Vec<Value>>> {
-        self.0
-            .try_borrow_mut()
-            .map_err(|_| Error::runtime("array is being modified"))
-    }
-
-    /// A copy of the elements (the elements themselves are shared).
-    pub fn snapshot(&self) -> Result<Vec<Value>> {
-        Ok(self.borrow()?.clone())
-    }
-
-    pub fn len(&self) -> usize {
-        self.0.try_borrow().map(|v| v.len()).unwrap_or(0)
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
-    pub fn ptr_eq(&self, other: &Array) -> bool {
-        Rc::ptr_eq(&self.0, &other.0)
-    }
-}
-
-/// Dropping deeply nested arrays (`a = [a]` in a loop) must not recurse,
-/// otherwise it could overflow the stack. Children that would be freed
-/// together with this array are unlinked onto a heap-allocated work list.
-impl Drop for Array {
-    fn drop(&mut self) {
-        if Rc::strong_count(&self.0) != 1 {
-            return;
-        }
-        let Ok(mut items) = self.0.try_borrow_mut() else {
-            return;
-        };
-        let mut work = std::mem::take(&mut *items);
-        drop(items);
-        while let Some(v) = work.pop() {
-            if let Value::Array(child) = v {
-                if Rc::strong_count(&child.0) == 1 {
-                    if let Ok(mut inner) = child.0.try_borrow_mut() {
-                        work.append(&mut inner);
-                    }
-                }
-            }
-        }
-    }
-}
 
 /// A runtime value.
 #[derive(Clone)]
@@ -86,6 +19,7 @@ pub enum Value {
     Char(char),
     String(String),
     Array(Array),
+    Map(Map),
     Function(Rc<Function>),
 }
 
@@ -125,19 +59,15 @@ impl Value {
             Value::Float(_, k) => Ty::Float(*k),
             Value::Char(_) => Ty::Char,
             Value::String(_) => Ty::String,
-            Value::Array(_) => Ty::array(Ty::Any),
-            Value::Function(f) => Ty::Fn(Some(Rc::new(Sig {
-                name: f.decl.name.clone(),
-                params: f.decl.params.iter().map(|p| p.resolved.clone()).collect(),
-                ret: f.decl.ret_resolved.clone(),
-            }))),
+            Value::Array(a) => Ty::array(a.elem_ty().clone()),
+            Value::Map(m) => Ty::map(m.key_ty().clone(), m.value_ty().clone()),
+            Value::Function(f) => belsk2_typeck::fn_type(&f.decl),
         }
     }
 
     /// The name of the runtime type, as reported by `type(x)`.
     pub fn type_name(&self) -> String {
         match self {
-            Value::Array(_) => "array".to_string(),
             Value::Function(_) => "fn".to_string(),
             v => v.ty().to_string(),
         }
@@ -152,6 +82,7 @@ impl Value {
             Value::Char(c) => *c != '\0',
             Value::String(s) => !s.is_empty(),
             Value::Array(a) => !a.is_empty(),
+            Value::Map(m) => !m.is_empty(),
             Value::Function(_) => true,
         }
     }
@@ -190,7 +121,18 @@ impl Value {
             (Ty::Float(k), Value::Float(_, vk)) => k == *vk,
             (Ty::Char, Value::Char(_)) => true,
             (Ty::String, Value::String(_)) => true,
-            (Ty::Array(_), Value::Array(_)) => true,
+            (Ty::Param(_), _) => true,
+            (Ty::Array(elem), Value::Array(a)) => {
+                // An `any[]` may be used as a `T[]` if every element fits.
+                elem.is_any()
+                    || *a.elem_ty() == *elem
+                    || (a.elem_ty().is_any()
+                        && a.borrow()
+                            .is_ok_and(|items| items.iter().all(|v| v.fits(&elem))))
+            }
+            (Ty::Map(k, v), Value::Map(m)) => {
+                (k.is_any() || *m.key_ty() == *k) && (v.is_any() || *m.value_ty() == *v)
+            }
             (Ty::Fn(_), Value::Function(_)) => true,
             _ => false,
         }
@@ -205,6 +147,24 @@ impl Value {
             Value::Char(c) => write!(f, "{c}"),
             Value::String(s) => f.write_str(s),
             Value::Function(func) => write!(f, "<fn {}>", func.decl.name),
+            Value::Map(m) => {
+                if depth >= MAX_NESTING {
+                    return f.write_str("{...}");
+                }
+                let Ok(pairs) = m.pairs() else {
+                    return f.write_str("{...}");
+                };
+                f.write_str("{")?;
+                for (i, (k, v)) in pairs.iter().enumerate() {
+                    if i > 0 {
+                        f.write_str(", ")?;
+                    }
+                    k.fmt_nested(f, depth + 1)?;
+                    f.write_str(": ")?;
+                    v.fmt_nested(f, depth + 1)?;
+                }
+                f.write_str("}")
+            }
             Value::Array(items) => {
                 if depth >= MAX_NESTING {
                     return f.write_str("[...]");
@@ -269,6 +229,21 @@ fn values_equal(a: &Value, b: &Value, depth: usize) -> bool {
             chars.next() == Some(*c) && chars.next().is_none()
         }
         (Value::Function(x), Value::Function(y)) => Rc::ptr_eq(x, y),
+        (Value::Map(x), Value::Map(y)) => {
+            if x.ptr_eq(y) {
+                return true;
+            }
+            if depth >= MAX_NESTING {
+                return false;
+            }
+            let (Ok(x), Ok(y)) = (x.pairs(), y.pairs()) else {
+                return false;
+            };
+            x.len() == y.len()
+                && x.iter().zip(y.iter()).all(|((ka, va), (kb, vb))| {
+                    values_equal(ka, kb, depth + 1) && values_equal(va, vb, depth + 1)
+                })
+        }
         (Value::Array(x), Value::Array(y)) => {
             if x.ptr_eq(y) {
                 return true;

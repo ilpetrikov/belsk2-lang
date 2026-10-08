@@ -141,7 +141,7 @@ fn type_reports_int_and_float() {
         run(
             r#"prinb(type(1)); prinb(type(1.5)); prinb(type("a")); prinb(type(null)); prinb(type([]));"#
         ),
-        "int\ndouble\nstring\nnull\narray\n"
+        "int\ndouble\nstring\nnull\nany[]\n"
     );
 }
 
@@ -254,7 +254,10 @@ fn compile_errors() {
         ("var x = 5; x();", "not a function"),
         ("prinb(num(\"abc\"));", "is not a number"),
         ("prinb(int(\"12x\"));", "is not a number"),
-        ("prinb(len(5));", "expects a string or array, got int"),
+        (
+            "prinb(len(5));",
+            "expects a string, array or dictionary, got int",
+        ),
         ("prinb(1, 2);", "expects 0 to 1 arguments"),
         ("push([1]);", "expects 2 arguments"),
         ("substr(\"abc\", \"1\", 2);", "an integer for start"),
@@ -314,13 +317,13 @@ fn runtime_errors() {
             "index must be an integer",
         ),
         (
-            "var a = [1, \"a\"]; prinb(a[0] - a[1]);",
+            "var a: any[] = [1, \"a\"]; prinb(a[0] - a[1]);",
             "cannot apply '-' to int and string",
         ),
         ("var a = [\"abc\"]; prinb(num(a[0]));", "cannot convert"),
         (
-            "var a = [5]; prinb(len(a[0]));",
-            "expects a string or array",
+            "var a: any[] = [5]; prinb(len(a[0]));",
+            "expects a string, array or dictionary",
         ),
         ("fn f(x) { return -x; } f(\"s\");", "cannot negate"),
         ("fn f(g) { g(); } f(1);", "not a function"),
@@ -400,7 +403,7 @@ fn deeply_nested_source_is_rejected() {
 
 #[test]
 fn self_containing_and_deeply_nested_arrays_are_safe() {
-    let src = "var a = [1]; push(a, a); prinb(len(a)); prinb(a == a);";
+    let src = "var a: any[] = [1]; push(a, a); prinb(len(a)); prinb(a == a);";
     assert_eq!(run(src), "2\ntrue\n");
     let src = "var a = []; var i = 0; while i < 200000 { a = [a]; i += 1; } prinb(len(a));";
     assert_eq!(run(src), "1\n");

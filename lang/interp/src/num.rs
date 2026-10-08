@@ -118,6 +118,11 @@ pub fn convert(v: Value, to: &Ty) -> Result<Value> {
 /// converted; values of type `any` are checked here and may only be
 /// converted without losing information.
 pub fn coerce(ty: &Ty, v: Value, name: &str) -> Result<Value> {
+    // Type parameters are not known at run time; they accept anything.
+    if ty.has_params() {
+        let erased = ty.substitute(&|_| Some(Ty::Any));
+        return coerce(&erased, v, name);
+    }
     let mismatch = |v: &Value| {
         Error::type_error(format!(
             "cannot store {} value in {name} of type {ty}",

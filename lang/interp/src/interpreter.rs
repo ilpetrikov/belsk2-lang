@@ -7,6 +7,7 @@ use belsk2_syntax::{Error, Result, Span, Ty};
 use belsk2_typeck::Checker;
 
 use crate::builtins;
+use crate::collections::{Array, Map};
 use crate::env::{self, Env, EnvRef};
 use crate::num::{self, coerce, convert};
 use crate::value::{Function, Value};
@@ -259,6 +260,7 @@ impl Interpreter {
             } => {
                 let items: Vec<Value> = match self.eval(iter, env, out)? {
                     Value::Array(a) => a.snapshot()?,
+                    Value::Map(m) => m.keys()?,
                     Value::String(s) => s.chars().map(Value::Char).collect(),
                     other => {
                         return Err(Error::type_error(format!(
@@ -364,11 +366,27 @@ impl Interpreter {
                 convert(v, to)
             }
             ExprKind::Array(items) => {
+                let elem = match &expr.ty {
+                    Ty::Array(elem) => runtime_ty(elem),
+                    _ => Ty::Any,
+                };
                 let mut values = Vec::with_capacity(items.len());
                 for item in items {
                     values.push(self.eval(item, env, out)?);
                 }
-                Ok(Value::array(values))
+                Ok(Value::Array(Array::typed(elem, values)))
+            }
+            ExprKind::Map(entries) => {
+                let map = match &expr.ty {
+                    Ty::Map(k, v) => Map::new(runtime_ty(k), runtime_ty(v)),
+                    _ => Map::new(Ty::Any, Ty::Any),
+                };
+                for (k, v) in entries {
+                    let k = self.eval(k, env, out)?;
+                    let v = self.eval(v, env, out)?;
+                    map.insert(k, v)?;
+                }
+                Ok(Value::Map(map))
             }
             ExprKind::Unary { op, expr: inner } => {
                 let v = self.eval(inner, env, out)?;
@@ -524,6 +542,12 @@ fn host_arg(v: Value) -> Value {
     }
 }
 
+/// The element type a new collection gets. Inside a generic function the
+/// type parameters are not known at run time, so they become `any`.
+fn runtime_ty(t: &Ty) -> Ty {
+    t.substitute(&|_| Some(Ty::Any))
+}
+
 /// Functions are visible in their whole block, before their declaration.
 fn hoist_functions(stmts: &[Stmt], env: &EnvRef) {
     for stmt in stmts {
@@ -556,6 +580,7 @@ fn to_index(idx: &Value, len: usize) -> Result<usize> {
 
 pub(crate) fn get_index(obj: &Value, idx: &Value) -> Result<Value> {
     match obj {
+        Value::Map(m) => m.get(idx),
         Value::Array(a) => {
             let items = a.borrow()?;
             let i = to_index(idx, items.len())?;
@@ -581,7 +606,9 @@ pub(crate) fn get_index(obj: &Value, idx: &Value) -> Result<Value> {
 
 fn set_index(obj: &Value, idx: &Value, value: Value) -> Result<()> {
     match obj {
+        Value::Map(m) => m.insert(idx.clone(), value),
         Value::Array(a) => {
+            let value = a.check(value)?;
             let mut items = a.borrow_mut()?;
             let i = to_index(idx, items.len())?;
             let slot = items

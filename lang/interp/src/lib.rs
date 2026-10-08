@@ -13,6 +13,7 @@
 //! ```
 
 mod builtins;
+pub mod collections;
 pub mod env;
 mod interpreter;
 pub mod num;
@@ -21,5 +22,6 @@ mod value;
 pub use belsk2_syntax::{Error, ErrorKind, Result, Span};
 pub use belsk2_syntax::{FloatKind, IntKind, Ty};
 pub use belsk2_typeck::BUILTINS;
+pub use collections::{Array, Map};
 pub use interpreter::{Input, Interpreter, DEFAULT_MAX_CALL_DEPTH};
-pub use value::{format_float, Array, Function, Value};
+pub use value::{format_float, Function, Value};

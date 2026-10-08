@@ -15,6 +15,8 @@ struct FnCtx {
 /// and collects every error it finds.
 pub struct Checker {
     scopes: Vec<HashMap<String, Ty>>,
+    /// Type parameters of the generic functions being checked.
+    type_params: Vec<Vec<Rc<str>>>,
     fns: Vec<FnCtx>,
     errors: Vec<Error>,
 }
@@ -54,6 +56,11 @@ pub(crate) fn const_of(e: &Expr) -> Option<Const> {
 pub(crate) fn sig_of(decl: &FnDecl) -> Sig {
     Sig {
         name: decl.name.clone(),
+        type_params: decl
+            .type_params
+            .iter()
+            .map(|t| Rc::from(t.as_str()))
+            .collect(),
         params: decl.params.iter().map(|p| p.resolved.clone()).collect(),
         ret: decl.ret_resolved.clone(),
     }
@@ -125,6 +132,12 @@ fn conversion(from: &Ty, to: &Ty, cnst: Option<&Const>) -> Conv {
             _ => Conv::No,
         },
         (Ty::Array(a), Ty::Array(b)) if a.is_any() || b.is_any() || a == b => Conv::Keep,
+        (Ty::Map(ka, va), Ty::Map(kb, vb))
+            if (ka.is_any() || kb.is_any() || ka == kb)
+                && (va.is_any() || vb.is_any() || va == vb) =>
+        {
+            Conv::Keep
+        }
         (Ty::Fn(_), Ty::Fn(_)) => Conv::Keep,
         _ => Conv::No,
     }
@@ -190,6 +203,7 @@ impl Checker {
     pub fn new() -> Self {
         Checker {
             scopes: vec![HashMap::new()],
+            type_params: Vec::new(),
             fns: Vec::new(),
             errors: Vec::new(),
         }
@@ -246,9 +260,49 @@ impl Checker {
         match &t.kind {
             TypeExprKind::Array(elem) => Ty::array(self.resolve(elem)),
             TypeExprKind::Named { name, args } => {
-                if !args.is_empty() {
-                    self.type_error(format!("'{name}' does not take type arguments"), t.span);
+                let params = self.type_params.iter().rev().flatten();
+                if let Some(p) = params.into_iter().find(|p| &***p == name.as_str()).cloned() {
+                    if !args.is_empty() {
+                        self.type_error(
+                            format!("type parameter '{name}' does not take type arguments"),
+                            t.span,
+                        );
+                    }
+                    return Ty::Param(p);
+                }
+                let expected = match name.as_str() {
+                    "List" => 1,
+                    "Dictionary" | "Map" => 2,
+                    _ => 0,
+                };
+                if args.len() != expected {
+                    let msg = match expected {
+                        0 => format!("'{name}' does not take type arguments"),
+                        1 => format!("'{name}' needs 1 type argument, as in {name}<int>"),
+                        _ => format!(
+                            "'{name}' needs {expected} type arguments, as in {name}<string, int>"
+                        ),
+                    };
+                    self.type_error(msg, t.span);
                     return Ty::Any;
+                }
+                let mut args = args
+                    .iter()
+                    .map(|a| (self.resolve(a), a.span))
+                    .collect::<Vec<_>>()
+                    .into_iter();
+                match (name.as_str(), args.next(), args.next()) {
+                    ("List", Some((elem, _)), _) => return Ty::array(elem),
+                    (_, Some((key, kspan)), Some((value, _))) => {
+                        if !key.is_key() {
+                            self.type_error(
+                                format!("{key} cannot be a dictionary key; use string, an integer type, char or bool"),
+                                kspan,
+                            );
+                        }
+                        return Ty::map(key, value);
+                    }
+                    _ => {}
                 }
                 match Ty::from_name(name) {
                     Some(ty) => ty,
@@ -264,6 +318,26 @@ impl Checker {
     /// Checks that `e` can be used where `to` is expected, inserting an
     /// implicit conversion if needed. `what` describes the place for errors.
     fn coerce(&mut self, e: &mut Expr, to: &Ty, what: &dyn Fn() -> String) {
+        // Literals take the type they are used as: `double[] a = [1, 2];`,
+        // `int[] empty = [];`, `Dictionary<string, long> m = {"a": 1};`.
+        match (&mut e.kind, to) {
+            (ExprKind::Array(items), Ty::Array(elem)) => {
+                for item in items.iter_mut() {
+                    self.coerce(item, elem, &|| format!("an element of {}", what()));
+                }
+                e.ty = to.clone();
+                return;
+            }
+            (ExprKind::Map(entries), Ty::Map(k, v)) => {
+                for (key, value) in entries.iter_mut() {
+                    self.coerce(key, k, &|| format!("a key of {}", what()));
+                    self.coerce(value, v, &|| format!("a value of {}", what()));
+                }
+                e.ty = to.clone();
+                return;
+            }
+            _ => {}
+        }
         let from = e.ty.clone();
         let cnst = const_of(e);
         match conversion(&from, to, cnst.as_ref()) {
@@ -312,6 +386,12 @@ impl Checker {
                     self.type_error("internal error: function is shared before checking", span);
                     continue;
                 };
+                self.type_params.push(
+                    decl.type_params
+                        .iter()
+                        .map(|t| Rc::from(t.as_str()))
+                        .collect(),
+                );
                 for p in &mut decl.params {
                     p.resolved = match &p.ty {
                         Some(t) => self.resolve(t),
@@ -322,6 +402,16 @@ impl Checker {
                     Some(t) => self.resolve(t),
                     None => Ty::Any,
                 };
+                self.type_params.pop();
+                if builtins::is_builtin(&decl.name) {
+                    self.type_error(
+                        format!(
+                            "'{}' is a built-in function and cannot be redefined",
+                            decl.name
+                        ),
+                        span,
+                    );
+                }
                 let ty = Ty::Fn(Some(Rc::new(sig_of(decl))));
                 self.declare(&decl.name, ty, span);
             }
@@ -442,6 +532,8 @@ impl Checker {
                 *var_ty = match iter_ty {
                     Ty::String | Ty::Ster => Ty::Char,
                     Ty::Array(elem) => (*elem).clone(),
+                    // Iterating a dictionary yields its keys.
+                    Ty::Map(key, _) => (*key).clone(),
                     Ty::Any => Ty::Any,
                     other => {
                         self.type_error(format!("cannot iterate over {other}"), iter.span);
@@ -458,6 +550,12 @@ impl Checker {
     }
 
     fn check_fn(&mut self, decl: &mut FnDecl) {
+        self.type_params.push(
+            decl.type_params
+                .iter()
+                .map(|t| Rc::from(t.as_str()))
+                .collect(),
+        );
         self.fns.push(FnCtx {
             name: decl.name.clone(),
             ret: decl.ret_resolved.clone(),
@@ -474,6 +572,7 @@ impl Checker {
             c.check_stmts(&mut decl.body.stmts);
         });
         self.fns.pop();
+        self.type_params.pop();
         let ret = &decl.ret_resolved;
         if !ret.nullable() && !always_returns(&decl.body.stmts) {
             self.type_error(
@@ -500,18 +599,12 @@ impl Checker {
             },
             ExprKind::Index { object, index } => {
                 let obj = self.expr(object);
-                self.index_ty(index);
-                match obj {
-                    Ty::Array(elem) => Some((*elem).clone()),
-                    Ty::Any => Some(Ty::Any),
-                    Ty::String | Ty::Ster => {
-                        self.type_error("strings are immutable; build a new string instead", span);
-                        None
-                    }
-                    other => {
-                        self.type_error(format!("cannot index into {other}"), span);
-                        None
-                    }
+                if matches!(obj, Ty::String | Ty::Ster) {
+                    self.expr(index);
+                    self.type_error("strings are immutable; build a new string instead", span);
+                    None
+                } else {
+                    self.index(&obj, index, span)
                 }
             }
             ExprKind::Member { object, name } => {
@@ -571,7 +664,23 @@ impl Checker {
                 for item in items.iter_mut() {
                     self.expr(item);
                 }
-                Ty::array(Ty::Any)
+                Ty::array(self.common_type(items.iter_mut(), "array elements"))
+            }
+            ExprKind::Map(entries) => {
+                for (k, v) in entries.iter_mut() {
+                    self.expr(k);
+                    self.expr(v);
+                }
+                let key = self.common_type(entries.iter_mut().map(|(k, _)| k), "dictionary keys");
+                let value =
+                    self.common_type(entries.iter_mut().map(|(_, v)| v), "dictionary values");
+                if !key.is_key() {
+                    self.type_error(
+                        format!("{key} cannot be a dictionary key; use string, an integer type, char or bool"),
+                        span,
+                    );
+                }
+                Ty::map(key, value)
             }
             ExprKind::Unary { op, expr } => {
                 let ty = self.expr(expr);
@@ -591,25 +700,71 @@ impl Checker {
             }
             ExprKind::Index { object, index } => {
                 let obj = self.expr(object);
-                self.index_ty(index);
-                match obj {
-                    Ty::Array(elem) => (*elem).clone(),
-                    Ty::Any => Ty::Any,
-                    Ty::String | Ty::Ster => Ty::Char,
-                    other => {
-                        self.type_error(format!("cannot index into {other}"), span);
-                        Ty::Any
-                    }
-                }
+                self.index(&obj, index, span).unwrap_or(Ty::Any)
             }
         }
     }
 
-    fn index_ty(&mut self, index: &mut Expr) {
-        let ty = self.expr(index);
-        if !ty.is_any() && !matches!(ty, Ty::Int(_)) {
-            self.type_error(format!("index must be an integer, got {ty}"), index.span);
+    /// Checks `obj[index]` and returns the element type.
+    fn index(&mut self, obj: &Ty, index: &mut Expr, span: Span) -> Option<Ty> {
+        let idx = self.expr(index);
+        if let Ty::Map(key, value) = obj {
+            self.coerce(index, key, &|| "the dictionary key".to_string());
+            return Some((**value).clone());
         }
+        if !idx.is_any() && !matches!(idx, Ty::Int(_)) {
+            self.type_error(format!("index must be an integer, got {idx}"), index.span);
+        }
+        match obj {
+            Ty::Array(elem) => Some((**elem).clone()),
+            Ty::Any => Some(Ty::Any),
+            Ty::String | Ty::Ster => Some(Ty::Char),
+            other => {
+                self.type_error(format!("cannot index into {other}"), span);
+                None
+            }
+        }
+    }
+
+    /// The type all of `items` can be converted to (the "best common type"
+    /// of C#), converting them. `any` if there is none or `items` is empty.
+    fn common_type<'a>(&mut self, items: impl Iterator<Item = &'a mut Expr>, what: &str) -> Ty {
+        let mut items: Vec<&mut Expr> = items.collect();
+        let mut common: Option<Ty> = None;
+        for item in items.iter() {
+            let ty = &item.ty;
+            if matches!(ty, Ty::Null) {
+                continue;
+            }
+            let Some(c) = &common else {
+                common = Some(ty.clone());
+                continue;
+            };
+            let cnst = const_of(item);
+            if c == ty || !matches!(conversion(ty, c, cnst.as_ref()), Conv::No) {
+                continue;
+            }
+            if !matches!(conversion(c, ty, None), Conv::No) {
+                common = Some(ty.clone());
+                continue;
+            }
+            if let Some(n) = arith(c)
+                .zip(arith(ty))
+                .and_then(|(a, b)| NumTy::promote(a, b))
+            {
+                common = Some(n.ty());
+                continue;
+            }
+            // Mixed types (`[1, "two"]`) make an `any` collection.
+            return Ty::Any;
+        }
+        let Some(common) = common else {
+            return Ty::Any;
+        };
+        for item in items.iter_mut() {
+            self.coerce(item, &common, &|| what.to_string());
+        }
+        common
     }
 
     fn unary(&mut self, op: UnaryOp, ty: &Ty, span: Span) -> Ty {
@@ -768,8 +923,12 @@ impl Checker {
         // Built-ins take precedence over user definitions (as at run time).
         if let ExprKind::Ident(name) = &callee.kind {
             if builtins::is_builtin(name) {
-                return match builtins::check(name, args) {
-                    Ok(ty) => ty,
+                let name = name.clone();
+                return match builtins::check(&name, args) {
+                    Ok(ty) => {
+                        self.builtin_coercions(&name, args);
+                        ty
+                    }
                     Err(e) => {
                         self.error(e.or_at(span));
                         Ty::Any
@@ -792,11 +951,24 @@ impl Checker {
                         span,
                     );
                 }
+                // Infer type arguments of a generic function from the
+                // arguments: `first([1, 2])` makes `T` = `int`.
+                let mut bound: HashMap<Rc<str>, Ty> = HashMap::new();
+                for (param, arg) in sig.params.iter().zip(args.iter()) {
+                    bind_type_params(&sig.type_params, param, &arg.ty, &mut bound);
+                }
+                let subst = |name: &str| {
+                    sig.type_params
+                        .iter()
+                        .any(|p| &**p == name)
+                        .then(|| bound.get(name).cloned().unwrap_or(Ty::Any))
+                };
                 for (i, (param, arg)) in sig.params.iter().zip(args.iter_mut()).enumerate() {
                     let name = sig.name.clone();
-                    self.coerce(arg, param, &|| format!("argument {} of '{name}'", i + 1));
+                    let param = param.substitute(&subst);
+                    self.coerce(arg, &param, &|| format!("argument {} of '{name}'", i + 1));
                 }
-                sig.ret.clone()
+                sig.ret.substitute(&subst)
             }
             Ty::Fn(None) | Ty::Any => Ty::Any,
             other => {
@@ -804,6 +976,57 @@ impl Checker {
                 Ty::Any
             }
         }
+    }
+}
+
+impl Checker {
+    /// Arguments of built-ins whose type depends on another argument:
+    /// `push(int[], x)` converts `x` to `int`, `has(Dictionary<long, V>, k)`
+    /// converts `k` to `long`.
+    fn builtin_coercions(&mut self, name: &str, args: &mut [Expr]) {
+        let Some((first, rest)) = args.split_first_mut() else {
+            return;
+        };
+        let Some(arg) = rest.first_mut() else {
+            return;
+        };
+        let target = match (name, &first.ty) {
+            ("push", Ty::Array(elem)) => (**elem).clone(),
+            ("has" | "remove", Ty::Map(key, _)) => (**key).clone(),
+            _ => return,
+        };
+        self.coerce(arg, &target, &|| format!("the second argument of {name}()"));
+    }
+}
+
+/// Records what the type parameters in `param` stand for, given an
+/// argument of type `arg`.
+fn bind_type_params(params: &[Rc<str>], param: &Ty, arg: &Ty, bound: &mut HashMap<Rc<str>, Ty>) {
+    match (param, arg) {
+        (Ty::Param(name), arg) if params.contains(name) => {
+            if matches!(arg, Ty::Null) {
+                return;
+            }
+            match bound.get(name) {
+                None => {
+                    bound.insert(name.clone(), arg.clone());
+                }
+                Some(prev) => {
+                    // Widen to a type both arguments convert to.
+                    if matches!(conversion(arg, prev, None), Conv::No)
+                        && !matches!(conversion(prev, arg, None), Conv::No)
+                    {
+                        bound.insert(name.clone(), arg.clone());
+                    }
+                }
+            }
+        }
+        (Ty::Array(p), Ty::Array(a)) => bind_type_params(params, p, a, bound),
+        (Ty::Map(pk, pv), Ty::Map(ak, av)) => {
+            bind_type_params(params, pk, ak, bound);
+            bind_type_params(params, pv, av, bound);
+        }
+        _ => {}
     }
 }
 

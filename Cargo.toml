@@ -15,6 +15,7 @@ belsk2-syntax = { path = "lang/syntax" }
 belsk2-typeck = { path = "lang/typeck" }
 belsk2-interp = { path = "lang/interp" }
 stacker = "0.1"
+indexmap = "2"
 clap = { version = "4", features = ["derive"] }
 
 # The whole toolchain is panic-free: every failure is reported as a
