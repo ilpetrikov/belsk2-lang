@@ -52,6 +52,9 @@ pub struct Interpreter {
     pub(crate) input: Input,
     call_depth: usize,
     max_call_depth: usize,
+    /// What the type parameters of the running function stand for, one
+    /// frame per call.
+    type_env: Vec<HashMap<Rc<str>, Ty>>,
 }
 
 impl Default for Interpreter {
@@ -73,6 +76,7 @@ impl Interpreter {
             input: Input::Stdin,
             call_depth: 0,
             max_call_depth: DEFAULT_MAX_CALL_DEPTH,
+            type_env: Vec::new(),
         }
     }
 
@@ -170,7 +174,7 @@ impl Interpreter {
         };
         self.call_depth = 0;
         let args = args.iter().map(|a| host_arg(a.clone())).collect();
-        let result = self.call(&f, args, f.decl.span, out)?;
+        let result = self.call(&f, args, &[], f.decl.span, out)?;
         out.flush()?;
         Ok(result)
     }
@@ -200,8 +204,9 @@ impl Interpreter {
             }
             StmtKind::VarDecl(d) => {
                 let value = self.eval(&d.value, env, out)?;
-                let value = coerce(&d.resolved, value, &format!("'{}'", d.name))?;
-                env.borrow_mut().define(&d.name, value, d.resolved.clone());
+                let ty = self.rt(&d.resolved);
+                let value = coerce(&ty, value, &format!("'{}'", d.name))?;
+                env.borrow_mut().define(&d.name, value, ty);
             }
             StmtKind::Idb { id, value } => {
                 let value = self.eval(value, env, out)?;
@@ -270,9 +275,10 @@ impl Interpreter {
                         .at(iter.span))
                     }
                 };
+                let var_ty = self.rt(var_ty);
                 for item in items {
                     let scope = Env::child(env);
-                    let item = coerce(var_ty, item, &format!("'{var}'"))?;
+                    let item = coerce(&var_ty, item, &format!("'{var}'"))?;
                     scope.borrow_mut().define(var, item, var_ty.clone());
                     match self.exec_block(body, &scope, out)? {
                         Flow::Break => break,
@@ -320,11 +326,12 @@ impl Interpreter {
         let at = |e: Error| e.or_at(target.span);
         // `x op= y` converts the result back to the type of `x`, which may
         // narrow (`byte b; b += 1;`).
+        let cast = self.rt(cast);
         let finish = |v: Value| {
             if cast.is_any() {
                 Ok(v)
             } else {
-                convert(v, cast)
+                convert(v, &cast)
             }
         };
         match &target.kind {
@@ -367,7 +374,7 @@ impl Interpreter {
             }
             ExprKind::Array(items) => {
                 let elem = match &expr.ty {
-                    Ty::Array(elem) => runtime_ty(elem),
+                    Ty::Array(elem) => self.rt(elem),
                     _ => Ty::Any,
                 };
                 let mut values = Vec::with_capacity(items.len());
@@ -378,7 +385,7 @@ impl Interpreter {
             }
             ExprKind::Map(entries) => {
                 let map = match &expr.ty {
-                    Ty::Map(k, v) => Map::new(runtime_ty(k), runtime_ty(v)),
+                    Ty::Map(k, v) => Map::new(self.rt(k), self.rt(v)),
                     _ => Map::new(Ty::Any, Ty::Any),
                 };
                 for (k, v) in entries {
@@ -421,7 +428,12 @@ impl Interpreter {
                 let r = self.eval(rhs, env, out)?;
                 binary(*op, &l, &r)
             }
-            ExprKind::Call { callee, args } => self.eval_call(callee, args, expr.span, env, out),
+            ExprKind::Call {
+                callee, args, inst, ..
+            } => {
+                let inst: Vec<Ty> = inst.iter().map(|t| self.rt(t)).collect();
+                self.eval_call(callee, args, &inst, expr.span, env, out)
+            }
             ExprKind::Member { object, name } => {
                 let obj = self.eval(object, env, out)?;
                 Err(Error::runtime(format!(
@@ -441,6 +453,7 @@ impl Interpreter {
         &mut self,
         callee: &Expr,
         args: &[Expr],
+        inst: &[Ty],
         span: Span,
         env: &EnvRef,
         out: &mut dyn Write,
@@ -462,7 +475,7 @@ impl Interpreter {
             }
         };
         let values = self.eval_args(args, env, out)?;
-        self.call(&f, values, span, out)
+        self.call(&f, values, inst, span, out)
     }
 
     fn eval_args(
@@ -478,7 +491,43 @@ impl Interpreter {
         Ok(values)
     }
 
+    /// A type as it is at run time: type parameters replaced by what they
+    /// stand for in the running call (`any` if unknown).
+    fn rt(&self, t: &Ty) -> Ty {
+        if !t.has_params() {
+            return t.clone();
+        }
+        let frame = self.type_env.last();
+        t.substitute(&|name| Some(frame.and_then(|f| f.get(name)).cloned().unwrap_or(Ty::Any)))
+    }
+
     fn call(
+        &mut self,
+        f: &Function,
+        args: Vec<Value>,
+        inst: &[Ty],
+        span: Span,
+        out: &mut dyn Write,
+    ) -> Result<Value> {
+        let frame = f
+            .decl
+            .type_params
+            .iter()
+            .enumerate()
+            .map(|(i, name)| {
+                (
+                    Rc::from(name.as_str()),
+                    inst.get(i).cloned().unwrap_or(Ty::Any),
+                )
+            })
+            .collect();
+        self.type_env.push(frame);
+        let result = self.call_in_frame(f, args, span, out);
+        self.type_env.pop();
+        result
+    }
+
+    fn call_in_frame(
         &mut self,
         f: &Function,
         args: Vec<Value>,
@@ -507,10 +556,9 @@ impl Interpreter {
         let scope = Env::child(&f.env);
         for (param, arg) in decl.params.iter().zip(args) {
             let what = format!("argument '{}' of '{}'", param.name, decl.name);
-            let value = coerce(&param.resolved, arg, &what).map_err(|e| e.or_at(span))?;
-            scope
-                .borrow_mut()
-                .define(&param.name, value, param.resolved.clone());
+            let ty = self.rt(&param.resolved);
+            let value = coerce(&ty, arg, &what).map_err(|e| e.or_at(span))?;
+            scope.borrow_mut().define(&param.name, value, ty);
         }
 
         self.call_depth += 1;
@@ -522,7 +570,7 @@ impl Interpreter {
             _ => Value::Null,
         };
         let what = format!("the return value of '{}'", decl.name);
-        coerce(&decl.ret_resolved, result, &what).map_err(|e| e.or_at(span))
+        coerce(&self.rt(&decl.ret_resolved), result, &what).map_err(|e| e.or_at(span))
     }
 }
 
@@ -540,12 +588,6 @@ fn host_arg(v: Value) -> Value {
         }
         v => v,
     }
-}
-
-/// The element type a new collection gets. Inside a generic function the
-/// type parameters are not known at run time, so they become `any`.
-fn runtime_ty(t: &Ty) -> Ty {
-    t.substitute(&|_| Some(Ty::Any))
 }
 
 /// Functions are visible in their whole block, before their declaration.

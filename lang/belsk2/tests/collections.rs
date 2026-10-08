@@ -276,3 +276,68 @@ fn nested_collections_drop_without_recursion() {
     "#;
     assert_eq!(run(src), "ok\n");
 }
+
+#[test]
+fn explicit_type_arguments() {
+    let src = r#"
+        fn empty<T>(): T[] { return []; }
+        fn first<T>(items: T[]): T { return items[0]; }
+        fn pair<K, V>(k: K, v: V): Dictionary<K, V> { return {k: v}; }
+        var xs = empty<int>();
+        prinb(type(xs));
+        push(xs, 3);
+        prinb(type(first<double>([1, 2])));
+        prinb(type(pair<string, long>("a", 1)));
+        prinb(type(empty<List<string>>()));
+        var a = 1; var b = 2;
+        prinb(a < b);
+        prinb(a < b && b > a);
+        if a < b { prinb("less"); }
+    "#;
+    assert_eq!(
+        run(src),
+        lines(&[
+            "int[]",
+            "double",
+            "Dictionary<string, long>",
+            "string[][]",
+            "true",
+            "true",
+            "less",
+        ])
+    );
+}
+
+#[test]
+fn explicit_type_argument_errors() {
+    compile_error(
+        "fn empty<T>(): T[] { return []; } var xs = empty<int>(); push(xs, \"s\");",
+        "second argument of push()",
+    );
+    compile_error(
+        "fn first<T>(items: T[]): T { return items[0]; } first<string>([1]);",
+        "cannot use int as string",
+    );
+    compile_error("fn f() { } f<int>();", "is not generic");
+    compile_error(
+        "fn f<T, U>() { } f<int>();",
+        "takes 2 type arguments, got 1",
+    );
+    compile_error("prinb<int>(1);", "does not take type arguments");
+    compile_error("fn f<T>() { } f<nope>();", "unknown type 'nope'");
+}
+
+#[test]
+fn generics_are_reified_at_run_time() {
+    let src = r#"
+        fn wrap<T>(x: any): T[] { T[] r = []; push(r, x); return r; }
+        fn pair<T>(a: T, b: T): T[] { return [a, b]; }
+        fn nested<T>(x: T): T[][] { return [pair(x, x)]; }
+        prinb(type(wrap<long>(5)));
+        prinb(type(pair("a", "b")));
+        prinb(type(nested(1.5)));
+    "#;
+    assert_eq!(run(src), lines(&["long[]", "string[]", "double[][]"]));
+    let e = err("fn wrap<T>(x: any): T[] { T[] r = []; push(r, x); return r; } wrap<int>(\"s\");");
+    assert!(e.message.contains("element of int[]"), "{e}");
+}

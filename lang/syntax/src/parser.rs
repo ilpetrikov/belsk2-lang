@@ -326,6 +326,30 @@ impl Parser {
         Ok(ty)
     }
 
+    /// At `<` after an expression: parses `<T, U>` if it is directly
+    /// followed by `(`, leaving the position at `(`. Otherwise restores the
+    /// position and returns `None`.
+    fn try_type_args(&mut self) -> Option<Vec<TypeExpr>> {
+        let (pos, nesting) = (self.pos, self.nesting);
+        self.bump();
+        let mut args = Vec::new();
+        let ok = loop {
+            match self.parse_type() {
+                Ok(t) => args.push(t),
+                Err(_) => break false,
+            }
+            if !self.eat(TokenKind::Comma) {
+                break self.eat(TokenKind::Gt) && self.kind() == TokenKind::LParen;
+            }
+        };
+        if ok {
+            return Some(args);
+        }
+        self.pos = pos;
+        self.nesting = nesting;
+        None
+    }
+
     /// At the start of a statement: if it is a declaration like
     /// `int x = ...` or `List<int> xs = ...`, consumes and returns the type.
     /// Otherwise leaves the position unchanged.
@@ -709,7 +733,18 @@ impl Parser {
         loop {
             let span = self.span();
             match self.kind() {
-                TokenKind::LParen => {
+                TokenKind::LParen | TokenKind::Lt => {
+                    // `f<int>(x)`: type arguments, but only if what follows
+                    // `<` parses as types closed by `>` and then `(` (the
+                    // same rule as C#). Otherwise `<` is a comparison.
+                    let type_args = if self.kind() == TokenKind::Lt {
+                        match self.try_type_args() {
+                            Some(t) => t,
+                            None => return Ok(node),
+                        }
+                    } else {
+                        Vec::new()
+                    };
                     self.bump();
                     let args = self.parse_list(TokenKind::RParen)?;
                     // Errors about a call point at the callee, not at '('.
@@ -717,7 +752,9 @@ impl Parser {
                     node = self.mk(
                         ExprKind::Call {
                             callee: Box::new(node),
+                            type_args,
                             args,
+                            inst: Vec::new(),
                         },
                         call_span,
                     )?;

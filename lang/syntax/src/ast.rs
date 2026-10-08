@@ -134,7 +134,13 @@ pub enum ExprKind {
     },
     Call {
         callee: Box<Expr>,
+        /// Explicit type arguments: `int` in `empty<int>()`.
+        type_args: Vec<TypeExpr>,
         args: Vec<Expr>,
+        /// The type arguments of a generic call, written or inferred,
+        /// filled in by the checker. Generics are reified: the interpreter
+        /// uses these so that `empty<int>()` really creates an `int[]`.
+        inst: Vec<Ty>,
     },
     Member {
         object: Box<Expr>,
@@ -165,7 +171,7 @@ impl Expr {
             ExprKind::Map(entries) => max_depth(entries.iter().flat_map(|(k, v)| [k, v])),
             ExprKind::Unary { expr, .. } => expr.depth,
             ExprKind::Binary { lhs, rhs, .. } => lhs.depth.max(rhs.depth),
-            ExprKind::Call { callee, args } => callee.depth.max(max_depth(args.iter())),
+            ExprKind::Call { callee, args, .. } => callee.depth.max(max_depth(args.iter())),
             ExprKind::Member { object, .. } => object.depth,
             ExprKind::Index { object, index } => object.depth.max(index.depth),
             ExprKind::Convert { expr, .. } => expr.depth,

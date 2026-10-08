@@ -7,6 +7,7 @@
 - [x] Static checker: type and arity errors at compile time
 - [x] C# numeric types: `sbyte`..`ulong`, `float`, `double`, `char`, bitwise operators
 - [x] Typed arrays `T[]`, `List<T>`, `Dictionary<K, V>`, generic functions
+- [x] Explicit type arguments `f<int>(x)`; generics are reified at run time
 
 ## Next
 
@@ -45,7 +46,4 @@
 - [ ] `for k in dict` iterates over keys. In C# it yields `KeyValuePair<K, V>`
       with `.Key` and `.Value`. Switch to that once `struct` exists
       (and update `examples/collections.belsk2` and the tests).
-- [ ] Explicit type arguments at call sites: `first<int>(xs)`. Today `T` is
-      only inferred from the arguments. Needed when there is nothing to infer
-      from, e.g. `fn empty<T>(): T[]`.
 - [ ] Function types (`fn(int): bool`) instead of the untyped `fn`; comes with lambdas.

@@ -691,7 +691,18 @@ impl Checker {
                 self.expr(rhs);
                 self.binary(*op, lhs, rhs, span)
             }
-            ExprKind::Call { callee, args } => self.call(callee, args, span),
+            ExprKind::Call {
+                callee,
+                type_args,
+                args,
+                inst,
+            } => {
+                let explicit: Vec<(Ty, Span)> = type_args
+                    .iter()
+                    .map(|t| (self.resolve(t), t.span))
+                    .collect();
+                self.call(callee, &explicit, args, inst, span)
+            }
             ExprKind::Member { object, name } => {
                 let name = name.clone();
                 let obj = self.expr(object);
@@ -915,7 +926,14 @@ impl Checker {
         Some(common)
     }
 
-    fn call(&mut self, callee: &mut Expr, args: &mut [Expr], span: Span) -> Ty {
+    fn call(
+        &mut self,
+        callee: &mut Expr,
+        type_args: &[(Ty, Span)],
+        args: &mut [Expr],
+        inst: &mut Vec<Ty>,
+        span: Span,
+    ) -> Ty {
         for a in args.iter_mut() {
             self.expr(a);
         }
@@ -923,6 +941,10 @@ impl Checker {
         // Built-ins take precedence over user definitions (as at run time).
         if let ExprKind::Ident(name) = &callee.kind {
             if builtins::is_builtin(name) {
+                if let Some((_, tspan)) = type_args.first() {
+                    let msg = format!("built-in '{name}' does not take type arguments");
+                    self.type_error(msg, *tspan);
+                }
                 let name = name.clone();
                 return match builtins::check(&name, args) {
                     Ok(ty) => {
@@ -951,12 +973,36 @@ impl Checker {
                         span,
                     );
                 }
-                // Infer type arguments of a generic function from the
-                // arguments: `first([1, 2])` makes `T` = `int`.
                 let mut bound: HashMap<Rc<str>, Ty> = HashMap::new();
-                for (param, arg) in sig.params.iter().zip(args.iter()) {
-                    bind_type_params(&sig.type_params, param, &arg.ty, &mut bound);
+                if type_args.is_empty() {
+                    // Infer type arguments of a generic function from the
+                    // arguments: `first([1, 2])` makes `T` = `int`.
+                    for (param, arg) in sig.params.iter().zip(args.iter()) {
+                        bind_type_params(&sig.type_params, param, &arg.ty, &mut bound);
+                    }
+                } else if type_args.len() != sig.type_params.len() {
+                    let n = sig.type_params.len();
+                    let msg = if n == 0 {
+                        format!("function '{}' is not generic", sig.name)
+                    } else {
+                        format!(
+                            "function '{}' takes {n} type argument{}, got {}",
+                            sig.name,
+                            if n == 1 { "" } else { "s" },
+                            type_args.len()
+                        )
+                    };
+                    self.type_error(msg, span);
+                } else {
+                    for (p, (t, _)) in sig.type_params.iter().zip(type_args) {
+                        bound.insert(p.clone(), t.clone());
+                    }
                 }
+                *inst = sig
+                    .type_params
+                    .iter()
+                    .map(|p| bound.get(p).cloned().unwrap_or(Ty::Any))
+                    .collect();
                 let subst = |name: &str| {
                     sig.type_params
                         .iter()
@@ -970,7 +1016,15 @@ impl Checker {
                 }
                 sig.ret.substitute(&subst)
             }
-            Ty::Fn(None) | Ty::Any => Ty::Any,
+            Ty::Fn(None) | Ty::Any => {
+                if let Some((_, tspan)) = type_args.first() {
+                    self.type_error(
+                        "type arguments need a function whose declaration is known",
+                        *tspan,
+                    );
+                }
+                Ty::Any
+            }
             other => {
                 self.type_error(format!("{other} is not a function"), callee.span);
                 Ty::Any
