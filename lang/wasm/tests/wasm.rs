@@ -27,8 +27,18 @@ fn to_val(v: &Value) -> Val {
     }
 }
 
-fn from_val(v: &Val, ty: &Ty) -> Value {
+fn from_val(v: &Val, ty: &Ty, store: &mut Store<()>) -> Value {
     match (v, ty) {
+        (Val::AnyRef(None), _) => Value::Null,
+        (Val::AnyRef(Some(r)), Ty::String) => {
+            let array = r.as_array(&mut *store).unwrap().unwrap();
+            let text: String = array
+                .elems(&mut *store)
+                .unwrap()
+                .map(|v| char::from_u32(v.unwrap_i32() as u32).unwrap_or('?'))
+                .collect();
+            Value::String(text)
+        }
         (Val::I32(i), Ty::Int(k)) if k.signed() => Value::Int((*i).into(), *k),
         (Val::I32(i), Ty::Int(k)) => Value::Int((*i as u32).into(), *k),
         (Val::I64(i), Ty::Int(k)) if k.signed() => Value::Int((*i).into(), *k),
@@ -73,7 +83,7 @@ fn same(source: &str, calls: &[(&str, Vec<Value>)]) {
         let actual = func
             .call(&mut store, &params, &mut results)
             .map(|()| match results.first() {
-                Some(v) => from_val(v, &d.ret_resolved).to_string(),
+                Some(v) => from_val(v, &d.ret_resolved, &mut store).to_string(),
                 None => Value::Null.to_string(),
             })
             .map_err(|_| ());
@@ -249,6 +259,83 @@ fn b(x: double): bel { bel y = x; return y; }
     );
 }
 
+#[test]
+fn strings_arrays_and_generics() {
+    let src = r#"
+fn greet(n: int): string { return "Hi " + str(n) + ", " + true + "!"; }
+fn count(s: string, c: char): int { var k = 0; for x in s { if x == c { k += 1; } } return k; }
+fn count_a(): int { return count("banana", "a"); }
+fn sum(): long {
+    long[] xs = [1L, 2L];
+    push(xs, 40L);
+    xs[0] += 10L;
+    var t = 0L;
+    for x in xs { if x == 2L { continue; } t += x; }
+    return t + len(xs);
+}
+fn pops(): int {
+    int[] a = [];
+    var i = 0;
+    while i < 100 { push(a, i * i); i += 1; }
+    var p = pop(a);
+    return p + len(a) + a[50];
+}
+fn first<T>(xs: T[]): T { return xs[0]; }
+fn pair<T>(a: T, b: T): T[] { return [a, b]; }
+fn generic(): string { return first(["x", "y"]) + str(first([7, 8])) + first(pair("p", "q")); }
+fn cut(): string { return substr("hello world", 6, 100) + substr("abc", -5, 2) + substr("abc", 10, 1); }
+fn cmp(): int {
+    var r = 0;
+    if "abc" < "abd" { r += 1; }
+    if "b" > "abc" { r += 2; }
+    if "x" == "x" { r += 4; }
+    if [1, 2] == [1, 2] { r += 8; }
+    if [[1], [2]] != [[1], [3]] { r += 16; }
+    string s = null;
+    if s == null { r += 32; }
+    if "a" != "ab" { r += 64; }
+    return r;
+}
+fn nulls(): string { string s = null; return s + "!" + str(s); }
+fn ints(): string {
+    ulong m = ulong(0) - ulong(1);
+    return str(-9223372036854775807L - 1L) + " " + str(m) + " " + str(byte(255)) + str(-0);
+}
+fn idx(i: int): int { int[] a = [1, 2, 3]; return a[i]; }
+fn chars(): string { var s = ""; for c in "héllo" { s += c; } return s + str(len("héllo")) + s[1]; }
+fn nested(): int {
+    int[][] g = [[1, 2], [3]];
+    push(g[1], 4);
+    g[0][1] = 9;
+    return g[0][1] + g[1][1] + len(g);
+}
+fn empty(): int { int[] a = []; return pop(a); }
+var names = ["ann", "bob"];
+fn names_len(): int { push(names, "cy"); return len(names); }
+"#;
+    same(
+        src,
+        &[
+            ("greet", vec![int(-42)]),
+            ("count_a", vec![]),
+            ("sum", vec![]),
+            ("pops", vec![]),
+            ("generic", vec![]),
+            ("cut", vec![]),
+            ("cmp", vec![]),
+            ("nulls", vec![]),
+            ("ints", vec![]),
+            ("idx", vec![int(2)]),
+            ("idx", vec![int(3)]),
+            ("idx", vec![int(-1)]),
+            ("chars", vec![]),
+            ("nested", vec![]),
+            ("names_len", vec![]),
+            ("names_len", vec![]),
+        ],
+    );
+}
+
 fn error(source: &str) -> String {
     match belsk2_wasm::compile_source(source) {
         Ok(_) => String::from("compiled"),
@@ -267,8 +354,11 @@ fn unsupported_code_is_a_compile_error() {
     assert!(error("idb 1 = 2;\nfn main() {}").contains("idb"));
     assert!(error("fn f(x) { }").contains("needs a type"));
     assert!(error("fn f() { return 1; }").contains("declare its return type"));
-    assert!(error("fn f(): string { return \"a\"; }").contains("not supported"));
-    assert!(error("fn f<T>(x: T): T { return x; }").contains("generic"));
+    assert!(
+        error("fn f(): double { return 1.5; } fn g(): string { return str(f()); }")
+            .contains("not supported")
+    );
+    assert!(error("fn f() { var d = {\"a\": 1}; }").contains("dictionaries"));
 }
 
 #[test]

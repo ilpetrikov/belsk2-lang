@@ -189,6 +189,7 @@ name = "belsk2-wasm"
 version = "0.4.0"
 dependencies = [
  "belsk2-interp",
+ "belsk2-project",
  "belsk2-syntax",
  "belsk2-typeck",
  "wasm-encoder 0.261.0",

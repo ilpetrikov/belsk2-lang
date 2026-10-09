@@ -208,9 +208,11 @@ trailing_newline = true
 
 ## WebAssembly
 
-`belsk2 build app.belsk2` compiles a file to `app.wasm` (`-o` picks another
-path). Every top-level function is exported under its own name, so the
-module can be used from any WebAssembly host:
+`belsk2 build` compiles the current project to `bin/<package>.wasm`, and
+`belsk2 build app.belsk2` compiles a single file to `app.wasm`; `-o` picks
+another path. The functions of `main.belsk2` (or `lib.belsk2` for a library)
+are exported under their own names, so the module can be used from any
+WebAssembly host with the GC proposal:
 
 ```belsk2
 fn fib(n: int): int {
@@ -222,9 +224,9 @@ fn fib(n: int): int {
 ```
 
 WASM builds have no input or output: `prinb`, `input`, `reab` and `idb` are
-compile errors. Parameters and returned values need declared types. The
-backend currently supports numbers, `bool`, `char`, functions, variables and
-`if`/`while`; strings, arrays and generics are next (see ROADMAP.md).
+compile errors. Parameters and returned values need declared types. Strings,
+arrays, generics and all statements are supported; dictionaries, `any` and
+`str()` of floating-point numbers are not yet (see ROADMAP.md).
 
 ## Editor support
 

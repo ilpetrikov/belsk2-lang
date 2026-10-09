@@ -61,11 +61,12 @@ enum Command {
         /// Source files
         files: Vec<PathBuf>,
     },
-    /// Build the current project, or compile a file to WebAssembly
+    /// Compile the current project (or a file) to WebAssembly
     Build {
-        /// Source file to compile to a .wasm module
+        /// Source file to compile instead of the project
         file: Option<PathBuf>,
-        /// Where to write the module (default: next to the file)
+        /// Where to write the module (default: bin/<package>.wasm in the
+        /// project, or next to the file)
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
@@ -104,9 +105,9 @@ fn main() -> ExitCode {
         ) => run_file(&file, &args, &options),
         (None, Some(file)) => run_file(&file, &[], &options),
         (Some(Command::Run { file: None, args }), _) => run_project(&args, &options),
-        (Some(Command::Check { files }), _) if files.is_empty() => build(false, &options),
+        (Some(Command::Check { files }), _) if files.is_empty() => check_project(&options),
         (Some(Command::Check { files }), _) => check_files(&files),
-        (Some(Command::Build { file: None, .. }), _) => build(true, &options),
+        (Some(Command::Build { file: None, output }), _) => build_project(output, &options),
         (
             Some(Command::Build {
                 file: Some(file),
@@ -388,7 +389,7 @@ fn check_files(files: &[PathBuf]) -> Result<(), ()> {
 }
 
 /// Checks every module of the current project.
-fn build(is_build: bool, options: &project::Options) -> Result<(), ()> {
+fn check_project(options: &project::Options) -> Result<(), ()> {
     let root = project_root()?;
     let mut loaded = project::load_with(&root, Mode::All, options)
         .map_err(|(errors, sources)| report(&errors, &sources))?;
@@ -397,14 +398,38 @@ fn build(is_build: bool, options: &project::Options) -> Result<(), ()> {
         report(&errors, &loaded.sources);
         return Err(());
     }
-    let summary = project::summary(&loaded);
-    if is_build {
-        // Projects are compiled to WebAssembly in a later stage; until then a
-        // project build is a full check of the project and its dependencies.
-        println!("Checked {summary}; to compile a file to WebAssembly, run `belsk2 build <file>`");
-    } else {
-        println!("Checked {summary}");
+    println!("Checked {}", project::summary(&loaded));
+    Ok(())
+}
+
+/// Compiles the current project to `bin/<package>.wasm` (or `output`).
+fn build_project(output: Option<PathBuf>, options: &project::Options) -> Result<(), ()> {
+    let root = project_root()?;
+    let mut loaded = project::load_with(&root, Mode::All, options)
+        .map_err(|(errors, sources)| report(&errors, &sources))?;
+    let errors = project::check(&mut loaded);
+    if !errors.is_empty() {
+        report(&errors, &loaded.sources);
+        return Err(());
     }
+    let wasm =
+        belsk2_wasm::compile_project(&loaded).map_err(|errors| report(&errors, &loaded.sources))?;
+    let name = loaded
+        .root_package()
+        .map(|p| p.name.clone())
+        .unwrap_or_default();
+    let output = output.unwrap_or_else(|| root.join("bin").join(format!("{name}.wasm")));
+    write_output(&output, &wasm)
+}
+
+fn write_output(output: &Path, wasm: &[u8]) -> Result<(), ()> {
+    if let Some(dir) = output.parent().filter(|d| !d.as_os_str().is_empty()) {
+        std::fs::create_dir_all(dir)
+            .map_err(|e| eprintln!("io error: cannot create {}: {e}", dir.display()))?;
+    }
+    std::fs::write(output, wasm)
+        .map_err(|e| eprintln!("io error: cannot write {}: {e}", output.display()))?;
+    println!("Wrote {} ({} bytes)", output.display(), wasm.len());
     Ok(())
 }
 
@@ -424,10 +449,7 @@ fn build_wasm(file: &Path, output: Option<PathBuf>) -> Result<(), ()> {
     let wasm =
         belsk2_wasm::compile(&module.program).map_err(|errors| report(&errors, &loaded.sources))?;
     let output = output.unwrap_or_else(|| file.with_extension("wasm"));
-    std::fs::write(&output, &wasm)
-        .map_err(|e| eprintln!("io error: cannot write {}: {e}", output.display()))?;
-    println!("Wrote {} ({} bytes)", output.display(), wasm.len());
-    Ok(())
+    write_output(&output, &wasm)
 }
 
 fn new_project(dir: &Path, name: &str, lib: bool) -> Result<(), ()> {

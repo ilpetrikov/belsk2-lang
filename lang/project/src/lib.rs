@@ -90,7 +90,7 @@ pub fn create(
     }
     let gitignore = dir.join(".gitignore");
     if !gitignore.exists() {
-        write(gitignore, "/target\n".to_string())?;
+        write(gitignore, "/target\n/bin\n".to_string())?;
     }
     Ok(files)
 }

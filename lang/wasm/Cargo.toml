@@ -9,6 +9,7 @@ rust-version.workspace = true
 
 [dependencies]
 belsk2-syntax.workspace = true
+belsk2-project.workspace = true
 belsk2-typeck.workspace = true
 wasm-encoder = "0.261"
 wasmparser = "0.261"
