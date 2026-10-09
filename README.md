@@ -30,6 +30,9 @@ REPL accepts statements outside functions.
 | `lang/project` | `belsk2-project`: `belsk2.toml`, modules and dependencies |
 | `lang/interp` | `belsk2-interp`: the interpreter and built-in functions |
 | `lang/belsk2` | `belsk2`: the main crate that re-exports everything (use this from Rust) |
+| `lang/analysis` | `belsk2-analysis`: diagnostics, hover, completion, navigation for editors |
+| `lang/lsp` | `belsk2-lsp`: the language server (`belsk2 lsp`) |
+| `editors/vscode` | the VS Code extension |
 | `cli` | `belsk2` command-line tool |
 | `ide` | the belsk2 IDE |
 | `examples` | example programs (`*.belsk2`) |
@@ -178,6 +181,14 @@ assert_eq!(v, Value::from(49.0));
 
 Nothing in the toolchain panics: every failure is returned as a `belsk2::Error`
 with a kind (`Syntax`, `Type`, `Runtime`, `Io`), a message and a source location.
+
+## Editor support
+
+`belsk2 lsp` is a language server: errors as you type, hover types,
+completion, go to definition, references, rename and inline type hints, for
+single files and whole projects. The VS Code extension in `editors/vscode`
+uses it (see its README to build and install it); Zed, Neovim, Helix and
+other LSP clients can run `belsk2 lsp` directly.
 
 ## IDE
 

@@ -1,0 +1,110 @@
+{
+  "name": "belsk2",
+  "displayName": "Belsk2",
+  "description": "Belsk2 language support: highlighting, errors as you type, hover, completion, go to definition, rename, type hints and run commands",
+  "version": "0.4.0",
+  "publisher": "belsk2",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ilpetrikov/belsk2-lang"
+  },
+  "engines": {
+    "vscode": "^1.82.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Linters",
+    "Snippets"
+  ],
+  "main": "./extension.js",
+  "activationEvents": [
+    "workspaceContains:**/belsk2.toml"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "belsk2",
+        "aliases": [
+          "Belsk2",
+          "belsk2"
+        ],
+        "extensions": [
+          ".belsk2"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "belsk2",
+        "scopeName": "source.belsk2",
+        "path": "./syntaxes/belsk2.tmLanguage.json"
+      }
+    ],
+    "snippets": [
+      {
+        "language": "belsk2",
+        "path": "./snippets/belsk2.json"
+      }
+    ],
+    "commands": [
+      {
+        "command": "belsk2.run",
+        "title": "Run",
+        "category": "Belsk2",
+        "icon": "$(play)"
+      },
+      {
+        "command": "belsk2.check",
+        "title": "Check",
+        "category": "Belsk2"
+      },
+      {
+        "command": "belsk2.restartServer",
+        "title": "Restart Language Server",
+        "category": "Belsk2"
+      }
+    ],
+    "menus": {
+      "editor/title/run": [
+        {
+          "command": "belsk2.run",
+          "when": "editorLangId == belsk2",
+          "group": "navigation"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "belsk2.run",
+        "key": "f5",
+        "when": "editorLangId == belsk2 && !inDebugMode"
+      }
+    ],
+    "configuration": {
+      "title": "Belsk2",
+      "properties": {
+        "belsk2.path": {
+          "type": "string",
+          "default": "belsk2",
+          "description": "Path to the belsk2 executable (used for the language server and Run)."
+        },
+        "belsk2.inlayHints": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show inferred types and parameter names inline."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "package": "vsce package"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "devDependencies": {
+    "@vscode/vsce": "^3.2.1"
+  }
+}

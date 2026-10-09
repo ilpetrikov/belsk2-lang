@@ -36,6 +36,9 @@
 - [ ] LINQ
 
 ### IDE
+- [x] `lang/analysis` (diagnostics, hover, completion, definition, references, rename, hints, module graph)
+- [x] Language server `belsk2 lsp`
+- [x] VS Code extension (`editors/vscode`): highlighting, snippets, LSP, Run/Check
 - [ ] Rewrite the IDE on Tauri: themes, VS Code-like layout with a distinctive
       feature of its own, compile errors shown in the editor
 
@@ -55,4 +58,7 @@
       lock file is machine-specific. Fine for remote URLs.
 - [ ] Two git URLs that are spelled differently but mean the same repository count as
       different sources.
+- [ ] Analysis: completion after `.` is empty (no members yet; add with structs/classes);
+      a file that does not parse only gets keyword/builtin/word completions.
+- [ ] Publish the VS Code extension to the Marketplace / Open VSX.
 - [ ] The IDE runs a temporary file, so `using` does not work there; the Tauri IDE should run projects.

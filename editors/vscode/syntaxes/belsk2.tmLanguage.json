@@ -1,0 +1,89 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Belsk2",
+  "scopeName": "source.belsk2",
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#numbers" },
+    { "include": "#using" },
+    { "include": "#function" },
+    { "include": "#keywords" },
+    { "include": "#builtins" },
+    { "include": "#types" },
+    { "include": "#calls" },
+    { "include": "#operators" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        { "name": "comment.line.double-slash.belsk2", "match": "//.*$" },
+        { "name": "comment.block.belsk2", "begin": "/\\*", "end": "\\*/" }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.double.belsk2",
+          "begin": "\"",
+          "end": "\"",
+          "patterns": [{ "name": "constant.character.escape.belsk2", "match": "\\\\." }]
+        },
+        {
+          "name": "string.quoted.single.belsk2",
+          "begin": "'",
+          "end": "'",
+          "patterns": [{ "name": "constant.character.escape.belsk2", "match": "\\\\." }]
+        }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        { "name": "constant.numeric.hex.belsk2", "match": "\\b0[xX][0-9a-fA-F_]+[uUlL]*\\b" },
+        { "name": "constant.numeric.binary.belsk2", "match": "\\b0[bB][01_]+[uUlL]*\\b" },
+        { "name": "constant.numeric.belsk2", "match": "\\b[0-9][0-9_]*(\\.[0-9][0-9_]*)?([eE][+-]?[0-9_]+)?[fFdDmMuUlL]*\\b" }
+      ]
+    },
+    "using": {
+      "match": "\\b(using)\\s+([A-Za-z_][A-Za-z0-9_.]*)",
+      "captures": {
+        "1": { "name": "keyword.control.import.belsk2" },
+        "2": { "name": "entity.name.namespace.belsk2" }
+      }
+    },
+    "function": {
+      "match": "\\b(fn)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+      "captures": {
+        "1": { "name": "storage.type.function.belsk2" },
+        "2": { "name": "entity.name.function.belsk2" }
+      }
+    },
+    "keywords": {
+      "patterns": [
+        { "name": "keyword.control.belsk2", "match": "\\b(if|else|while|for|in|return|break|continue)\\b" },
+        { "name": "storage.type.belsk2", "match": "\\b(var|fn|idb)\\b" },
+        { "name": "constant.language.belsk2", "match": "\\b(true|false|null)\\b" }
+      ]
+    },
+    "builtins": {
+      "name": "support.function.builtin.belsk2",
+      "match": "\\b(prinb|reab|input|len|str|num|bool|push|pop|substr|type|has|remove|keys|values|sbyte|byte|short|ushort|int|uint|long|ulong|float|double|char)\\b(?=\\s*\\()"
+    },
+    "types": {
+      "name": "support.type.primitive.belsk2",
+      "match": "\\b(any|bool|char|string|sbyte|byte|short|ushort|int|uint|long|ulong|float|double|bel|ster)\\b"
+    },
+    "calls": {
+      "name": "entity.name.function.call.belsk2",
+      "match": "\\b[A-Za-z_][A-Za-z0-9_]*(?=\\s*(<[^<>()]*>)?\\s*\\()"
+    },
+    "operators": {
+      "patterns": [
+        { "name": "keyword.operator.comparison.belsk2", "match": "==|!=|<=|>=" },
+        { "name": "keyword.operator.logical.belsk2", "match": "&&|\\|\\||!" },
+        { "name": "keyword.operator.assignment.belsk2", "match": "<<=|>>=|[+\\-*/%&|^]?=" },
+        { "name": "keyword.operator.belsk2", "match": "<<|>>|[+\\-*/%&|^~<>]" }
+      ]
+    }
+  }
+}

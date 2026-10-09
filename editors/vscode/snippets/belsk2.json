@@ -1,0 +1,11 @@
+{
+  "main": { "prefix": "main", "body": ["fn main() {", "\t$0", "}"], "description": "Program entry point" },
+  "fn": { "prefix": "fn", "body": ["fn ${1:name}(${2}): ${3:int} {", "\t$0", "}"], "description": "Function" },
+  "if": { "prefix": "if", "body": ["if (${1:condition}) {", "\t$0", "}"], "description": "if statement" },
+  "ifelse": { "prefix": "ifelse", "body": ["if (${1:condition}) {", "\t$2", "} else {", "\t$0", "}"], "description": "if / else" },
+  "while": { "prefix": "while", "body": ["while (${1:condition}) {", "\t$0", "}"], "description": "while loop" },
+  "for": { "prefix": "for", "body": ["for ${1:item} in ${2:items} {", "\t$0", "}"], "description": "for-in loop" },
+  "var": { "prefix": "var", "body": ["var ${1:name} = ${0:value};"], "description": "Variable" },
+  "prinb": { "prefix": "prinb", "body": ["prinb(${0});"], "description": "Print a line" },
+  "using": { "prefix": "using", "body": ["using ${0:module};"], "description": "Use a module" }
+}
