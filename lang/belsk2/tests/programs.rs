@@ -111,14 +111,14 @@ fn push_and_pop_mutate_in_place() {
 #[test]
 fn strings_are_counted_in_characters() {
     let src = r#"
-        var s = "привет";
+        var s = "étéàñü";
         prinb(len(s));
         prinb(s[1]);
         prinb(substr(s, 2, 3));
         prinb(substr(s, 4, 100));
-        for c in "аб" { prinb(c); }
+        for c in "éà" { prinb(c); }
     "#;
-    assert_eq!(run(src), "6\nр\nиве\nет\nа\nб\n");
+    assert_eq!(run(src), "6\nt\néàñ\nñü\né\nà\n");
 }
 
 #[test]

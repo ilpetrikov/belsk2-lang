@@ -23,6 +23,8 @@
           <button data-view="explorer" class="active" title="Explorer (Ctrl+Shift+E)">📁</button>
           <button data-view="search" title="Search (Ctrl+Shift+F)">🔍</button>
           <button data-view="problems" title="Problems (Ctrl+Shift+M)">⚠</button>
+          <span class="spacer"></span>
+          <button data-view="settings" title="Settings (Ctrl+,)">⚙</button>
         </nav>
         <aside id="sidebar">
           <section id="view-explorer" class="view">
@@ -44,6 +46,17 @@
             </div>
             <div id="search-summary" class="muted"></div>
             <div id="search-results"></div>
+          </section>
+          <section id="view-settings" class="view" hidden>
+            <div class="view-title"><span>Settings</span></div>
+            <div id="settings-form">
+              <label>Color theme <select id="set-theme"></select></label>
+              <label class="check"><input type="checkbox" id="set-islands" /> Islands layout</label>
+              <label class="check"><input type="checkbox" id="set-depthStripe" /> Nesting stripe in the gutter</label>
+              <label class="check"><input type="checkbox" id="set-minimap" /> Minimap</label>
+              <label class="check"><input type="checkbox" id="set-inlayHints" /> Inline type hints</label>
+              <label>Font size <input type="number" id="set-fontSize" min="9" max="32" /></label>
+            </div>
           </section>
           <section id="view-problems" class="view" hidden>
             <div class="view-title"><span>Problems</span></div>
@@ -81,7 +94,7 @@
               <pre id="output"></pre>
               <form id="stdin-form">
                 <span class="prompt">›</span>
-                <input id="stdin" placeholder="Input for the program (Enter to send)" autocomplete="off" disabled />
+                <input id="stdin" placeholder="Input for the program (Enter to send)" autocomplete="off" />
               </form>
             </div>
             <div id="panel-problems" class="panel-body" hidden></div>

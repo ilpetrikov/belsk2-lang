@@ -43,7 +43,7 @@
       palette, quick open, projects, Run/Stop/Check with program input
 - [x] IDE: delete to the trash, search in all files (Ctrl+Shift+F), emoji-safe columns
 - [x] Example projects (`examples/projects`) and `playground/`
-- [ ] Themes (dark, light, high contrast, Belsk2) and the "islands" look
+- [x] Themes (Belsk2 Night, Dark, Light, High Contrast), "islands" layout, nesting stripe, settings view
 - [ ] Module map, live values, idb inspector
 
 ### Docs

@@ -2,6 +2,7 @@
 // status bar, command palette and quick open.
 
 import { call, listen, pickFolder, isDemo } from "./backend.js";
+import { THEMES, settings, setSetting, attachEditor } from "./theme.js";
 import { monaco, models, hooks, createEditor, analyze, bumpVersion, languageFor, toRange } from "./editor.js";
 
 const $ = (sel) => document.querySelector(sel);
@@ -26,6 +27,7 @@ const state = {
 };
 
 const editor = createEditor($("#editor"));
+attachEditor(editor);
 
 // ---- storage ---------------------------------------------------------------
 
@@ -494,7 +496,7 @@ async function run(check = false) {
 function setRunning(on) {
   state.running = on;
   $("#btn-stop").disabled = !on;
-  $("#stdin").disabled = !on;
+  $("#stdin-form").classList.toggle("waiting", on);
   $("#st-run").textContent = on ? "● running" : "";
   if (on) $("#stdin").focus();
 }
@@ -508,6 +510,10 @@ listen("run-exit", (code) => {
 $("#stdin-form").onsubmit = async (ev) => {
   ev.preventDefault();
   const input = $("#stdin");
+  if (!state.running) {
+    log("No program is running. Press F5 to run it, then type its input here.\n", "info");
+    return;
+  }
   log(input.value + "\n", "stdin");
   try {
     await call("send_input", { text: input.value });
@@ -518,6 +524,41 @@ $("#stdin-form").onsubmit = async (ev) => {
 };
 
 // ---- panels, views, layout --------------------------------------------------------
+
+// Clicking the output puts the cursor in the input box (unless selecting text).
+$("#output").onclick = () => {
+  if (!getSelection()?.toString()) $("#stdin").focus();
+};
+
+// ---- settings ----
+
+function renderSettings() {
+  const theme = $("#set-theme");
+  theme.replaceChildren(...THEMES.map((t) => el("option", { value: t.id, textContent: t.label })));
+  theme.value = settings.theme;
+  theme.onchange = () => setSetting("theme", theme.value);
+  for (const key of ["islands", "depthStripe", "minimap", "inlayHints"]) {
+    const box = $(`#set-${key}`);
+    box.checked = !!settings[key];
+    box.onchange = () => setSetting(key, box.checked);
+  }
+  const size = $("#set-fontSize");
+  size.value = settings.fontSize;
+  size.onchange = () => setSetting("fontSize", Math.min(32, Math.max(9, Number(size.value) || 14)));
+}
+
+function pickTheme() {
+  const before = settings.theme;
+  palette(
+    () =>
+      THEMES.map((t) => ({
+        label: t.label,
+        detail: t.id === before ? "current" : "",
+        run: () => (setSetting("theme", t.id), renderSettings()),
+      })),
+    "Select a color theme"
+  );
+}
 
 function showPanel(name) {
   document.querySelectorAll(".panel-tabs [data-panel]").forEach((b) => b.classList.toggle("active", b.dataset.panel === name));
@@ -619,6 +660,10 @@ const commands = [
   { label: "View: Toggle Sidebar", key: "Ctrl+B", run: () => document.body.classList.toggle("sidebar-hidden") },
   { label: "View: Toggle Panel", key: "Ctrl+J", run: () => document.body.classList.toggle("panel-hidden") },
   { label: "Explorer: Refresh", run: () => refreshFolder() },
+  { label: "Preferences: Color Theme", run: () => pickTheme() },
+  { label: "Preferences: Open Settings", key: "Ctrl+,", run: () => showView("settings") },
+  { label: "Preferences: Toggle Islands Layout", run: () => (setSetting("islands", !settings.islands), renderSettings()) },
+  { label: "Preferences: Toggle Nesting Stripe", run: () => (setSetting("depthStripe", !settings.depthStripe), renderSettings()) },
   { label: "Editor: Format Document", key: "Shift+Alt+F", run: () => editor.getAction("editor.action.formatDocument")?.run() },
   { label: "Editor: Rename Symbol", key: "F2", run: () => editor.getAction("editor.action.rename")?.run() },
   { label: "Editor: Go to Definition", key: "F12", run: () => editor.getAction("editor.action.revealDefinition")?.run() },
@@ -758,6 +803,7 @@ const KEYS = {
   "ctrl+shift+m": () => showPanel("problems"),
   "ctrl+b": () => document.body.classList.toggle("sidebar-hidden"),
   "ctrl+j": () => document.body.classList.toggle("panel-hidden"),
+  "ctrl+,": () => showView("settings"),
 };
 window.addEventListener(
   "keydown",
@@ -792,6 +838,7 @@ function renderRecent() {
 }
 
 renderRecent();
+renderSettings();
 renderTree();
 renderProblems();
 updateStatus();

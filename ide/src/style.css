@@ -1,5 +1,7 @@
 /* Colors live in variables so that themes only need to redefine them. */
-:root {
+:root,
+[data-theme="belsk2"] {
+  --backdrop: #0f1017;
   --bg: #16171f;
   --bg-elev: #1b1d2b;
   --bg-hover: #24273a;
@@ -627,4 +629,167 @@ body.panel-hidden #sash-panel {
 }
 #context-menu li.danger {
   color: var(--error);
+}
+
+/* ---- themes ---- */
+[data-theme="dark"] {
+  --backdrop: #141414;
+  --bg: #181818;
+  --bg-elev: #1e1e1e;
+  --bg-hover: #2a2d2e;
+  --bg-active: #37373d;
+  --border: #2b2b2b;
+  --fg: #d4d4d4;
+  --fg-muted: #8b8b8b;
+  --accent: #3794ff;
+  --accent-fg: #ffffff;
+  --error: #f14c4c;
+  --ok: #89d185;
+}
+[data-theme="light"] {
+  --backdrop: #e4e6ef;
+  --bg: #f3f4f8;
+  --bg-elev: #ffffff;
+  --bg-hover: #e9ebf3;
+  --bg-active: #dde1f0;
+  --border: #d9dce8;
+  --fg: #23263a;
+  --fg-muted: #6b7091;
+  --accent: #5b5bd6;
+  --accent-fg: #ffffff;
+  --error: #d92d48;
+  --warn: #b45309;
+  --ok: #15803d;
+}
+[data-theme="hc"] {
+  --backdrop: #000000;
+  --bg: #000000;
+  --bg-elev: #000000;
+  --bg-hover: #1a1a1a;
+  --bg-active: #003a70;
+  --border: #6fc3df;
+  --fg: #ffffff;
+  --fg-muted: #d0d0d0;
+  --accent: #ffd700;
+  --accent-fg: #000000;
+  --error: #ff6b6b;
+  --ok: #7cff7c;
+}
+[data-theme="light"] #palette,
+[data-theme="light"] #prompt-dialog {
+  background: #23263a33;
+}
+
+/* ---- islands: panels float as rounded cards on a darker backdrop ---- */
+body.islands,
+body.islands #titlebar,
+body.islands #statusbar,
+body.islands #activitybar {
+  background: var(--backdrop);
+  border-color: transparent;
+}
+body.islands #workbench {
+  padding: 0 8px 4px 0;
+}
+body.islands #sidebar {
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  box-shadow: 0 6px 20px #0005;
+}
+body.islands #tabs {
+  border-radius: 12px 12px 0 0;
+  border: 1px solid var(--border);
+  border-bottom: none;
+  background: var(--bg);
+}
+body.islands #editor-area {
+  border-radius: 0 0 12px 12px;
+  border: 1px solid var(--border);
+  border-top: none;
+  overflow: hidden;
+  box-shadow: 0 6px 20px #0005;
+}
+body.islands #panel {
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  overflow: hidden;
+  box-shadow: 0 6px 20px #0005;
+}
+body.islands .sash:hover {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+body.islands .tab.active {
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+body.islands .tab:first-child {
+  border-top-left-radius: 12px;
+}
+#activitybar .spacer {
+  flex: 1;
+}
+
+/* ---- nesting-depth stripe: one color per block level ---- */
+.depth {
+  margin-left: 4px;
+  width: 3px !important;
+  border-radius: 2px;
+}
+.depth-0 {
+  background: transparent;
+}
+.depth-1 {
+  background: #82aaff88;
+}
+.depth-2 {
+  background: #c792ea88;
+}
+.depth-3 {
+  background: #4fd6be88;
+}
+.depth-4 {
+  background: #ffc77788;
+}
+.depth-5 {
+  background: #ff966c88;
+}
+.depth-6 {
+  background: #ff757f88;
+}
+
+/* ---- settings ---- */
+#settings-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 4px 12px;
+}
+#settings-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--fg-muted);
+}
+#settings-form label.check {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  color: var(--fg);
+}
+#settings-form select,
+#settings-form input[type="number"] {
+  font: inherit;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 5px 6px;
+}
+#stdin-form.waiting .prompt {
+  animation: blink 1s steps(2) infinite;
+}
+@keyframes blink {
+  50% {
+    opacity: 0.2;
+  }
 }
