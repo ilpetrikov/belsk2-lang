@@ -63,7 +63,7 @@ async function ensureModel(path) {
     markStale(model);
     if (settings.autoSave && model.belsk2Dirty) {
       clearTimeout(model.belsk2AutoSave);
-      model.belsk2AutoSave = setTimeout(() => saveFile(path), 1000);
+      model.belsk2AutoSave = setTimeout(() => saveFile(path, true), 1000);
     }
     bumpVersion();
     renderTabs();
@@ -74,6 +74,8 @@ async function ensureModel(path) {
 }
 hooks.ensureModel = ensureModel;
 hooks.open = (path, selection) => openFile(path, selection);
+hooks.notify = (text) => log(`${text}
+`, "stderr");
 
 async function openFile(path, selection) {
   if (path === MAP) return openMap();
@@ -161,9 +163,13 @@ function closeTab(path) {
   saveSession();
 }
 
-async function saveFile(path = state.active) {
+async function saveFile(path = state.active, auto = false) {
   const model = path && models.get(path);
   if (!model) return;
+  // Formatting on an automatic save would move the cursor while typing.
+  if (settings.formatOnSave && !auto && path === state.active && path.endsWith(".belsk2")) {
+    await editor.getAction("editor.action.formatDocument")?.run();
+  }
   try {
     await call("write_file", { path, text: model.getValue() });
     model.belsk2Saved = model.getAlternativeVersionId();
@@ -751,7 +757,7 @@ function renderSettings() {
       return card;
     })
   );
-  for (const key of ["islands", "depthStripe", "minimap", "inlayHints", "autoSave", "reopenLast", "clearOnRun", "liveValues"]) {
+  for (const key of ["islands", "depthStripe", "minimap", "inlayHints", "autoSave", "reopenLast", "clearOnRun", "liveValues", "formatOnSave"]) {
     const box = $(`#set-${key}`);
     box.checked = !!settings[key];
     box.onchange = () => setSetting(key, box.checked);

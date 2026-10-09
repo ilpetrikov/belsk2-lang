@@ -31,6 +31,7 @@ REPL accepts statements outside functions.
 | `lang/interp` | `belsk2-interp`: the interpreter and built-in functions |
 | `lang/belsk2` | `belsk2`: the main crate that re-exports everything (use this from Rust) |
 | `lang/analysis` | `belsk2-analysis`: diagnostics, hover, completion, navigation for editors |
+| `lang/fmt` | `belsk2-fmt`: the code formatter (`belsk2 fmt`, `belsk2fmt.toml`) |
 | `lang/lsp` | `belsk2-lsp`: the language server (`belsk2 lsp`) |
 | `editors/vscode` | the VS Code extension |
 | `cli` | `belsk2` command-line tool |
@@ -182,6 +183,27 @@ assert_eq!(v, Value::from(49.0));
 
 Nothing in the toolchain panics: every failure is returned as a `belsk2::Error`
 with a kind (`Syntax`, `Type`, `Runtime`, `Io`), a message and a source location.
+
+## Formatting
+
+`belsk2 fmt` formats the project (or the files and folders you name);
+`belsk2 fmt --check` only reports files that need it (useful in CI) and
+`belsk2 fmt -` formats stdin. Comments and blank lines are kept. The IDE
+(Shift+Alt+F, optional format on save) and editors using `belsk2 lsp` use
+the same formatter.
+
+Settings live in `belsk2fmt.toml` (or `.belsk2fmt.toml`) in the file's
+folder or any folder above it. Every key is optional:
+
+```toml
+indent_style = "spaces"        # or "tabs"
+indent_width = 4
+brace_style = "same_line"      # or "next_line" (C# style)
+max_blank_lines = 1
+space_around_operators = true
+line_ending = "auto"           # "lf", "crlf" or "auto" (keep the file's)
+trailing_newline = true
+```
 
 ## Editor support
 

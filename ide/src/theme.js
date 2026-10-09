@@ -76,6 +76,7 @@ const DEFAULTS = {
   reopenLast: true,
   clearOnRun: false,
   liveValues: true,
+  formatOnSave: false,
 };
 
 function load() {

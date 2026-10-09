@@ -272,6 +272,18 @@ monaco.languages.registerInlayHintsProvider(LANG, {
   },
 });
 
+monaco.languages.registerDocumentFormattingEditProvider(LANG, {
+  async provideDocumentFormattingEdits(model) {
+    try {
+      const text = await call("format_source", { path: pathOf(model), text: model.getValue() });
+      return text === model.getValue() ? [] : [{ range: model.getFullModelRange(), text }];
+    } catch (e) {
+      hooks.notify?.(`Cannot format: ${e}`);
+      return [];
+    }
+  },
+});
+
 // Go to definition in another file opens it in a tab.
 monaco.editor.registerEditorOpener({
   openCodeEditor(_source, resource, selection) {

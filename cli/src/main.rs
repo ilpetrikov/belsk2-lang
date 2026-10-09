@@ -68,6 +68,15 @@ enum Command {
     Update,
     /// Start an interactive session
     Repl,
+    /// Format files (the whole project when none are given). Settings come
+    /// from the nearest belsk2fmt.toml
+    Fmt {
+        /// Files or folders to format; `-` formats stdin to stdout
+        files: Vec<PathBuf>,
+        /// Only check: list unformatted files and fail if there are any
+        #[arg(long)]
+        check: bool,
+    },
     /// Start the language server (for editors), talking LSP over stdin/stdout
     Lsp,
 }
@@ -96,6 +105,7 @@ fn main() -> ExitCode {
         (Some(Command::New { name, lib }), _) => new_project(&PathBuf::from(&name), &name, lib),
         (Some(Command::Init { name, lib }), _) => init(name, lib),
         (Some(Command::Repl), _) => repl(),
+        (Some(Command::Fmt { files, check }), _) => fmt(&files, check),
         (Some(Command::Lsp), _) => belsk2_lsp::run().map_err(|e| eprintln!("belsk2 lsp: {e}")),
         (None, None) if io::stdin().is_terminal() => repl(),
         (None, None) => run_file(Path::new("-"), &[], &options).map(|_| ()),
@@ -248,6 +258,98 @@ fn update(options: &project::Options) -> Result<(), ()> {
 
 fn short(commit: &str) -> &str {
     commit.get(..8).unwrap_or(commit)
+}
+
+fn collect_sources(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if path.is_dir() {
+            if !name.starts_with('.') && name != "target" && name != "node_modules" {
+                collect_sources(&path, out);
+            }
+        } else if path.extension().is_some_and(|e| e == "belsk2") {
+            out.push(path);
+        }
+    }
+}
+
+/// `belsk2 fmt`: formats files in place (or checks them with `--check`).
+fn fmt(files: &[PathBuf], check: bool) -> Result<(), ()> {
+    if files.len() == 1 && files.first().is_some_and(|f| f == Path::new("-")) {
+        let mut source = String::new();
+        io::stdin()
+            .read_to_string(&mut source)
+            .map_err(|e| eprintln!("io error: cannot read stdin: {e}"))?;
+        let cwd = std::env::current_dir().unwrap_or_default();
+        let config = belsk2_fmt::Config::find(&cwd)
+            .map(|p| belsk2_fmt::Config::load(&p))
+            .unwrap_or_else(|| Ok(belsk2_fmt::Config::default()))
+            .map_err(|e| eprintln!("{}", e.message))?;
+        let out = belsk2_fmt::format(&source, &config)
+            .map_err(|e| eprintln!("{}", e.render(&source, Some("<stdin>"))))?;
+        print!("{out}");
+        return Ok(());
+    }
+    let mut paths = Vec::new();
+    if files.is_empty() {
+        let root = project_root()?;
+        collect_sources(&root, &mut paths);
+    }
+    for f in files {
+        if f.is_dir() {
+            collect_sources(f, &mut paths);
+        } else {
+            paths.push(f.clone());
+        }
+    }
+    paths.sort();
+    let mut failed = false;
+    let mut changed = 0;
+    for path in &paths {
+        let shown = project::display_path(path);
+        let result = std::fs::read_to_string(path)
+            .map_err(|e| format!("io error: cannot read {shown}: {e}"))
+            .and_then(|source| {
+                let config = belsk2_fmt::Config::for_file(path).map_err(|e| e.message)?;
+                let out = belsk2_fmt::format(&source, &config)
+                    .map_err(|e| e.render(&source, Some(&shown)))?;
+                Ok((source, out))
+            });
+        match result {
+            Err(message) => {
+                eprintln!("{message}");
+                failed = true;
+            }
+            Ok((source, out)) if source != out => {
+                changed += 1;
+                if check {
+                    println!("would reformat {shown}");
+                } else if let Err(e) = std::fs::write(path, out) {
+                    eprintln!("io error: cannot write {shown}: {e}");
+                    failed = true;
+                } else {
+                    println!("formatted {shown}");
+                }
+            }
+            Ok(_) => {}
+        }
+    }
+    if check && changed > 0 {
+        eprintln!("{changed} file(s) need formatting; run `belsk2 fmt`");
+        return Err(());
+    }
+    if !check && changed == 0 && !failed {
+        println!("{} file(s) already formatted", paths.len());
+    }
+    if failed {
+        Err(())
+    } else {
+        Ok(())
+    }
 }
 
 fn check_files(files: &[PathBuf]) -> Result<(), ()> {

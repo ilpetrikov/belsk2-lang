@@ -14,7 +14,7 @@ pub mod token;
 pub mod types;
 
 pub use error::{Error, ErrorKind, Result};
-pub use lexer::{tokenize, tokenize_file};
+pub use lexer::{tokenize, tokenize_file, tokenize_raw, RawKind, RawToken};
 pub use parser::{parse, parse_file};
 pub use span::{FileId, SourceFile, SourceMap, Span};
 pub use types::{FloatKind, IntKind, NumTy, Sig, Ty, TypeExpr, TypeExprKind};

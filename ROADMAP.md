@@ -15,9 +15,18 @@
 - [x] `belsk2.toml` (name, version, ...), `belsk2 new`/`init`/`run`/`check`/`build`, modules (`using`), path dependencies
 - [x] All code in functions; programs start in `fn main()` (args, exit code)
 - [x] Dependencies from git (`branch`/`tag`/`rev`), `belsk2.lock`, `belsk2 update`, `--locked`, `--offline`
-- [ ] WASM compiler (codegen, memory model, WASI 0.2)
-- [ ] wit-bindgen backend: export/import WIT interfaces
-- [ ] WASI 0.3, if the toolchain supports it
+- [x] Formatter: `belsk2 fmt` (`--check`, stdin), `belsk2fmt.toml`, LSP and IDE formatting
+- [ ] WASM compiler. Decided: `wasm-encoder` + `wasmparser`; **WasmGC** for strings,
+      arrays, dictionaries and later classes; generics by **monomorphization**;
+      **no I/O** in WASM builds (`prinb`/`input`/`reab`/`idb` are compile errors);
+      tests run exported functions in `wasmtime` and compare with the interpreter.
+      Stages: W1 numbers/functions/control flow/globals; W2 strings, arrays, generics;
+      W3 components; later dictionaries, `any`, `str(double)`.
+- [ ] Components (our own "wit-bindgen backend"): `[component] world = "wit/app.wit"` in
+      `belsk2.toml`; exports are plain `fn`s with matching names, imports become functions
+      usable via `using`; canonical ABI glue for numbers, bool, char, string, list<T>;
+      packaged with `wit-component`. Records/variants come with struct/enum.
+- [ ] WASI 0.2 / 0.3: not now (not needed yet; 0.3 is barely supported)
 
 ### Rust integration
 - [ ] Calling Belsk2 from Rust (API, macros, wasmtime)

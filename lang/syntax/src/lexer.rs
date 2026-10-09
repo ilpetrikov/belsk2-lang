@@ -15,6 +15,32 @@ pub fn tokenize(source: &str) -> Result<Vec<Token>> {
     Lexer::new(source).tokenize()
 }
 
+/// What a [`RawToken`] is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RawKind {
+    Token(TokenKind),
+    LineComment,
+    BlockComment,
+}
+
+/// A token or comment with its exact source text, for tools that rewrite
+/// code (the formatter).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawToken {
+    pub kind: RawKind,
+    pub text: String,
+    /// 1-based line and column where it starts.
+    pub line: usize,
+    pub col: usize,
+    /// Line where it ends (differs for multi-line comments and strings).
+    pub end_line: usize,
+}
+
+/// Tokens and comments with their source text, without whitespace.
+pub fn tokenize_raw(source: &str) -> Result<Vec<RawToken>> {
+    Lexer::new(source).tokenize_raw()
+}
+
 /// Like [`tokenize`], with spans pointing into file `file`.
 pub fn tokenize_file(source: &str, file: FileId) -> Result<Vec<Token>> {
     let mut lexer = Lexer::new(source);
@@ -185,26 +211,101 @@ impl Lexer {
         let mut tokens = Vec::new();
         loop {
             self.skip_trivia()?;
+            let token = self.one()?;
+            let end = token.kind == TokenKind::Eof;
+            tokens.push(token);
+            if end {
+                return Ok(tokens);
+            }
+        }
+    }
+
+    /// Like [`Lexer::tokenize`], but keeps comments and the exact source
+    /// text of every token (for the formatter).
+    pub fn tokenize_raw(&mut self) -> Result<Vec<RawToken>> {
+        let mut out = Vec::new();
+        loop {
+            while matches!(self.peek(), Some(' ' | '\t' | '\r' | '\n' | '\u{feff}')) {
+                self.bump();
+            }
+            let (line, col, start) = (self.line, self.col, self.pos);
+            let kind = match (self.peek(), self.peek_at(1)) {
+                (Some('/'), Some('/')) => {
+                    while self.peek().is_some_and(|c| c != '\n' && c != '\r') {
+                        self.bump();
+                    }
+                    RawKind::LineComment
+                }
+                (Some('/'), Some('*')) => {
+                    self.skip_block_comment()?;
+                    RawKind::BlockComment
+                }
+                _ => {
+                    let token = self.one()?;
+                    if token.kind == TokenKind::Eof {
+                        return Ok(out);
+                    }
+                    RawKind::Token(token.kind)
+                }
+            };
+            let text: String = self
+                .input
+                .get(start..self.pos)
+                .unwrap_or_default()
+                .iter()
+                .collect();
+            out.push(RawToken {
+                kind,
+                text,
+                line,
+                col,
+                end_line: self.line,
+            });
+        }
+    }
+
+    fn skip_block_comment(&mut self) -> Result<()> {
+        let start = self.span();
+        self.bump();
+        self.bump();
+        loop {
+            match (self.peek(), self.peek_at(1)) {
+                (Some('*'), Some('/')) => {
+                    self.bump();
+                    self.bump();
+                    return Ok(());
+                }
+                (Some(_), _) => {
+                    self.bump();
+                }
+                (None, _) => {
+                    let mut e = Error::syntax("unterminated block comment", start);
+                    e.incomplete = true;
+                    return Err(e);
+                }
+            }
+        }
+    }
+
+    /// Reads one token (comments and whitespace already skipped).
+    fn one(&mut self) -> Result<Token> {
+        {
             let span = self.span();
             let Some(ch) = self.peek() else {
-                tokens.push(Token::new(TokenKind::Eof, "", span));
-                return Ok(tokens);
+                return Ok(Token::new(TokenKind::Eof, "", span));
             };
 
             if ch == '"' || ch == '\'' {
                 let s = self.read_string(ch)?;
-                tokens.push(Token::new(TokenKind::String, s, span));
-                continue;
+                return Ok(Token::new(TokenKind::String, s, span));
             }
             if ch.is_ascii_digit() {
                 let n = self.read_number();
-                tokens.push(Token::new(TokenKind::Number, n, span));
-                continue;
+                return Ok(Token::new(TokenKind::Number, n, span));
             }
             if ch.is_alphabetic() || ch == '_' {
                 let id = self.read_while(|c| c.is_alphanumeric() || c == '_');
-                tokens.push(Token::new(TokenKind::Ident, id, span));
-                continue;
+                return Ok(Token::new(TokenKind::Ident, id, span));
             }
 
             let next = self.peek_at(1);
@@ -259,7 +360,7 @@ impl Lexer {
             for _ in 0..len {
                 self.bump();
             }
-            tokens.push(Token::new(kind, "", span));
+            Ok(Token::new(kind, "", span))
         }
     }
 }

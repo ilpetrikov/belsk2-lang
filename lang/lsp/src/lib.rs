@@ -15,7 +15,7 @@ use lsp_types::notification::{
     Notification as _, PublishDiagnostics,
 };
 use lsp_types::request::{
-    Completion, DocumentSymbolRequest, GotoDefinition, HoverRequest, InlayHintRequest,
+    Completion, DocumentSymbolRequest, Formatting, GotoDefinition, HoverRequest, InlayHintRequest,
     PrepareRenameRequest, References, Rename, Request as _,
 };
 use lsp_types::{
@@ -53,6 +53,7 @@ pub fn serve(connection: &Connection) -> Result<()> {
         })),
         document_symbol_provider: Some(OneOf::Left(true)),
         inlay_hint_provider: Some(OneOf::Left(true)),
+        document_formatting_provider: Some(OneOf::Left(true)),
         ..ServerCapabilities::default()
     };
     let init = serde_json::json!({
@@ -470,6 +471,35 @@ impl Server<'_> {
                     })
                     .unwrap_or_default();
                 serde_json::to_value(DocumentSymbolResponse::Nested(symbols))
+            }
+            Formatting::METHOD => {
+                let p: lsp_types::DocumentFormattingParams = params(req.params)?;
+                let path = url_path(&p.text_document.uri).ok_or("not a file")?;
+                let text = match self.docs.get(&path) {
+                    Some((_, text)) => text.clone(),
+                    None => std::fs::read_to_string(&path).map_err(|e| e.to_string())?,
+                };
+                let config = belsk2_fmt::Config::for_file(&path).map_err(|e| e.message)?;
+                let formatted = belsk2_fmt::format(&text, &config).map_err(|e| e.message)?;
+                let edits = if formatted == text {
+                    Vec::new()
+                } else {
+                    let lines = u32::try_from(text.lines().count()).unwrap_or(u32::MAX);
+                    vec![TextEdit {
+                        range: lsp_types::Range {
+                            start: Position {
+                                line: 0,
+                                character: 0,
+                            },
+                            end: Position {
+                                line: lines.saturating_add(1),
+                                character: 0,
+                            },
+                        },
+                        new_text: formatted,
+                    }]
+                };
+                serde_json::to_value(edits)
             }
             _ => return Err(format!("unsupported request {}", req.method)),
         };

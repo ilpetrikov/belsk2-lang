@@ -84,8 +84,18 @@ name = "belsk2-cli"
 version = "0.4.0"
 dependencies = [
  "belsk2",
+ "belsk2-fmt",
  "belsk2-lsp",
  "clap",
+]
+
+[[package]]
+name = "belsk2-fmt"
+version = "0.4.0"
+dependencies = [
+ "belsk2-syntax",
+ "serde",
+ "toml",
 ]
 
 [[package]]
@@ -103,6 +113,7 @@ name = "belsk2-lsp"
 version = "0.4.0"
 dependencies = [
  "belsk2-analysis",
+ "belsk2-fmt",
  "lsp-server",
  "lsp-types",
  "serde",

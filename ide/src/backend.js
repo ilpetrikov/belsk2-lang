@@ -109,6 +109,8 @@ async function demo(cmd, args) {
         ],
         globals: [{ name: "factor", ty: "int", module: 1, line: 1 }],
       };
+    case "format_source":
+      return args.text;
     case "complete":
       return ["prinb", "input", "len", "fn", "var", "while"].map((label) => ({ label, kind: "function" }));
     case "start":

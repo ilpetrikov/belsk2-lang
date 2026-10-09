@@ -41,6 +41,7 @@ fn main() -> ExitCode {
             lang::definition,
             lang::references,
             lang::rename,
+            lang::format_source,
             run::start,
             run::send_input,
             run::stop,

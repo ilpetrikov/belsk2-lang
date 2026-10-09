@@ -362,3 +362,14 @@ pub fn rename(doc: Doc, pos: P) -> Result<Vec<Loc>, String> {
         .filter_map(|l| loc(&a, l))
         .collect())
 }
+
+/// Formats `text` (the contents of `path`) with the nearest
+/// `belsk2fmt.toml`.
+#[tauri::command]
+pub fn format_source(path: String, text: String) -> Result<String, String> {
+    let config = belsk2_fmt::Config::for_file(Path::new(&path)).map_err(|e| e.message)?;
+    belsk2_fmt::format(&text, &config).map_err(|e| match e.span {
+        Some(span) => format!("{}:{}: {}", span.line, span.col, e.message),
+        None => e.message,
+    })
+}
