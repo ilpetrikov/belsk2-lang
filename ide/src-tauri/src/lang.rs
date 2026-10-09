@@ -9,7 +9,9 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
-use belsk2_analysis::{analyze_path, Analysis, CompletionKind, HintKind, Location, Pos, Range};
+use belsk2_analysis::{
+    analyze_path, Analysis, CompletionKind, HintKind, Location, Pos, Range, SymbolKind,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::files::plain;
@@ -116,6 +118,8 @@ pub struct ModuleDto {
     errors: usize,
     entry: bool,
     dependency: bool,
+    /// Top-level declarations, e.g. `fn twice`, `var names`.
+    items: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -166,6 +170,14 @@ pub fn analyze(doc: Doc) -> Report {
             errors: m.errors,
             entry: m.entry,
             dependency: m.dependency,
+            items: a
+                .document_symbols(m.file)
+                .iter()
+                .map(|s| match s.kind {
+                    SymbolKind::Function => format!("fn {}", s.name),
+                    _ => format!("var {}", s.name),
+                })
+                .collect(),
         })
         .collect();
     Report {

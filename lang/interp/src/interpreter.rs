@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::{BufRead, Write};
 use std::rc::Rc;
@@ -10,6 +11,7 @@ use crate::builtins;
 use crate::collections::{Array, Map};
 use crate::env::{self, Env, EnvRef};
 use crate::num::{self, coerce, convert};
+use crate::trace::{self, Trace};
 use crate::value::{Function, Value};
 
 /// Default limit for nested function calls.
@@ -55,6 +57,8 @@ pub struct Interpreter {
     /// What the type parameters of the running function stand for, one
     /// frame per call.
     type_env: Vec<HashMap<Rc<str>, Ty>>,
+    /// Where to record line hits and values, when an editor asks for it.
+    trace: Option<Rc<RefCell<Trace>>>,
 }
 
 impl Default for Interpreter {
@@ -73,6 +77,7 @@ impl Interpreter {
         Interpreter {
             globals: Env::root(),
             id_bank: HashMap::new(),
+            trace: None,
             input: Input::Stdin,
             call_depth: 0,
             max_call_depth: DEFAULT_MAX_CALL_DEPTH,
@@ -81,6 +86,20 @@ impl Interpreter {
     }
 
     /// Reads `reab`/`input` lines from `reader` instead of stdin.
+    /// Records how often each line runs and the values written there
+    /// into `trace` (for live values in editors).
+    pub fn set_trace(&mut self, trace: Rc<RefCell<Trace>>) {
+        self.trace = Some(trace);
+    }
+
+    fn record(&self, f: impl FnOnce(&mut Trace)) {
+        if let Some(t) = &self.trace {
+            if let Ok(mut t) = t.try_borrow_mut() {
+                f(&mut t);
+            }
+        }
+    }
+
     pub fn set_input(&mut self, reader: impl BufRead + 'static) {
         self.input = Input::Reader(Box::new(reader));
     }
@@ -282,6 +301,9 @@ impl Interpreter {
     }
 
     fn exec(&mut self, stmt: &Stmt, env: &EnvRef, out: &mut dyn Write) -> Result<Flow> {
+        if self.trace.is_some() && !matches!(stmt.kind, StmtKind::FnDecl(_) | StmtKind::Using(_)) {
+            self.record(|t| t.hit(stmt.span));
+        }
         with_stack(|| self.exec_inner(stmt, env, out)).map_err(|e| e.or_at(stmt.span))
     }
 
@@ -296,14 +318,22 @@ impl Interpreter {
                 let value = self.eval(&d.value, env, out)?;
                 let ty = self.rt(&d.resolved);
                 let value = coerce(&ty, value, &format!("'{}'", d.name))?;
+                self.record(|t| t.value(stmt.span, d.name.clone(), &value));
                 env.borrow_mut().define(&d.name, value, ty);
             }
             StmtKind::Idb { id, value } => {
                 let value = self.eval(value, env, out)?;
+                self.record(|t| {
+                    t.value(stmt.span, format!("idb {id}"), &value);
+                    t.idb(*id, &value);
+                });
                 self.id_bank.insert(*id, value);
             }
             StmtKind::Assign { target, value } => {
                 let value = self.eval(value, env, out)?;
+                if let Some(name) = self.trace.as_ref().and_then(|_| trace::describe(target)) {
+                    self.record(|t| t.value(stmt.span, name, &value));
+                }
                 self.assign(target, value, env, out)?;
             }
             StmtKind::CompoundAssign {
@@ -313,6 +343,11 @@ impl Interpreter {
                 cast,
             } => {
                 self.compound_assign(*op, target, value, cast, env, out)?;
+                if let (Some(_), ExprKind::Ident(name)) = (&self.trace, &target.kind) {
+                    if let Some(v) = env::lookup(env, name) {
+                        self.record(|t| t.value(stmt.span, name.clone(), &v));
+                    }
+                }
             }
             // Defined by `hoist_functions` when the block was entered.
             StmtKind::FnDecl(_) => {}
@@ -321,6 +356,9 @@ impl Interpreter {
                     Some(e) => self.eval(e, env, out)?,
                     None => Value::Null,
                 };
+                if value.is_some() {
+                    self.record(|t| t.value(stmt.span, "return".to_string(), &v));
+                }
                 return Ok(Flow::Return(v));
             }
             StmtKind::Break => return Ok(Flow::Break),
@@ -369,6 +407,7 @@ impl Interpreter {
                 for item in items {
                     let scope = Env::child(env);
                     let item = coerce(&var_ty, item, &format!("'{var}'"))?;
+                    self.record(|t| t.value(stmt.span, var.clone(), &item));
                     scope.borrow_mut().define(var, item, var_ty.clone());
                     match self.exec_block(body, &scope, out)? {
                         Flow::Break => break,

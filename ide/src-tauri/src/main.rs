@@ -15,7 +15,11 @@ fn main() -> ExitCode {
     // a separate process that can be stopped.
     let args: Vec<String> = std::env::args().collect();
     if let Some(mode) = args.get(1).and_then(|a| run::Mode::from_flag(a)) {
-        return run::runner(mode, args.get(2).map(String::as_str).unwrap_or(""));
+        return run::runner(
+            mode,
+            args.get(2).map(String::as_str).unwrap_or(""),
+            args.get(3).map(String::as_str),
+        );
     }
 
     let result = tauri::Builder::default()

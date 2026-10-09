@@ -95,11 +95,30 @@ async function demo(cmd, args) {
     case "new_project":
       return args.to || args.path || "/demo";
     case "analyze":
-      return { diagnostics: [], hints: [], modules: [], root: "/demo" };
+      return {
+        diagnostics: [],
+        hints: [],
+        root: "/demo",
+        modules: [
+          { name: "main", package: "demo", path: "/demo/src/main.belsk2", uses: [1], errors: 0, entry: true, dependency: false, items: ["fn main"] },
+          { name: "util", package: "demo", path: "/demo/src/util.belsk2", uses: [], errors: 0, entry: false, dependency: false, items: ["fn twice"] },
+        ],
+      };
     case "complete":
       return ["prinb", "input", "len", "fn", "var", "while"].map((label) => ({ label, kind: "function" }));
     case "start":
       setTimeout(() => emit("run-output", { stream: "stdout", text: "(demo mode: build the app to run programs)\n" }), 50);
+      setTimeout(
+        () =>
+          emit("run-trace", {
+            files: {
+              "/demo/src/main.belsk2": { 4: { hits: 1, values: [["name", '"Gleb"']] }, 5: { hits: 1, values: [] }, 6: { hits: 1, values: [] } },
+              "/demo/src/util.belsk2": { 2: { hits: 1, values: [["return", "42"]] } },
+            },
+            idb: [[1, '"hello"'], [7, "42"]],
+          }),
+        80
+      );
       setTimeout(() => emit("run-exit", 0), 100);
       return null;
     default:

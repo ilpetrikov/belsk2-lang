@@ -23,6 +23,8 @@
           <button data-view="explorer" class="active" title="Explorer (Ctrl+Shift+E)">📁</button>
           <button data-view="search" title="Search (Ctrl+Shift+F)">🔍</button>
           <button data-view="problems" title="Problems (Ctrl+Shift+M)">⚠</button>
+          <button data-view="idb" title="idb inspector (Ctrl+K Ctrl+B)">▦</button>
+          <button id="btn-map" title="Module map (Ctrl+K Ctrl+G)">◈</button>
           <span class="spacer"></span>
           <button data-view="settings" title="Settings (Ctrl+,)">⚙</button>
         </nav>
@@ -56,6 +58,7 @@
               <label class="switch"><input type="checkbox" id="set-islands" /><span class="track"></span> Islands <kbd>Ctrl+K Ctrl+I</kbd></label>
               <label class="switch"><input type="checkbox" id="set-depthStripe" /><span class="track"></span> Nesting stripe <kbd>Ctrl+K Ctrl+D</kbd></label>
               <label class="switch"><input type="checkbox" id="set-minimap" /><span class="track"></span> Minimap <kbd>Ctrl+K Ctrl+M</kbd></label>
+              <label class="switch"><input type="checkbox" id="set-liveValues" /><span class="track"></span> Live values after a run <kbd>Ctrl+K Ctrl+V</kbd></label>
               <label class="switch"><input type="checkbox" id="set-inlayHints" /><span class="track"></span> Inline type hints <kbd>Ctrl+K Ctrl+H</kbd></label>
               <div class="setting-title">Behavior</div>
               <label class="switch"><input type="checkbox" id="set-autoSave" /><span class="track"></span> Auto save</label>
@@ -70,6 +73,10 @@
               <button id="btn-shortcuts" class="link">All keyboard shortcuts… <kbd>Ctrl+K Ctrl+S</kbd></button>
             </div>
           </section>
+          <section id="view-idb" class="view" hidden>
+            <div class="view-title"><span>idb inspector</span></div>
+            <div id="idb-list"></div>
+          </section>
           <section id="view-problems" class="view" hidden>
             <div class="view-title"><span>Problems</span></div>
             <div id="problems-side"></div>
@@ -80,6 +87,17 @@
           <div id="tabs"></div>
           <div id="editor-area">
             <div id="editor"></div>
+            <div id="modmap" hidden>
+              <div class="modmap-bar">
+                <b>Module map</b>
+                <span id="modmap-info" class="muted"></span>
+                <span class="spacer"></span>
+                <span class="muted legend"><i class="lg entry"></i>entry <i class="lg dep"></i>dependency <i class="lg err"></i>errors</span>
+                <button id="modmap-fit" title="Fit to screen">⤢ Fit</button>
+                <button id="modmap-close" title="Close (Esc)">×</button>
+              </div>
+              <svg id="modmap-svg"></svg>
+            </div>
             <div id="welcome">
               <div class="welcome-inner">
                 <h1><span class="logo big">B2</span> Belsk2 IDE</h1>
@@ -118,6 +136,7 @@
         <span id="st-problems">⊗ 0 ⚠ 0</span>
         <span id="st-run"></span>
         <span id="st-chord"></span>
+        <span id="st-live"></span>
         <span class="spacer"></span>
         <span id="st-pos"></span>
         <span id="st-lang"></span>

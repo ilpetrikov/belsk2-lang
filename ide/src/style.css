@@ -1028,3 +1028,196 @@ button.link {
   align-items: center;
   gap: 8px;
 }
+
+/* ---- live values ---- */
+.live-value {
+  color: var(--ok) !important;
+  opacity: 0.75;
+  font-style: italic;
+  font-size: 0.92em;
+}
+#st-live {
+  color: var(--ok);
+}
+
+/* ---- idb inspector ---- */
+#idb-list {
+  overflow: auto;
+  flex: 1;
+}
+.idb-table {
+  width: 100%;
+  border-collapse: collapse;
+  font: 12px var(--mono);
+}
+.idb-table th {
+  text-align: left;
+  color: var(--fg-muted);
+  font-weight: 600;
+  padding: 4px 10px;
+  border-bottom: 1px solid var(--border);
+}
+.idb-table td {
+  padding: 4px 10px;
+  border-bottom: 1px solid var(--border);
+  max-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  user-select: text;
+}
+.idb-table td:first-child {
+  width: 56px;
+  color: var(--accent);
+}
+.idb-table tr.changed td {
+  animation: flash 1.6s ease-out;
+}
+@keyframes flash {
+  from {
+    background: color-mix(in srgb, var(--warn) 35%, transparent);
+  }
+}
+
+/* ---- module map ---- */
+#modmap {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  background: radial-gradient(circle at 1px 1px, var(--border) 1px, transparent 0) 0 0 / 22px 22px, var(--island-code);
+}
+.modmap-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--island-side);
+}
+.modmap-bar .legend {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+.lg {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  margin-left: 6px;
+}
+.lg.entry {
+  background: var(--accent);
+}
+.lg.dep {
+  border: 1px dashed var(--fg-muted);
+}
+.lg.err {
+  background: var(--error);
+}
+#modmap-svg {
+  flex: 1;
+  width: 100%;
+  cursor: grab;
+}
+#modmap-svg.dragging {
+  cursor: grabbing;
+}
+#modmap-svg .edge {
+  fill: none;
+  stroke: var(--fg-muted);
+  stroke-width: 1.6;
+  opacity: 0.55;
+  stroke-dasharray: 6 5;
+  animation: flow 1.2s linear infinite;
+}
+#modmap-svg .edge.bad {
+  stroke: var(--error);
+  opacity: 0.9;
+}
+#modmap-svg.focused .edge {
+  opacity: 0.12;
+}
+#modmap-svg.focused .edge.lit {
+  opacity: 1;
+  stroke: var(--accent);
+  stroke-width: 2.2;
+}
+@keyframes flow {
+  to {
+    stroke-dashoffset: -22;
+  }
+}
+#modmap-svg .arrow-head {
+  fill: var(--fg-muted);
+}
+#modmap-svg .arrow-head.bad {
+  fill: var(--error);
+}
+#modmap-svg .node {
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+#modmap-svg.focused .node:not(.lit) {
+  opacity: 0.35;
+}
+#modmap-svg .node rect:first-child {
+  fill: var(--island-side);
+  stroke: var(--island-border);
+  stroke-width: 1.2;
+  filter: drop-shadow(0 6px 14px #0006);
+}
+#modmap-svg .node:hover rect:first-child,
+#modmap-svg .node.current rect:first-child {
+  stroke: var(--accent);
+}
+#modmap-svg .node .stripe {
+  fill: var(--fg-muted);
+  opacity: 0.4;
+}
+#modmap-svg .node.entry .stripe {
+  fill: var(--accent);
+  opacity: 1;
+}
+#modmap-svg .node.dep rect:first-child {
+  stroke-dasharray: 5 4;
+  fill: var(--bg);
+}
+#modmap-svg .node.has-errors rect:first-child {
+  stroke: var(--error);
+}
+#modmap-svg .node.has-errors .stripe {
+  fill: var(--error);
+  opacity: 1;
+}
+#modmap-svg text {
+  fill: var(--fg);
+  font-family: var(--font);
+  user-select: none;
+}
+#modmap-svg .title {
+  font-weight: 700;
+  font-size: 14px;
+}
+#modmap-svg .sub {
+  fill: var(--fg-muted);
+  font-size: 11px;
+}
+#modmap-svg .item {
+  font: 12px var(--mono);
+  fill: var(--fg-muted);
+}
+#modmap-svg .item.more {
+  font-style: italic;
+}
+#modmap-svg .badge {
+  fill: var(--error);
+}
+#modmap-svg .badge-text {
+  fill: #fff;
+  font-size: 11px;
+  font-weight: 700;
+}

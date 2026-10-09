@@ -448,3 +448,21 @@ fn host_api() {
     assert_eq!(interp.get_global("total"), Some(Value::from(2.0)));
     assert!(interp.call_function("nope", &[], &mut out).is_err());
 }
+
+#[test]
+fn trace_records_hits_and_values() {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    let src = "fn main() {\n    var total = 0;\n    for i in [1, 2, 3] {\n        total += i;\n    }\n    idb 7 = \"x\";\n}\n";
+    let trace = Rc::new(RefCell::new(belsk2::Trace::default()));
+    let mut interp = belsk2::Interpreter::new();
+    interp.set_trace(trace.clone());
+    let mut out = Vec::new();
+    assert!(interp.run_source_with_writer(src, &mut out).is_ok());
+    let t = trace.borrow();
+    let line = |n: usize| t.lines.get(&(0, n)).cloned().unwrap_or_default();
+    assert_eq!(line(4).hits, 3);
+    assert_eq!(line(4).values, [("total".to_string(), "6".to_string())]);
+    assert_eq!(line(3).values, [("i".to_string(), "3".to_string())]);
+    assert_eq!(t.idb.get(&7).map(String::as_str), Some("\"x\""));
+}

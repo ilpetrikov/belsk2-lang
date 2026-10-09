@@ -44,7 +44,8 @@
 - [x] IDE: delete to the trash, search in all files (Ctrl+Shift+F), emoji-safe columns
 - [x] Example projects (`examples/projects`) and `playground/`
 - [x] Themes (Belsk2 Night, Dark, Light, High Contrast), "islands" layout, nesting stripe, settings view
-- [ ] Module map, live values, idb inspector
+- [x] Module map, live values, idb inspector (interpreter `Trace`)
+- [x] Sessions per project, persistent output, recent projects, shortcuts
 
 ### Docs
 - [ ] Documentation and the Belsk2 Book (English)

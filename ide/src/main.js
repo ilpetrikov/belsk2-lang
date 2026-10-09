@@ -3,6 +3,7 @@
 
 import { call, listen, pickFolder, isDemo } from "./backend.js";
 import { THEMES, settings, setSetting, attachEditor } from "./theme.js";
+import { initFeatures, setTrace, onRunStart, markStale, applyLiveValues, toggleModuleMap, refreshModuleMap, enableMapGestures, clearTrace } from "./features.js";
 import { monaco, models, hooks, createEditor, analyze, bumpVersion, languageFor, toRange } from "./editor.js";
 
 const $ = (sel) => document.querySelector(sel);
@@ -55,6 +56,7 @@ async function ensureModel(path) {
   model.belsk2Dirty = false;
   model.onDidChangeContent(() => {
     model.belsk2Dirty = model.getAlternativeVersionId() !== model.belsk2Saved;
+    markStale(model);
     if (settings.autoSave && model.belsk2Dirty) {
       clearTimeout(model.belsk2AutoSave);
       model.belsk2AutoSave = setTimeout(() => saveFile(path), 1000);
@@ -91,6 +93,7 @@ async function openFile(path, selection) {
     editor.revealRangeInCenterIfOutsideViewport(range);
   }
   editor.focus();
+  applyLiveValues();
   $("#welcome").hidden = true;
   renderTabs();
   revealActive();
@@ -560,6 +563,7 @@ async function runAnalysis() {
     const report = await analyze(path);
     state.problems = report.diagnostics.map((d) => ({ ...d, path: d.path ?? path }));
     state.modules = report.modules;
+    refreshModuleMap();
   } catch (e) {
     console.error(e);
   }
@@ -636,6 +640,7 @@ async function run(check = false) {
   else if ($("#output").childNodes.length) log("\n", "info");
   log(`${check ? "Checking" : "Running"} ${baseName(target)}…\n`, "info");
   try {
+    if (!check) onRunStart();
     await call("start", { path: target, check });
     setRunning(!check);
   } catch (e) {
@@ -652,6 +657,7 @@ function setRunning(on) {
 }
 
 listen("run-output", (o) => log(o.text, o.stream));
+listen("run-trace", (t) => setTrace(t));
 listen("run-exit", (code) => {
   setRunning(false);
   log(`\n${code === 0 ? "Finished" : `Exited with code ${code ?? "?"}`}\n`, code === 0 ? "info" : "stderr");
@@ -706,7 +712,7 @@ function renderSettings() {
       return card;
     })
   );
-  for (const key of ["islands", "depthStripe", "minimap", "inlayHints", "autoSave", "reopenLast", "clearOnRun"]) {
+  for (const key of ["islands", "depthStripe", "minimap", "inlayHints", "autoSave", "reopenLast", "clearOnRun", "liveValues"]) {
     const box = $(`#set-${key}`);
     box.checked = !!settings[key];
     box.onchange = () => setSetting(key, box.checked);
@@ -863,6 +869,10 @@ const commands = [
   { label: "Preferences: Toggle Nesting Stripe", key: "Ctrl+K Ctrl+D", run: () => toggleSetting("depthStripe") },
   { label: "Preferences: Toggle Minimap", key: "Ctrl+K Ctrl+M", run: () => toggleSetting("minimap") },
   { label: "Preferences: Toggle Inline Hints", key: "Ctrl+K Ctrl+H", run: () => toggleSetting("inlayHints") },
+  { label: "Run: Toggle Live Values", key: "Ctrl+K Ctrl+V", run: () => toggleSetting("liveValues") },
+  { label: "Run: Clear Live Values", run: () => clearTrace() },
+  { label: "View: Module Map", key: "Ctrl+K Ctrl+G", run: () => toggleModuleMap() },
+  { label: "View: idb Inspector", key: "Ctrl+K Ctrl+B", run: () => showView("idb") },
   { label: "View: Zoom In (font size)", key: "Ctrl+=", run: () => fontSize(1) },
   { label: "View: Zoom Out (font size)", key: "Ctrl+-", run: () => fontSize(-1) },
   { label: "View: Reset Zoom", key: "Ctrl+0", run: () => fontSize(0) },
@@ -999,6 +1009,7 @@ async function cmdNewProject() {
 }
 
 $("#btn-run").onclick = () => run(false);
+$("#btn-map").onclick = () => toggleModuleMap();
 $("#btn-stop").onclick = () => call("stop");
 $("#btn-check").onclick = () => run(true);
 $("#btn-palette").onclick = () => palette(commandItems, "Type a command", ">");
@@ -1110,6 +1121,11 @@ function renderRecent() {
 
 renderRecent();
 renderSettings();
+initFeatures({ state, openFile });
+enableMapGestures();
+window.addEventListener("keydown", (ev) => {
+  if (ev.key === "Escape" && !$("#modmap").hidden && $("#palette").hidden) toggleModuleMap(false);
+});
 renderTree();
 renderProblems();
 updateStatus();
