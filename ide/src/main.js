@@ -2,7 +2,7 @@
 // status bar, command palette and quick open.
 
 import { call, listen, pickFolder, isDemo } from "./backend.js";
-import { monaco, models, hooks, createEditor, analyze, bumpVersion, languageFor, pathOf } from "./editor.js";
+import { monaco, models, hooks, createEditor, analyze, bumpVersion, languageFor, toRange } from "./editor.js";
 
 const $ = (sel) => document.querySelector(sel);
 const el = (tag, props = {}, ...children) => {
@@ -76,6 +76,7 @@ async function openFile(path, selection) {
   editor.setModel(model);
   const view = state.viewStates.get(path);
   if (view) editor.restoreViewState(view);
+  if (selection?.chars) selection = toRange(model, selection.chars);
   if (selection) {
     const range = selection.startLineNumber
       ? selection
@@ -203,7 +204,18 @@ function renderTree() {
       };
       row.oncontextmenu = (ev) => {
         ev.preventDefault();
-        renamePath(e.path);
+        state.selectedDir = e.dir ? e.path : dirName(e.path);
+        contextMenu(ev, [
+          ...(e.dir
+            ? [
+                { label: "New File…", run: () => newEntry(false) },
+                { label: "New Folder…", run: () => newEntry(true) },
+              ]
+            : [{ label: "Open", run: () => openFile(e.path) }]),
+          { label: "Rename…", run: () => renamePath(e.path) },
+          { label: "Delete", run: () => deletePath(e.path, e.dir), danger: true },
+          { label: "Copy Path", run: () => navigator.clipboard?.writeText(e.path) },
+        ]);
       };
       const li = el("li", {}, row);
       if (e.dir && open) li.append(render(e.children, depth + 1));
@@ -255,6 +267,126 @@ async function renamePath(path) {
   } catch (e) {
     alert(String(e));
   }
+}
+
+const under = (p, root) => p === root || p.startsWith(root + "/") || p.startsWith(root + "\\");
+
+async function deletePath(path, isDir) {
+  const what = isDir ? `the folder ${baseName(path)} and everything in it` : baseName(path);
+  if (!confirm(`Move ${what} to the trash?`)) return;
+  try {
+    await call("delete_path", { path });
+  } catch (e) {
+    return alert(String(e));
+  }
+  for (const tab of state.tabs.filter((t) => under(t, path))) {
+    const model = models.get(tab);
+    if (model) model.belsk2Dirty = false;
+    closeTab(tab);
+  }
+  await refreshFolder();
+  scheduleAnalysis(0);
+}
+
+function contextMenu(ev, items) {
+  const menu = $("#context-menu");
+  menu.replaceChildren(
+    ...items.map((it) =>
+      el("li", {
+        textContent: it.label,
+        className: it.danger ? "danger" : "",
+        onclick: () => {
+          menu.hidden = true;
+          it.run();
+        },
+      })
+    )
+  );
+  menu.hidden = false;
+  menu.style.left = `${Math.min(ev.clientX, innerWidth - 200)}px`;
+  menu.style.top = `${Math.min(ev.clientY, innerHeight - items.length * 28 - 10)}px`;
+}
+window.addEventListener("pointerdown", (ev) => {
+  if (!$("#context-menu").contains(ev.target)) $("#context-menu").hidden = true;
+});
+
+// ---- search ----
+
+let searchTimer = null;
+function scheduleSearch() {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(runSearch, 250);
+}
+
+async function runSearch() {
+  const query = $("#search-input").value;
+  const results = $("#search-results");
+  if (!state.folder || !query) {
+    results.replaceChildren();
+    $("#search-summary").textContent = state.folder ? "" : "Open a folder to search it.";
+    return;
+  }
+  const matches = await call("search", { root: state.folder.root, query, case: $("#search-case").checked });
+  const byFile = new Map();
+  for (const m of matches) {
+    if (!byFile.has(m.path)) byFile.set(m.path, []);
+    byFile.get(m.path).push(m);
+  }
+  $("#search-summary").textContent = matches.length
+    ? `${matches.length}${matches.length >= 2000 ? "+" : ""} results in ${byFile.size} files`
+    : "No results";
+  results.replaceChildren(
+    ...[...byFile].map(([path, list]) => {
+      const rel = path.slice(state.folder.root.length + 1);
+      const group = el(
+        "div",
+        { className: "search-file" },
+        el(
+          "div",
+          { className: "search-file-name", title: path },
+          el("span", { className: "icon " + fileKind(path) }),
+          el("span", { textContent: baseName(path) }),
+          el("span", { className: "muted", textContent: dirName(rel) }),
+          el("span", { className: "badge", textContent: list.length })
+        )
+      );
+      for (const m of list) {
+        const chars = [...m.text];
+        const start = m.col - 1;
+        // Keep a little context before the match on long lines.
+        const from = Math.max(0, start - 30);
+        group.append(
+          el(
+            "div",
+            {
+              className: "search-line",
+              onclick: () =>
+                openFile(m.path, { chars: { start: { line: m.line, col: m.col }, end: { line: m.line, col: m.col + m.len } } }),
+            },
+            el("span", { className: "muted", textContent: `${m.line}  ` }),
+            (from > 0 ? "…" : "") + chars.slice(from, start).join("").trimStart(),
+            el("mark", { textContent: chars.slice(start, start + m.len).join("") }),
+            chars.slice(start + m.len).join("")
+          )
+        );
+      }
+      return group;
+    })
+  );
+}
+
+$("#search-input").oninput = scheduleSearch;
+$("#search-case").onchange = runSearch;
+
+function focusSearch() {
+  if ($("#view-search").hidden || document.body.classList.contains("sidebar-hidden")) showView("search");
+  const selected = editor.getModel()?.getValueInRange(editor.getSelection());
+  if (selected && !selected.includes("\n")) {
+    $("#search-input").value = selected;
+    scheduleSearch();
+  }
+  $("#search-input").focus();
+  $("#search-input").select();
 }
 
 // ---- tabs ----------------------------------------------------------------------
@@ -318,8 +450,7 @@ function renderProblems() {
             "div",
             {
               className: "problem",
-              onclick: () =>
-                openFile(p.path, new monaco.Range(p.range.start.line, p.range.start.col, p.range.end.line, p.range.end.col)),
+              onclick: () => openFile(p.path, { chars: p.range }),
             },
             el("span", { className: "sev", textContent: "⊗" }),
             el("span", { className: "msg", textContent: p.message }),
@@ -482,6 +613,7 @@ const commands = [
   { label: "Run: Stop", key: "Shift+F5", run: () => call("stop") },
   { label: "Run: Check", key: "Ctrl+Shift+B", run: () => run(true) },
   { label: "View: Explorer", key: "Ctrl+Shift+E", run: () => showView("explorer") },
+  { label: "Search: Find in Files", key: "Ctrl+Shift+F", run: () => focusSearch() },
   { label: "View: Problems", key: "Ctrl+Shift+M", run: () => showPanel("problems") },
   { label: "View: Output", run: () => showPanel("output") },
   { label: "View: Toggle Sidebar", key: "Ctrl+B", run: () => document.body.classList.toggle("sidebar-hidden") },
@@ -622,6 +754,7 @@ const KEYS = {
   "shift+f5": () => call("stop"),
   "ctrl+shift+b": () => run(true),
   "ctrl+shift+e": () => showView("explorer"),
+  "ctrl+shift+f": () => focusSearch(),
   "ctrl+shift+m": () => showPanel("problems"),
   "ctrl+b": () => document.body.classList.toggle("sidebar-hidden"),
   "ctrl+j": () => document.body.classList.toggle("panel-hidden"),

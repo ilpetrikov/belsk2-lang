@@ -1,0 +1,31 @@
+// A library: it has src/lib.belsk2 instead of main.belsk2.
+// Other projects use it as a dependency (see ../shapes).
+
+double PI = 3.141592653589793;
+
+fn circle_area(r: double): double {
+    return PI * r * r;
+}
+
+fn rect_area(w: double, h: double): double {
+    return w * h;
+}
+
+fn triangle_area(a: double, b: double, c: double): double {
+    // Heron's formula; sqrt by Newton's method.
+    double s = (a + b + c) / 2;
+    return sqrt(s * (s - a) * (s - b) * (s - c));
+}
+
+fn sqrt(x: double): double {
+    if x <= 0 {
+        return 0;
+    }
+    double guess = x;
+    int i = 0;
+    while i < 30 {
+        guess = (guess + x / guess) / 2;
+        i += 1;
+    }
+    return guess;
+}

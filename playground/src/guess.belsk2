@@ -1,0 +1,24 @@
+// A small number guessing game.
+
+fn play() {
+    int secret = 42;
+    int tries = 0;
+    prinb("I am thinking of a number between 1 and 100.");
+    while true {
+        string answer = input("Your guess: ");
+        if len(answer) == 0 {
+            prinb("Bye! It was " + str(secret) + ".");
+            return;
+        }
+        int guess = int(answer);
+        tries += 1;
+        if guess < secret {
+            prinb("Bigger.");
+        } else if guess > secret {
+            prinb("Smaller.");
+        } else {
+            prinb("Yes! " + str(tries) + " tries.");
+            return;
+        }
+    }
+}

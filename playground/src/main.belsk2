@@ -1,0 +1,20 @@
+// The playground: change anything here and press F5 in the IDE
+// (or run `belsk2 run` in this folder).
+using guess;
+
+fn main() {
+    prinb("Hello from the belsk2 playground!");
+    var name = input("What is your name? ");
+    if len(name) == 0 {
+        name = "stranger";
+    }
+    prinb("Nice to meet you, " + name + ".");
+
+    int[] squares = [];
+    for i in [1, 2, 3, 4, 5] {
+        push(squares, i * i);
+    }
+    prinb("squares: " + str(squares));
+
+    play();
+}

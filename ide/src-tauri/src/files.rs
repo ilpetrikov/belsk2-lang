@@ -134,3 +134,98 @@ pub fn new_project(parent: String, name: String, lib: bool) -> Result<String, St
     project::create(&dir, &name, template).map_err(|e| e.message)?;
     Ok(plain(&dir))
 }
+
+/// Moves a file or folder to the system trash (so it can be restored).
+#[tauri::command]
+pub fn delete_path(path: String) -> Result<(), String> {
+    trash::delete(&path).map_err(|e| format!("cannot delete {path}: {e}"))
+}
+
+#[derive(Serialize)]
+pub struct Match {
+    path: String,
+    /// 1-based line and column (in characters).
+    line: usize,
+    col: usize,
+    /// Length of the match in characters.
+    len: usize,
+    text: String,
+}
+
+/// Most matches returned by one search.
+const MAX_MATCHES: usize = 2000;
+/// Files larger than this are not searched.
+const MAX_FILE: u64 = 2 * 1024 * 1024;
+
+fn search_dir(dir: &Path, query: &[char], case: bool, out: &mut Vec<Match>) {
+    let Ok(read) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut paths: Vec<PathBuf> = read.flatten().map(|e| e.path()).collect();
+    paths.sort();
+    for path in paths {
+        if out.len() >= MAX_MATCHES {
+            return;
+        }
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        if path.is_dir() {
+            if !SKIPPED.contains(&name.as_str()) {
+                search_dir(&path, query, case, out);
+            }
+            continue;
+        }
+        if std::fs::metadata(&path).map(|m| m.len() > MAX_FILE).unwrap_or(true) {
+            continue;
+        }
+        // Binary and non-UTF-8 files are skipped.
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let shown = plain(&path);
+        for (i, line) in text.lines().enumerate() {
+            let chars: Vec<char> = if case {
+                line.chars().collect()
+            } else {
+                line.chars().flat_map(char::to_lowercase).collect()
+            };
+            if chars.len() != line.chars().count() {
+                // Lowercasing changed the length; compare as typed instead.
+                continue;
+            }
+            let mut col = 0;
+            while col + query.len() <= chars.len() {
+                if chars.get(col..col + query.len()) == Some(query) {
+                    out.push(Match {
+                        path: shown.clone(),
+                        line: i + 1,
+                        col: col + 1,
+                        len: query.len(),
+                        text: line.trim_end().chars().take(300).collect(),
+                    });
+                    col += query.len().max(1);
+                } else {
+                    col += 1;
+                }
+            }
+        }
+    }
+}
+
+/// Finds `query` in every text file under `root`.
+#[tauri::command]
+pub fn search(root: String, query: String, case: bool) -> Vec<Match> {
+    if query.is_empty() {
+        return Vec::new();
+    }
+    let query: Vec<char> = if case {
+        query.chars().collect()
+    } else {
+        query.chars().flat_map(char::to_lowercase).collect()
+    };
+    let mut out = Vec::new();
+    search_dir(Path::new(&root), &query, case, &mut out);
+    out
+}

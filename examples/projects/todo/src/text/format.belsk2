@@ -1,0 +1,24 @@
+// Text helpers. Lives in src/text/format.belsk2, so it is `using text.format;`.
+
+fn repeat(s: string, times: int): string {
+    string out = "";
+    for i in range(times) {
+        out += s;
+    }
+    return out;
+}
+
+fn range(n: int): int[] {
+    int[] items = [];
+    int i = 0;
+    while i < n {
+        push(items, i);
+        i += 1;
+    }
+    return items;
+}
+
+fn title(s: string): string {
+    string line = repeat("=", len(s) + 4);
+    return line + "\n  " + s + "\n" + line;
+}

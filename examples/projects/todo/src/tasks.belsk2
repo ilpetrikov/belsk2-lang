@@ -1,0 +1,42 @@
+// The list of tasks and what can be done with it.
+
+string[] names = [];
+bool[] finished = [];
+
+fn add(name: string) {
+    push(names, name);
+    push(finished, false);
+}
+
+fn done(index: int) {
+    finished[index] = true;
+}
+
+fn count(): int {
+    return len(names);
+}
+
+fn left(): int {
+    int n = 0;
+    for f in finished {
+        if !f {
+            n += 1;
+        }
+    }
+    return n;
+}
+
+fn show() {
+    int i = 0;
+    while i < len(names) {
+        prinb(checkbox(finished[i]) + " " + names[i]);
+        i += 1;
+    }
+}
+
+fn checkbox(checked: bool): string {
+    if checked {
+        return "[x]";
+    }
+    return "[ ]";
+}

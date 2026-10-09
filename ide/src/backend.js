@@ -77,6 +77,19 @@ async function demo(cmd, args) {
     case "create_file":
       demoFiles[args.path] = "";
       return args.path;
+    case "delete_path":
+      delete demoFiles[args.path];
+      return null;
+    case "search": {
+      const out = [];
+      for (const [path, text] of Object.entries(demoFiles)) {
+        text.split("\n").forEach((line, i) => {
+          const col = (args.case ? line : line.toLowerCase()).indexOf(args.case ? args.query : args.query.toLowerCase());
+          if (col >= 0) out.push({ path, line: i + 1, col: col + 1, len: args.query.length, text: line });
+        });
+      }
+      return out;
+    }
     case "create_dir":
     case "rename_path":
     case "new_project":

@@ -110,8 +110,37 @@ function doc(path) {
   return { path, version, overlays };
 }
 
-const toRange = (r) => new monaco.Range(r.start.line, r.start.col, r.end.line, r.end.col);
-const pos = (p) => ({ line: p.lineNumber, col: p.column });
+// The analysis counts columns in characters, Monaco in UTF-16 code units;
+// they differ on lines with emoji and other characters outside the BMP.
+
+/** Monaco column for character column `col` on `line`. */
+export function toColumn(model, line, col) {
+  if (!model || line < 1 || line > model.getLineCount()) return col;
+  let units = 0;
+  let chars = 1;
+  for (const ch of model.getLineContent(line)) {
+    if (chars >= col) break;
+    units += ch.length;
+    chars++;
+  }
+  return units + 1 + Math.max(0, col - chars);
+}
+
+/** Character column for Monaco column `column` on `line`. */
+function fromColumn(model, line, column) {
+  return [...model.getLineContent(line).slice(0, column - 1)].length + 1;
+}
+
+/** A Monaco range for a character range from the analysis. */
+export function toRange(model, r) {
+  return new monaco.Range(
+    r.start.line,
+    toColumn(model, r.start.line, r.start.col),
+    r.end.line,
+    toColumn(model, r.end.line, r.end.col)
+  );
+}
+const pos = (model, p) => ({ line: p.lineNumber, col: fromColumn(model, p.lineNumber, p.column) });
 
 /** Analyzes `path`; returns the report and updates markers and hints. */
 export async function analyze(path) {
@@ -127,15 +156,19 @@ export async function analyze(path) {
     monaco.editor.setModelMarkers(
       model,
       "belsk2",
-      list.map((d) => ({
-        severity: monaco.MarkerSeverity.Error,
-        message: d.message,
-        startLineNumber: Math.max(1, d.range.start.line),
-        startColumn: Math.max(1, d.range.start.col),
-        endLineNumber: Math.max(1, d.range.end.line),
-        endColumn: Math.max(1, d.range.end.col),
-        source: "belsk2",
-      }))
+      list.map((d) => {
+        const line = Math.max(1, d.range.start.line);
+        const endLine = Math.max(1, d.range.end.line);
+        return {
+          severity: monaco.MarkerSeverity.Error,
+          message: d.message,
+          startLineNumber: line,
+          startColumn: toColumn(model, line, Math.max(1, d.range.start.col)),
+          endLineNumber: endLine,
+          endColumn: toColumn(model, endLine, Math.max(1, d.range.end.col)),
+          source: "belsk2",
+        };
+      })
     );
   }
   hintsByPath.set(path, report.hints);
@@ -147,8 +180,8 @@ export async function analyze(path) {
 
 monaco.languages.registerHoverProvider(LANG, {
   async provideHover(model, position) {
-    const h = await call("hover", { doc: doc(pathOf(model)), pos: pos(position) });
-    return h && { range: toRange(h.range), contents: [{ value: h.text }] };
+    const h = await call("hover", { doc: doc(pathOf(model)), pos: pos(model, position) });
+    return h && { range: toRange(model, h.range), contents: [{ value: h.text }] };
   },
 });
 
@@ -165,7 +198,7 @@ const ORDER = { variable: 0, parameter: 0, function: 1, module: 1, keyword: 2, t
 
 monaco.languages.registerCompletionItemProvider(LANG, {
   async provideCompletionItems(model, position) {
-    const items = await call("complete", { doc: doc(pathOf(model)), pos: pos(position) });
+    const items = await call("complete", { doc: doc(pathOf(model)), pos: pos(model, position) });
     const word = model.getWordUntilPosition(position);
     const range = new monaco.Range(position.lineNumber, word.startColumn, position.lineNumber, word.endColumn);
     return {
@@ -186,28 +219,28 @@ async function locations(list) {
   const out = [];
   for (const l of list) {
     const model = models.get(l.path) || (await hooks.ensureModel(l.path));
-    if (model) out.push({ uri: model.uri, range: toRange(l.range) });
+    if (model) out.push({ uri: model.uri, range: toRange(model, l.range) });
   }
   return out;
 }
 
 monaco.languages.registerDefinitionProvider(LANG, {
   async provideDefinition(model, position) {
-    const l = await call("definition", { doc: doc(pathOf(model)), pos: pos(position) });
+    const l = await call("definition", { doc: doc(pathOf(model)), pos: pos(model, position) });
     return l ? locations([l]) : [];
   },
 });
 
 monaco.languages.registerReferenceProvider(LANG, {
   async provideReferences(model, position) {
-    return locations(await call("references", { doc: doc(pathOf(model)), pos: pos(position) }));
+    return locations(await call("references", { doc: doc(pathOf(model)), pos: pos(model, position) }));
   },
 });
 
 monaco.languages.registerRenameProvider(LANG, {
   async provideRenameEdits(model, position, newName) {
     try {
-      const places = await call("rename", { doc: doc(pathOf(model)), pos: pos(position) });
+      const places = await call("rename", { doc: doc(pathOf(model)), pos: pos(model, position) });
       const locs = await locations(places);
       return {
         edits: locs.map((l) => ({
@@ -228,7 +261,7 @@ monaco.languages.registerInlayHintsProvider(LANG, {
     const hints = hintsByPath.get(pathOf(model)) || [];
     return {
       hints: hints.map((h) => ({
-        position: { lineNumber: h.pos.line, column: h.pos.col },
+        position: { lineNumber: h.pos.line, column: toColumn(model, h.pos.line, h.pos.col) },
         label: h.label,
         kind: h.kind === "type" ? monaco.languages.InlayHintKind.Type : monaco.languages.InlayHintKind.Parameter,
         paddingRight: h.kind === "parameter",

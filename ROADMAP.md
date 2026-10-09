@@ -41,6 +41,8 @@
 - [x] VS Code extension (`editors/vscode`): highlighting, snippets, LSP, Run/Check
 - [x] Tauri 2 IDE skeleton: VS Code-like layout, Monaco, analysis in the editor,
       palette, quick open, projects, Run/Stop/Check with program input
+- [x] IDE: delete to the trash, search in all files (Ctrl+Shift+F), emoji-safe columns
+- [x] Example projects (`examples/projects`) and `playground/`
 - [ ] Themes (dark, light, high contrast, Belsk2) and the "islands" look
 - [ ] Module map, live values, idb inspector
 
@@ -63,6 +65,3 @@
 - [ ] Analysis: completion after `.` is empty (no members yet; add with structs/classes);
       a file that does not parse only gets keyword/builtin/word completions.
 - [ ] Publish the VS Code extension to the Marketplace / Open VSX.
-- [ ] IDE: positions are sent as character columns; Monaco counts UTF-16 units, so lines with
-      emoji (characters outside the BMP) get slightly shifted squiggles.
-- [ ] IDE: no delete in the explorer yet (needs a trash/undo story); no search across files.

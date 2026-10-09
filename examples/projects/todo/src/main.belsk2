@@ -1,0 +1,16 @@
+// A tiny to-do list: several modules working together.
+// Run it with `belsk2 run` inside this folder (or F5 in the IDE).
+using tasks;
+using text.format;
+
+fn main() {
+    add("learn belsk2");
+    add("write a project");
+    add("try the IDE");
+    done(1);
+
+    prinb(title("my tasks"));
+    show();
+    prinb("");
+    prinb(str(left()) + " of " + str(count()) + " left");
+}

@@ -21,6 +21,7 @@
       <main id="workbench">
         <nav id="activitybar">
           <button data-view="explorer" class="active" title="Explorer (Ctrl+Shift+E)">📁</button>
+          <button data-view="search" title="Search (Ctrl+Shift+F)">🔍</button>
           <button data-view="problems" title="Problems (Ctrl+Shift+M)">⚠</button>
         </nav>
         <aside id="sidebar">
@@ -34,6 +35,15 @@
               </span>
             </div>
             <div id="tree"></div>
+          </section>
+          <section id="view-search" class="view" hidden>
+            <div class="view-title"><span>Search</span></div>
+            <div class="search-box">
+              <input id="search-input" placeholder="Search in all files" autocomplete="off" />
+              <label title="Match case"><input type="checkbox" id="search-case" /> Aa</label>
+            </div>
+            <div id="search-summary" class="muted"></div>
+            <div id="search-results"></div>
           </section>
           <section id="view-problems" class="view" hidden>
             <div class="view-title"><span>Problems</span></div>
@@ -93,6 +103,7 @@
         <ul id="palette-list"></ul>
       </div>
     </div>
+    <ul id="context-menu" hidden></ul>
     <div id="prompt-dialog" hidden>
       <form class="palette-box" id="prompt-form">
         <label id="prompt-label"></label>

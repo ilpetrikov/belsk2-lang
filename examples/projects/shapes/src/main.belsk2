@@ -1,0 +1,20 @@
+// Uses the `geometry` library through a path dependency (see belsk2.toml).
+using geometry;
+
+fn main() {
+    Dictionary<string, double> areas = {};
+    areas["circle r=1"] = circle_area(1);
+    areas["rect 3x4"] = rect_area(3, 4);
+    areas["triangle 3-4-5"] = triangle_area(3, 4, 5);
+
+    string biggest = "";
+    double best = -1;
+    for name in keys(areas) {
+        prinb(name + ": " + str(areas[name]));
+        if areas[name] > best {
+            best = areas[name];
+            biggest = name;
+        }
+    }
+    prinb("biggest: " + biggest);
+}

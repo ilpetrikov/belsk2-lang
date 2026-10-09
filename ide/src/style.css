@@ -545,3 +545,86 @@ body.panel-hidden #sash-panel {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* ---- search ---- */
+.search-box {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  padding: 0 10px 6px;
+}
+.search-box #search-input {
+  flex: 1;
+  min-width: 0;
+}
+.search-box label {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+#search-summary {
+  padding: 2px 10px 6px;
+  font-size: 12px;
+}
+#search-results {
+  overflow: auto;
+  flex: 1;
+}
+.search-file-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  white-space: nowrap;
+  font-weight: 600;
+}
+.search-file-name .muted {
+  font-weight: normal;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+}
+.search-line {
+  padding: 2px 10px 2px 30px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font: 12px var(--mono);
+  cursor: pointer;
+}
+.search-line:hover {
+  background: var(--bg-hover);
+}
+.search-line mark {
+  background: #ffc77755;
+  color: inherit;
+  border-radius: 2px;
+}
+
+/* ---- context menu ---- */
+#context-menu {
+  position: fixed;
+  z-index: 200;
+  list-style: none;
+  margin: 0;
+  padding: 4px;
+  min-width: 180px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px #0008;
+}
+#context-menu li {
+  padding: 5px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+#context-menu li:hover {
+  background: var(--bg-active);
+}
+#context-menu li.danger {
+  color: var(--error);
+}

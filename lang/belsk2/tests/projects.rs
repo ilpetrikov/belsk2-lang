@@ -429,3 +429,23 @@ fn repl_input_may_have_statements() {
     assert!(interp.compile_repl("var x = 1; prinb(x);").is_ok());
     assert!(interp.compile("var x = 1; prinb(x);").is_err());
 }
+
+/// The example projects and the playground in the repository check cleanly.
+#[test]
+fn bundled_projects_check() {
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    for dir in [
+        "examples/projects/todo",
+        "examples/projects/geometry",
+        "examples/projects/shapes",
+        "playground",
+    ] {
+        let loaded = project::load(&repo.join(dir), Mode::All);
+        let errors = match loaded {
+            Ok(mut loaded) => project::check(&mut loaded),
+            Err((errors, _)) => errors,
+        };
+        let messages: Vec<&str> = errors.iter().map(|e| e.message.as_str()).collect();
+        assert!(messages.is_empty(), "{dir}: {messages:?}");
+    }
+}

@@ -29,6 +29,8 @@ fn main() -> ExitCode {
             files::create_dir,
             files::rename_path,
             files::new_project,
+            files::delete_path,
+            files::search,
             lang::analyze,
             lang::hover,
             lang::complete,

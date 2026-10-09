@@ -35,7 +35,8 @@ REPL accepts statements outside functions.
 | `editors/vscode` | the VS Code extension |
 | `cli` | `belsk2` command-line tool |
 | `ide` | the Belsk2 IDE (Tauri 2 + Monaco) |
-| `examples` | example programs (`*.belsk2`) |
+| `examples` | example programs (`*.belsk2`) and projects (`examples/projects`) |
+| `playground` | a project to try things in: open it in the IDE and press F5 |
 
 ## Building
 
