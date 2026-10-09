@@ -1,35 +1,22 @@
 {
   "name": "belsk2-ide",
-  "version": "0.2.0",
-  "description": "IDE for belsk2 programming language",
-  "main": "main.js",
+  "private": true,
+  "version": "0.4.0",
+  "type": "module",
   "scripts": {
-    "start": "electron .",
-    "build": "electron-builder --win --linux --mac",
-    "build:cli": "cargo build --release -p belsk2-cli && node -e \"const fs=require('fs'),p=require('path'),e=process.platform==='win32'?'belsk2.exe':'belsk2';fs.mkdirSync('bin',{recursive:true});fs.copyFileSync(p.join('..','target','release',e),p.join('bin',e))\""
+    "dev": "vite",
+    "build": "vite build",
+    "tauri": "tauri",
+    "app": "tauri dev",
+    "bundle": "tauri build"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.1.1",
+    "@tauri-apps/plugin-dialog": "^2.2.0",
+    "monaco-editor": "^0.52.2"
   },
   "devDependencies": {
-    "electron-builder": "^24.0.0"
-  },
-  "build": {
-    "appId": "com.belsk2.ide",
-    "productName": "belsk2 IDE",
-    "files": [
-      "main.js",
-      "preload.js",
-      "renderer/**/*",
-      "bin/**/*"
-    ],
-    "extraResources": [],
-    "win": {
-      "target": "nsis",
-      "icon": null
-    },
-    "linux": {
-      "target": "AppImage"
-    },
-    "mac": {
-      "target": "dmg"
-    }
+    "@tauri-apps/cli": "^2.1.0",
+    "vite": "^6.0.7"
   }
 }

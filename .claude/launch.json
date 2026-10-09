@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "ide-ui",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--prefix", "ide", "run", "dev"],
+      "port": 1420
+    }
+  ]
+}

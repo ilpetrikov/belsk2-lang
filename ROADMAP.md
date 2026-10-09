@@ -39,8 +39,10 @@
 - [x] `lang/analysis` (diagnostics, hover, completion, definition, references, rename, hints, module graph)
 - [x] Language server `belsk2 lsp`
 - [x] VS Code extension (`editors/vscode`): highlighting, snippets, LSP, Run/Check
-- [ ] Rewrite the IDE on Tauri: themes, VS Code-like layout with a distinctive
-      feature of its own, compile errors shown in the editor
+- [x] Tauri 2 IDE skeleton: VS Code-like layout, Monaco, analysis in the editor,
+      palette, quick open, projects, Run/Stop/Check with program input
+- [ ] Themes (dark, light, high contrast, Belsk2) and the "islands" look
+- [ ] Module map, live values, idb inspector
 
 ### Docs
 - [ ] Documentation and the Belsk2 Book (English)
@@ -61,4 +63,6 @@
 - [ ] Analysis: completion after `.` is empty (no members yet; add with structs/classes);
       a file that does not parse only gets keyword/builtin/word completions.
 - [ ] Publish the VS Code extension to the Marketplace / Open VSX.
-- [ ] The IDE runs a temporary file, so `using` does not work there; the Tauri IDE should run projects.
+- [ ] IDE: positions are sent as character columns; Monaco counts UTF-16 units, so lines with
+      emoji (characters outside the BMP) get slightly shifted squiggles.
+- [ ] IDE: no delete in the explorer yet (needs a trash/undo story); no search across files.

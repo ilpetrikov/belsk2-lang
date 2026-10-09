@@ -1,6 +1,8 @@
 [workspace]
 resolver = "2"
 members = ["cli", "lang/syntax", "lang/typeck", "lang/interp", "lang/project", "lang/belsk2", "lang/analysis", "lang/lsp"]
+# The IDE has its own workspace: building Tauri is slow and not needed for the language.
+exclude = ["ide/src-tauri"]
 
 [workspace.package]
 version = "0.4.0"

@@ -34,7 +34,7 @@ REPL accepts statements outside functions.
 | `lang/lsp` | `belsk2-lsp`: the language server (`belsk2 lsp`) |
 | `editors/vscode` | the VS Code extension |
 | `cli` | `belsk2` command-line tool |
-| `ide` | the belsk2 IDE |
+| `ide` | the Belsk2 IDE (Tauri 2 + Monaco) |
 | `examples` | example programs (`*.belsk2`) |
 
 ## Building
@@ -192,12 +192,19 @@ other LSP clients can run `belsk2 lsp` directly.
 
 ## IDE
 
+`ide/` is the Belsk2 IDE, built with Tauri 2 and Monaco: explorer, tabs,
+errors as you type, hover, completion, go to definition, rename, type hints,
+command palette (Ctrl+Shift+P), quick open (Ctrl+P), Run (F5) with program
+input, Stop, Check and projects.
+
 ```sh
 cd ide
 npm install
-npm run build:cli   # builds the CLI and copies it into ide/bin
-npm start
+npm run app      # development build with hot reload
+npm run bundle   # installer in ide/src-tauri/target/release/bundle
 ```
+
+`npm run dev` alone opens the UI in a browser with a small demo backend.
 
 ## Development
 

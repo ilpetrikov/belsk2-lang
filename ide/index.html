@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Belsk2 IDE</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <div id="app">
+      <header id="titlebar">
+        <div class="brand"><span class="logo">B2</span> Belsk2</div>
+        <div id="title-project"></div>
+        <div class="actions">
+          <button id="btn-run" class="primary" title="Run (F5)">▶ Run</button>
+          <button id="btn-stop" title="Stop (Shift+F5)" disabled>■ Stop</button>
+          <button id="btn-check" title="Check (Ctrl+Shift+B)">✓ Check</button>
+          <button id="btn-palette" title="Command palette (Ctrl+Shift+P)">⌘</button>
+        </div>
+      </header>
+      <main id="workbench">
+        <nav id="activitybar">
+          <button data-view="explorer" class="active" title="Explorer (Ctrl+Shift+E)">📁</button>
+          <button data-view="problems" title="Problems (Ctrl+Shift+M)">⚠</button>
+        </nav>
+        <aside id="sidebar">
+          <section id="view-explorer" class="view">
+            <div class="view-title">
+              <span id="explorer-title">Explorer</span>
+              <span class="view-actions">
+                <button id="btn-new-file" title="New file">＋</button>
+                <button id="btn-new-folder" title="New folder">▣</button>
+                <button id="btn-refresh" title="Refresh">⟳</button>
+              </span>
+            </div>
+            <div id="tree"></div>
+          </section>
+          <section id="view-problems" class="view" hidden>
+            <div class="view-title"><span>Problems</span></div>
+            <div id="problems-side"></div>
+          </section>
+        </aside>
+        <div id="sash-side" class="sash vertical"></div>
+        <section id="main">
+          <div id="tabs"></div>
+          <div id="editor-area">
+            <div id="editor"></div>
+            <div id="welcome">
+              <div class="welcome-inner">
+                <h1><span class="logo big">B2</span> Belsk2 IDE</h1>
+                <p class="muted">A small language with a big plan.</p>
+                <div class="welcome-actions">
+                  <button id="w-open" class="primary">Open Folder…</button>
+                  <button id="w-new">New Project…</button>
+                </div>
+                <h3>Recent</h3>
+                <ul id="recent"></ul>
+                <p class="muted keys">Ctrl+P quick open · Ctrl+Shift+P commands · F5 run</p>
+              </div>
+            </div>
+          </div>
+          <div id="sash-panel" class="sash horizontal"></div>
+          <section id="panel">
+            <div class="panel-tabs">
+              <button data-panel="output" class="active">Output</button>
+              <button data-panel="problems">Problems <span id="problem-count" class="badge">0</span></button>
+              <span class="spacer"></span>
+              <button id="btn-clear" title="Clear output">⌫</button>
+            </div>
+            <div id="panel-output" class="panel-body">
+              <pre id="output"></pre>
+              <form id="stdin-form">
+                <span class="prompt">›</span>
+                <input id="stdin" placeholder="Input for the program (Enter to send)" autocomplete="off" disabled />
+              </form>
+            </div>
+            <div id="panel-problems" class="panel-body" hidden></div>
+          </section>
+        </section>
+      </main>
+      <footer id="statusbar">
+        <span id="st-project"></span>
+        <span id="st-problems">⊗ 0 ⚠ 0</span>
+        <span id="st-run"></span>
+        <span class="spacer"></span>
+        <span id="st-pos"></span>
+        <span id="st-lang"></span>
+      </footer>
+    </div>
+    <div id="palette" hidden>
+      <div class="palette-box">
+        <input id="palette-input" autocomplete="off" />
+        <ul id="palette-list"></ul>
+      </div>
+    </div>
+    <div id="prompt-dialog" hidden>
+      <form class="palette-box" id="prompt-form">
+        <label id="prompt-label"></label>
+        <input id="prompt-input" autocomplete="off" />
+      </form>
+    </div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
