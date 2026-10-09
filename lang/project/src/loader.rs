@@ -90,6 +90,11 @@ pub struct Options {
     /// Ignore `belsk2.lock` and move git dependencies to the newest commit
     /// of their branch or tag.
     pub update: bool,
+    /// File contents to use instead of what is on disk (unsaved editor
+    /// buffers), keyed by path.
+    pub overlays: HashMap<PathBuf, String>,
+    /// Whether `belsk2.lock` may be written. Editors turn this off.
+    pub write_lock: bool,
 }
 
 impl Default for Options {
@@ -99,6 +104,8 @@ impl Default for Options {
             offline: false,
             locked: false,
             update: false,
+            overlays: HashMap::new(),
+            write_lock: true,
         }
     }
 }
@@ -128,6 +135,9 @@ struct Loader {
     module_by_path: HashMap<PathBuf, ModuleId>,
     sources: SourceMap,
     errors: Vec<Error>,
+    /// Canonical path -> unsaved contents.
+    overlays: HashMap<PathBuf, String>,
+    write_lock: bool,
 }
 
 /// A path as shown in messages: relative to the current directory when
@@ -174,6 +184,18 @@ pub fn load_with(
     mode: Mode,
     options: &Options,
 ) -> Result<Loaded, (Vec<Error>, SourceMap)> {
+    let (loader, entry) = start_project(root, mode, options);
+    loader.finish(entry)
+}
+
+/// Like [`load_with`], but keeps going after errors: returns whatever
+/// could be loaded together with every error. Used by editors.
+pub fn load_lenient(root: &Path, mode: Mode, options: &Options) -> (Loaded, Vec<Error>) {
+    let (loader, entry) = start_project(root, mode, options);
+    loader.finish_lenient(entry)
+}
+
+fn start_project(root: &Path, mode: Mode, options: &Options) -> (Loader, Option<ModuleId>) {
     let mut loader = Loader::new(options);
     match Lockfile::load(root) {
         Ok(lock) => loader.old_lock = lock,
@@ -191,13 +213,14 @@ pub fn load_with(
                     "{} needs to be updated, but --locked was given",
                     root.join(crate::lockfile::LOCKFILE).display()
                 )));
+            } else if !loader.write_lock {
             } else if let Err(e) = new_lock.save(root) {
                 loader.errors.push(e);
             }
         }
     }
     let Some(pkg) = pkg else {
-        return Err((loader.errors, loader.sources));
+        return (loader, None);
     };
     let src = loader
         .packages
@@ -247,13 +270,24 @@ pub fn load_with(
             }
         }
     }
-    loader.finish(entry)
+    (loader, entry)
 }
 
 /// Loads a single file as a program. Modules it uses are looked up next to
 /// it (`using utils;` reads `utils.belsk2` from the same directory).
 pub fn load_file(file: &Path) -> Result<Loaded, (Vec<Error>, SourceMap)> {
-    let mut loader = Loader::new(&Options::default());
+    let (loader, entry) = start_file(file, &Options::default());
+    loader.finish(entry)
+}
+
+/// Like [`load_file`], but keeps going after errors (see [`load_lenient`]).
+pub fn load_file_lenient(file: &Path, options: &Options) -> (Loaded, Vec<Error>) {
+    let (loader, entry) = start_file(file, options);
+    loader.finish_lenient(entry)
+}
+
+fn start_file(file: &Path, options: &Options) -> (Loader, Option<ModuleId>) {
+    let mut loader = Loader::new(options);
     let dir = file.parent().map(Path::to_path_buf).unwrap_or_default();
     let name = file
         .file_stem()
@@ -267,7 +301,7 @@ pub fn load_file(file: &Path) -> Result<Loaded, (Vec<Error>, SourceMap)> {
         deps: BTreeMap::new(),
     });
     let entry = loader.load_module(0, name, file);
-    loader.finish(entry)
+    (loader, entry)
 }
 
 fn collect_files(dir: &Path, out: &mut Vec<PathBuf>) {
@@ -299,7 +333,26 @@ impl Loader {
             module_by_path: HashMap::new(),
             sources: SourceMap::new(),
             errors: Vec::new(),
+            overlays: options
+                .overlays
+                .iter()
+                .map(|(path, text)| (canonical(path), text.clone()))
+                .collect(),
+            write_lock: options.write_lock,
         }
+    }
+
+    fn finish_lenient(mut self, entry: Option<ModuleId>) -> (Loaded, Vec<Error>) {
+        let order = self.order();
+        let errors = std::mem::take(&mut self.errors);
+        let loaded = Loaded {
+            packages: self.packages,
+            modules: self.modules,
+            sources: self.sources,
+            entry,
+            order,
+        };
+        (loaded, errors)
     }
 
     fn finish(mut self, entry: Option<ModuleId>) -> Result<Loaded, (Vec<Error>, SourceMap)> {
@@ -453,7 +506,11 @@ impl Loader {
         if let Some(&id) = self.module_by_path.get(&key) {
             return Some(id);
         }
-        let text = match std::fs::read_to_string(path) {
+        let read = match self.overlays.get(&key) {
+            Some(text) => Ok(text.clone()),
+            None => std::fs::read_to_string(path),
+        };
+        let text = match read {
             Ok(t) => t,
             Err(e) => {
                 self.errors

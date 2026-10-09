@@ -68,6 +68,8 @@ enum Command {
     Update,
     /// Start an interactive session
     Repl,
+    /// Start the language server (for editors), talking LSP over stdin/stdout
+    Lsp,
 }
 
 fn main() -> ExitCode {
@@ -94,6 +96,7 @@ fn main() -> ExitCode {
         (Some(Command::New { name, lib }), _) => new_project(&PathBuf::from(&name), &name, lib),
         (Some(Command::Init { name, lib }), _) => init(name, lib),
         (Some(Command::Repl), _) => repl(),
+        (Some(Command::Lsp), _) => belsk2_lsp::run().map_err(|e| eprintln!("belsk2 lsp: {e}")),
         (None, None) if io::stdin().is_terminal() => repl(),
         (None, None) => run_file(Path::new("-"), &[], &options).map(|_| ()),
     };

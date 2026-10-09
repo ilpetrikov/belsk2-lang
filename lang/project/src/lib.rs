@@ -19,7 +19,8 @@ pub mod manifest;
 use std::path::{Path, PathBuf};
 
 pub use loader::{
-    display_path, load, load_file, load_with, Loaded, Mode, Module, ModuleId, Options, Package,
+    display_path, load, load_file, load_file_lenient, load_lenient, load_with, Loaded, Mode,
+    Module, ModuleId, Options, Package,
 };
 pub use lockfile::{Lockfile, LOCKFILE};
 pub use manifest::{module_name, valid_package_name, Dependency, Manifest, PackageInfo, MANIFEST};

@@ -1,0 +1,15 @@
+[package]
+name = "belsk2-analysis"
+description = "Code analysis for Belsk2 editors: diagnostics, hover, completion, navigation"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+belsk2.workspace = true
+stacker.workspace = true
+
+[lints]
+workspace = true
