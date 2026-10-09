@@ -73,8 +73,9 @@ monaco.editor.defineTheme("belsk2-dark", {
     { token: "operator", foreground: "89ddff" },
   ],
   colors: {
-    "editor.background": "#1b1d2b",
-    "editor.lineHighlightBackground": "#24273a",
+    "editor.background": "#12131d",
+    "editor.lineHighlightBackground": "#1c1e2d",
+    "minimap.background": "#12131d",
     "editorLineNumber.foreground": "#3b4261",
     "editorLineNumber.activeForeground": "#a9b1d6",
     "editorInlayHint.foreground": "#7a83b5",

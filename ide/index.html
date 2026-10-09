@@ -50,12 +50,20 @@
           <section id="view-settings" class="view" hidden>
             <div class="view-title"><span>Settings</span></div>
             <div id="settings-form">
-              <label>Color theme <select id="set-theme"></select></label>
-              <label class="check"><input type="checkbox" id="set-islands" /> Islands layout</label>
-              <label class="check"><input type="checkbox" id="set-depthStripe" /> Nesting stripe in the gutter</label>
-              <label class="check"><input type="checkbox" id="set-minimap" /> Minimap</label>
-              <label class="check"><input type="checkbox" id="set-inlayHints" /> Inline type hints</label>
-              <label>Font size <input type="number" id="set-fontSize" min="9" max="32" /></label>
+              <div class="setting-title">Color theme <kbd>Ctrl+K Ctrl+T</kbd></div>
+              <div id="set-theme" class="theme-grid"></div>
+              <div class="setting-title">Layout</div>
+              <label class="switch"><input type="checkbox" id="set-islands" /><span class="track"></span> Islands <kbd>Ctrl+K Ctrl+I</kbd></label>
+              <label class="switch"><input type="checkbox" id="set-depthStripe" /><span class="track"></span> Nesting stripe <kbd>Ctrl+K Ctrl+D</kbd></label>
+              <label class="switch"><input type="checkbox" id="set-minimap" /><span class="track"></span> Minimap <kbd>Ctrl+K Ctrl+M</kbd></label>
+              <label class="switch"><input type="checkbox" id="set-inlayHints" /><span class="track"></span> Inline type hints <kbd>Ctrl+K Ctrl+H</kbd></label>
+              <div class="setting-title">Font size <kbd>Ctrl+= / Ctrl+-</kbd></div>
+              <div class="stepper">
+                <button id="font-down" title="Smaller (Ctrl+-)">−</button>
+                <span id="set-fontSize"></span>
+                <button id="font-up" title="Bigger (Ctrl+=)">+</button>
+              </div>
+              <button id="btn-shortcuts" class="link">All keyboard shortcuts… <kbd>Ctrl+K Ctrl+S</kbd></button>
             </div>
           </section>
           <section id="view-problems" class="view" hidden>
@@ -105,6 +113,7 @@
         <span id="st-project"></span>
         <span id="st-problems">⊗ 0 ⚠ 0</span>
         <span id="st-run"></span>
+        <span id="st-chord"></span>
         <span class="spacer"></span>
         <span id="st-pos"></span>
         <span id="st-lang"></span>

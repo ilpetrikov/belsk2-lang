@@ -3,11 +3,12 @@
 
 import { monaco } from "./editor.js";
 
+/** `preview`: backdrop, sidebar, code, accent (for the theme cards). */
 export const THEMES = [
-  { id: "belsk2", label: "Belsk2 Night", monaco: "belsk2-dark" },
-  { id: "dark", label: "Dark", monaco: "belsk2-plain-dark" },
-  { id: "light", label: "Light", monaco: "belsk2-light" },
-  { id: "hc", label: "High Contrast", monaco: "belsk2-hc" },
+  { id: "belsk2", label: "Belsk2 Night", monaco: "belsk2-dark", preview: ["#0b0c13", "#1c1e2e", "#12131d", "#82aaff"] },
+  { id: "dark", label: "Dark", monaco: "belsk2-plain-dark", preview: ["#0e0e0e", "#222222", "#171717", "#3794ff"] },
+  { id: "light", label: "Light", monaco: "belsk2-light", preview: ["#d9dce8", "#ffffff", "#f6f7fb", "#5b5bd6"] },
+  { id: "hc", label: "High Contrast", monaco: "belsk2-hc", preview: ["#000000", "#000000", "#000000", "#ffd700"] },
 ];
 
 const syntax = (c) => [
@@ -31,8 +32,9 @@ monaco.editor.defineTheme("belsk2-plain-dark", {
     string: "ce9178", comment: "6a9955", op: "d4d4d4",
   }),
   colors: {
-    "editor.background": "#1e1e1e",
-    "editor.lineHighlightBackground": "#2a2a2a",
+    "editor.background": "#171717",
+    "editor.lineHighlightBackground": "#232323",
+    "minimap.background": "#171717",
     "editorInlayHint.foreground": "#9a9a9a",
     "editorInlayHint.background": "#2a2a2a",
   },
@@ -45,8 +47,9 @@ monaco.editor.defineTheme("belsk2-light", {
     string: "15803d", comment: "8a8fa8", op: "475569",
   }),
   colors: {
-    "editor.background": "#ffffff",
-    "editor.lineHighlightBackground": "#f3f4fa",
+    "editor.background": "#f6f7fb",
+    "editor.lineHighlightBackground": "#eceef6",
+    "minimap.background": "#f6f7fb",
     "editorLineNumber.foreground": "#b4b8cc",
     "editorInlayHint.foreground": "#7a7f99",
     "editorInlayHint.background": "#eef0f7",

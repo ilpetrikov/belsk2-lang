@@ -533,18 +533,65 @@ $("#output").onclick = () => {
 // ---- settings ----
 
 function renderSettings() {
-  const theme = $("#set-theme");
-  theme.replaceChildren(...THEMES.map((t) => el("option", { value: t.id, textContent: t.label })));
-  theme.value = settings.theme;
-  theme.onchange = () => setSetting("theme", theme.value);
+  $("#set-theme").replaceChildren(
+    ...THEMES.map((t) => {
+      const [backdrop, side, code, accent] = t.preview;
+      const card = el(
+        "button",
+        { className: "theme-card" + (t.id === settings.theme ? " selected" : ""), title: t.label },
+        el(
+          "span",
+          { className: "theme-preview" },
+          el("span", { className: "p-side" }),
+          el("span", { className: "p-code" }, el("i"), el("i"), el("i"))
+        ),
+        el("span", { className: "theme-name", textContent: t.label })
+      );
+      const preview = card.firstChild;
+      preview.style.background = backdrop;
+      preview.children[0].style.background = side;
+      preview.children[1].style.background = code;
+      preview.children[1].style.setProperty("--accent-preview", accent);
+      card.onclick = () => (setSetting("theme", t.id), renderSettings());
+      return card;
+    })
+  );
   for (const key of ["islands", "depthStripe", "minimap", "inlayHints"]) {
     const box = $(`#set-${key}`);
     box.checked = !!settings[key];
     box.onchange = () => setSetting(key, box.checked);
   }
-  const size = $("#set-fontSize");
-  size.value = settings.fontSize;
-  size.onchange = () => setSetting("fontSize", Math.min(32, Math.max(9, Number(size.value) || 14)));
+  $("#set-fontSize").textContent = `${settings.fontSize}px`;
+}
+
+function fontSize(delta) {
+  setSetting("fontSize", delta === 0 ? 14 : Math.min(32, Math.max(9, Number(settings.fontSize) + delta)));
+  renderSettings();
+}
+$("#font-down").onclick = () => fontSize(-1);
+$("#font-up").onclick = () => fontSize(1);
+$("#btn-shortcuts").onclick = () => showShortcuts();
+
+function toggleSetting(key) {
+  setSetting(key, !settings[key]);
+  renderSettings();
+}
+
+function nextTab(step) {
+  if (!state.tabs.length) return;
+  const i = state.tabs.indexOf(state.active);
+  openFile(state.tabs[(i + step + state.tabs.length) % state.tabs.length]);
+}
+
+function closeAllTabs() {
+  for (const t of [...state.tabs]) closeTab(t);
+}
+
+function showShortcuts() {
+  palette(
+    () => commands.filter((c) => c.key).map((c) => ({ ...c, detail: c.key })),
+    "Keyboard shortcuts (pick one to run it)"
+  );
 }
 
 function pickTheme() {
@@ -643,7 +690,6 @@ function ask(label, value = "") {
 
 const commands = [
   { label: "File: Open Folder…", key: "Ctrl+O", run: () => cmdOpenFolder() },
-  { label: "File: New Project…", run: () => cmdNewProject() },
   { label: "File: New File…", key: "Ctrl+N", run: () => newEntry(false) },
   { label: "File: New Folder…", run: () => newEntry(true) },
   { label: "File: Save", key: "Ctrl+S", run: () => saveFile() },
@@ -660,11 +706,27 @@ const commands = [
   { label: "View: Toggle Sidebar", key: "Ctrl+B", run: () => document.body.classList.toggle("sidebar-hidden") },
   { label: "View: Toggle Panel", key: "Ctrl+J", run: () => document.body.classList.toggle("panel-hidden") },
   { label: "Explorer: Refresh", run: () => refreshFolder() },
-  { label: "Preferences: Color Theme", run: () => pickTheme() },
+  { label: "Preferences: Color Theme", key: "Ctrl+K Ctrl+T", run: () => pickTheme() },
   { label: "Preferences: Open Settings", key: "Ctrl+,", run: () => showView("settings") },
-  { label: "Preferences: Toggle Islands Layout", run: () => (setSetting("islands", !settings.islands), renderSettings()) },
-  { label: "Preferences: Toggle Nesting Stripe", run: () => (setSetting("depthStripe", !settings.depthStripe), renderSettings()) },
+  { label: "Preferences: Keyboard Shortcuts", key: "Ctrl+K Ctrl+S", run: () => showShortcuts() },
+  { label: "Preferences: Toggle Islands Layout", key: "Ctrl+K Ctrl+I", run: () => toggleSetting("islands") },
+  { label: "Preferences: Toggle Nesting Stripe", key: "Ctrl+K Ctrl+D", run: () => toggleSetting("depthStripe") },
+  { label: "Preferences: Toggle Minimap", key: "Ctrl+K Ctrl+M", run: () => toggleSetting("minimap") },
+  { label: "Preferences: Toggle Inline Hints", key: "Ctrl+K Ctrl+H", run: () => toggleSetting("inlayHints") },
+  { label: "View: Zoom In (font size)", key: "Ctrl+=", run: () => fontSize(1) },
+  { label: "View: Zoom Out (font size)", key: "Ctrl+-", run: () => fontSize(-1) },
+  { label: "View: Reset Zoom", key: "Ctrl+0", run: () => fontSize(0) },
+  { label: "View: Toggle Output", key: "Ctrl+`", run: () => showPanel("output") },
+  { label: "View: Next Editor", key: "Ctrl+Tab", run: () => nextTab(1) },
+  { label: "View: Previous Editor", key: "Ctrl+Shift+Tab", run: () => nextTab(-1) },
+  { label: "File: Close All Editors", key: "Ctrl+K W", run: () => closeAllTabs() },
+  { label: "File: Open Folder… (VS Code chord)", key: "Ctrl+K Ctrl+O", run: () => cmdOpenFolder() },
+  { label: "File: New Project…", key: "Ctrl+Shift+N", run: () => cmdNewProject() },
   { label: "Editor: Format Document", key: "Shift+Alt+F", run: () => editor.getAction("editor.action.formatDocument")?.run() },
+  { label: "Editor: Add Line Comment", key: "Ctrl+K Ctrl+C", run: () => editor.getAction("editor.action.addCommentLine")?.run() },
+  { label: "Editor: Remove Line Comment", key: "Ctrl+K Ctrl+U", run: () => editor.getAction("editor.action.removeCommentLine")?.run() },
+  { label: "Editor: Fold All", key: "Ctrl+K Ctrl+0", run: () => editor.getAction("editor.foldAll")?.run() },
+  { label: "Editor: Unfold All", key: "Ctrl+K Ctrl+J", run: () => editor.getAction("editor.unfoldAll")?.run() },
   { label: "Editor: Rename Symbol", key: "F2", run: () => editor.getAction("editor.action.rename")?.run() },
   { label: "Editor: Go to Definition", key: "F12", run: () => editor.getAction("editor.action.revealDefinition")?.run() },
   { label: "Editor: Find References", key: "Shift+F12", run: () => editor.getAction("editor.action.goToReferences")?.run() },
@@ -786,36 +848,66 @@ $("#btn-clear").onclick = () => $("#output").replaceChildren();
 $("#w-open").onclick = cmdOpenFolder;
 $("#w-new").onclick = cmdNewProject;
 
-const KEYS = {
-  "ctrl+s": () => saveFile(),
-  "ctrl+alt+s": () => saveAll(),
-  "ctrl+o": () => cmdOpenFolder(),
-  "ctrl+n": () => newEntry(false),
-  "ctrl+w": () => state.active && closeTab(state.active),
-  "ctrl+p": () => quickOpen(),
-  "ctrl+shift+p": () => palette(commandItems, "Type a command", ">"),
-  f1: () => palette(commandItems, "Type a command", ">"),
-  f5: () => run(false),
-  "shift+f5": () => call("stop"),
-  "ctrl+shift+b": () => run(true),
-  "ctrl+shift+e": () => showView("explorer"),
-  "ctrl+shift+f": () => focusSearch(),
-  "ctrl+shift+m": () => showPanel("problems"),
-  "ctrl+b": () => document.body.classList.toggle("sidebar-hidden"),
-  "ctrl+j": () => document.body.classList.toggle("panel-hidden"),
-  "ctrl+,": () => showView("settings"),
-};
+// ---- keyboard shortcuts -------------------------------------------------------------
+// Bindings come from the `key` of each command ("Ctrl+K Ctrl+T" is a chord:
+// Ctrl+K, then Ctrl+T or just T).
+
+const norm = (k) => k.toLowerCase().replace(/\s+/g, " ").trim();
+const BINDINGS = new Map();
+for (const c of commands) {
+  if (!c.key) continue;
+  BINDINGS.set(norm(c.key), c.run);
+  const [first, second] = norm(c.key).split(" ");
+  // "Ctrl+K Ctrl+T" also works as Ctrl+K, T.
+  if (second?.startsWith("ctrl+")) BINDINGS.set(`${first} ${second.slice(5)}`, c.run);
+}
+BINDINGS.set("f1", () => palette(commandItems, "Type a command", ">"));
+for (let n = 1; n <= 9; n++) BINDINGS.set(`alt+${n}`, () => state.tabs[n - 1] && openFile(state.tabs[n - 1]));
+const PREFIXES = new Set([...BINDINGS.keys()].filter((k) => k.includes(" ")).map((k) => k.split(" ")[0]));
+
+function keyName(ev) {
+  let key = ev.key.toLowerCase();
+  if (key === "+") key = "=";
+  if (key === "_") key = "-";
+  if (ev.code === "Backquote") key = "`";
+  if (/^Digit\d$/.test(ev.code)) key = ev.code.slice(5);
+  return [ev.ctrlKey || ev.metaKey ? "ctrl" : "", ev.shiftKey ? "shift" : "", ev.altKey ? "alt" : "", key]
+    .filter(Boolean)
+    .join("+");
+}
+
+let chord = null;
+let chordTimer = null;
+function endChord() {
+  chord = null;
+  clearTimeout(chordTimer);
+  $("#st-chord").textContent = "";
+}
+
 window.addEventListener(
   "keydown",
   (ev) => {
-    const key = [ev.ctrlKey || ev.metaKey ? "ctrl" : "", ev.shiftKey ? "shift" : "", ev.altKey ? "alt" : "", ev.key.toLowerCase()]
-      .filter(Boolean)
-      .join("+");
-    const action = KEYS[key];
+    if (["control", "shift", "alt", "meta"].includes(ev.key.toLowerCase())) return;
+    const key = keyName(ev);
+    if (chord) {
+      const action = BINDINGS.get(`${chord} ${key}`);
+      endChord();
+      ev.preventDefault();
+      ev.stopPropagation();
+      action?.();
+      return;
+    }
+    const action = BINDINGS.get(key);
     if (action) {
       ev.preventDefault();
       ev.stopPropagation();
       action();
+    } else if (PREFIXES.has(key)) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      chord = key;
+      $("#st-chord").textContent = `(${ev.key.toUpperCase() === "K" ? "Ctrl+K" : key}) waiting for the second key…`;
+      chordTimer = setTimeout(endChord, 3000);
     }
   },
   true
