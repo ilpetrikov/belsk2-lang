@@ -10,8 +10,8 @@ use belsk2::syntax::{FileId, Span};
 use belsk2::Ty;
 
 use crate::{
-    builtins, Analysis, FileInfo, HintKind, InlayHint, Location, Pos, Range, Ref, Scope, Symbol,
-    SymbolKind,
+    builtins, Analysis, FileInfo, FnInfo, HintKind, InlayHint, Location, Pos, Range, Ref, Scope,
+    Symbol, SymbolKind,
 };
 
 pub(crate) fn index(analysis: &mut Analysis, loaded: &Loaded) {
@@ -58,6 +58,7 @@ pub(crate) fn index(analysis: &mut Analysis, loaded: &Loaded) {
             builtins: &builtin_ids,
             frames: vec![imports.clone()],
             scope_stack: Vec::new(),
+            fn_stack: Vec::new(),
         };
         let top = ix.open_scope(Pos::new(0, 0), Pos::MAX);
         for &symbol in imports.values() {
@@ -82,6 +83,8 @@ struct Indexer<'a> {
     frames: Vec<HashMap<String, usize>>,
     /// Completion scopes being filled, innermost last.
     scope_stack: Vec<usize>,
+    /// Functions being walked (indices into `Analysis::functions`).
+    fn_stack: Vec<usize>,
 }
 
 fn is_literal(e: &Expr) -> bool {
@@ -163,7 +166,17 @@ impl Indexer<'_> {
         let name = sym.name.clone();
         let from = sym.def.map(|d| d.range.end).unwrap_or_default();
         let top = sym.top_level;
+        let local = matches!(sym.kind, SymbolKind::Variable | SymbolKind::Parameter);
         self.analysis.symbols.push(sym);
+        if let Some(f) = self
+            .fn_stack
+            .last()
+            .and_then(|&f| self.analysis.functions.get_mut(f))
+        {
+            if local {
+                f.locals.push(id);
+            }
+        }
         if let Some(frame) = self.frames.last_mut() {
             frame.insert(name, id);
         }
@@ -271,6 +284,16 @@ impl Indexer<'_> {
                 self.expr(value);
             }
             StmtKind::FnDecl(decl) => {
+                if let Some(symbol) = self.lookup(&decl.name) {
+                    self.fn_stack.push(self.analysis.functions.len());
+                    self.analysis.functions.push(FnInfo {
+                        symbol,
+                        file: self.file(),
+                        locals: Vec::new(),
+                        uses: Vec::new(),
+                    });
+                }
+                let pushed = self.fn_stack.len();
                 self.block(&decl.body, |ix| {
                     for p in &decl.params {
                         let range = ix.name_range(p.span, &p.name);
@@ -293,6 +316,9 @@ impl Indexer<'_> {
                         }
                     }
                 });
+                if pushed > 0 && self.fn_stack.len() == pushed {
+                    self.fn_stack.pop();
+                }
             }
             StmtKind::Return(e) => {
                 if let Some(e) = e {
@@ -368,6 +394,15 @@ impl Indexer<'_> {
             | ExprKind::Null => {}
             ExprKind::Ident(name) => {
                 if let Some(symbol) = self.lookup(name) {
+                    if let Some(f) = self
+                        .fn_stack
+                        .last()
+                        .and_then(|&f| self.analysis.functions.get_mut(f))
+                    {
+                        if !f.uses.contains(&symbol) {
+                            f.uses.push(symbol);
+                        }
+                    }
                     let start = Pos::of(e.span);
                     self.analysis.refs.push(Ref {
                         loc: Location {

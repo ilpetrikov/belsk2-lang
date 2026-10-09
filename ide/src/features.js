@@ -25,15 +25,17 @@ export function initFeatures(context) {
   // For poking at the UI in a plain browser.
   if (isDemo) window.belsk2Debug = { models, trace: () => trace, settings };
   onSettingsChange(() => applyLiveValues());
-  $("#modmap-close").onclick = () => toggleModuleMap(false);
   $("#modmap-fit").onclick = () => fitMap();
   renderIdb();
 }
 
 // ---- live values ---------------------------------------------------------------
 
+let previousGlobals = new Map();
+
 export function setTrace(t) {
   previousIdb = new Map((trace?.idb || []).map(([k, v]) => [k, v]));
+  previousGlobals = new Map(Object.entries(trace?.globals || {}));
   trace = t;
   applyLiveValues();
   renderIdb();
@@ -84,206 +86,452 @@ export function onRunStart() {
   clearTrace();
 }
 
-// ---- idb inspector -----------------------------------------------------------------
+// ---- state inspector: module variables and idb -----------------------------------------
 
-function renderIdb() {
-  const list = $("#idb-list");
-  const slots = trace?.idb || [];
-  if (!slots.length) {
-    list.replaceChildren(
-      Object.assign(document.createElement("div"), {
-        className: "empty",
-        textContent: trace
-          ? "This run did not store anything in idb."
-          : "Run a program to see its idb slots here. They update live while it waits for input.",
-      })
-    );
-    return;
-  }
-  const table = document.createElement("table");
-  table.className = "idb-table";
-  table.innerHTML = "<thead><tr><th>slot</th><th>value</th></tr></thead>";
+function table(head, rows, previous) {
+  const t = document.createElement("table");
+  t.className = "idb-table";
+  t.innerHTML = `<thead><tr><th>${head}</th><th>value</th></tr></thead>`;
   const body = document.createElement("tbody");
-  for (const [slot, value] of slots) {
+  for (const [key, value] of rows) {
     const row = document.createElement("tr");
-    const changed = previousIdb.size && previousIdb.get(slot) !== value;
-    if (changed) row.className = "changed";
+    if (previous.size && previous.has(key) && previous.get(key) !== value) row.className = "changed";
     const a = document.createElement("td");
-    a.textContent = slot;
+    a.textContent = key;
     const b = document.createElement("td");
     b.textContent = value;
     b.title = value;
     row.append(a, b);
     body.append(row);
   }
-  table.append(body);
-  list.replaceChildren(table);
+  t.append(body);
+  return t;
+}
+
+function section(title, content) {
+  const box = document.createElement("div");
+  box.className = "state-section";
+  const h = document.createElement("div");
+  h.className = "state-title";
+  h.textContent = title;
+  box.append(h, content);
+  return box;
+}
+
+function note(text) {
+  return Object.assign(document.createElement("div"), { className: "empty", textContent: text });
+}
+
+function renderIdb() {
+  const list = $("#idb-list");
+  if (!trace) {
+    list.replaceChildren(note("Run a program to see its variables and idb slots here. They update live while it waits for input."));
+    return;
+  }
+  const globals = Object.entries(trace.globals || {});
+  const slots = trace.idb || [];
+  list.replaceChildren(
+    section(
+      "Module variables",
+      globals.length ? table("name", globals, previousGlobals) : note("No top-level variables.")
+    ),
+    section("idb", slots.length ? table("slot", slots, previousIdb) : note("This run did not use idb (`idb 1 = value;`)."))
+  );
 }
 
 // ---- module map ------------------------------------------------------------------------
+// Three views of the same code: modules and their `using`s; functions (and
+// top-level variables) grouped by module with their calls; and functions
+// with their parameters and variables. Everything can be dragged; positions
+// are remembered per project and view.
 
-const NODE_W = 190;
-const COL_GAP = 110;
+const NODE_W = 200;
+const COL_GAP = 120;
 const ROW_GAP = 26;
+const PAD = 14;
+const HEAD = 34;
+const MODES = ["modules", "functions", "variables"];
+let mode = loadJson("mapMode", "modules");
+if (!MODES.includes(mode)) mode = "modules";
 let view = { x: 0, y: 0, w: 1000, h: 600 };
 let bounds = { x: 0, y: 0, w: 1000, h: 600 };
+/** The graph being shown: groups (modules), nodes and edges. */
+let graph = { groups: [], nodes: [], edges: [] };
 
-export function toggleModuleMap(force) {
-  const map = $("#modmap");
-  const show = force ?? map.hidden;
-  map.hidden = !show;
-  if (show) {
-    renderModuleMap();
-    fitMap();
+function loadJson(key, fallback) {
+  try {
+    return JSON.parse(localStorage.getItem(key)) ?? fallback;
+  } catch {
+    return fallback;
   }
+}
+function saveJson(key, value) {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch {}
+}
+const posKey = () => `mapPos:${ctx.state.folder?.root ?? ""}:${mode}`;
+
+/** Shows the map in the editor area (it lives in its own tab). */
+export function showModuleMap() {
+  const first = $("#modmap").hidden;
+  $("#modmap").hidden = false;
+  renderModuleMap();
+  if (first) fitMap();
+}
+
+export function hideModuleMap() {
+  $("#modmap").hidden = true;
 }
 
 export function refreshModuleMap() {
   if (!$("#modmap").hidden) renderModuleMap();
 }
 
+function setMode(m) {
+  mode = m;
+  saveJson("mapMode", m);
+  renderModuleMap();
+  fitMap();
+}
+
 /** Columns: modules nobody uses on the left, what they use to the right. */
-function layout(modules) {
+function moduleLevels(modules) {
   const usedBy = modules.map(() => []);
   modules.forEach((m, i) => m.uses.forEach((u) => usedBy[u]?.push(i)));
   const level = new Array(modules.length).fill(0);
   const cycle = new Set();
-  const state = new Array(modules.length).fill(0); // 0 new, 1 visiting, 2 done
+  const seen = new Array(modules.length).fill(0); // 0 new, 1 visiting, 2 done
   const visit = (i, depth) => {
-    if (state[i] === 1) return;
-    if (depth <= level[i] && state[i] === 2) return;
+    if (seen[i] === 1) return;
+    if (seen[i] === 2 && depth <= level[i]) return;
     level[i] = Math.max(level[i], depth);
-    state[i] = 1;
+    seen[i] = 1;
     for (const u of modules[i].uses) {
-      if (state[u] === 1) cycle.add(`${i}>${u}`);
+      if (seen[u] === 1) cycle.add(`${i}>${u}`);
       else visit(u, level[i] + 1);
     }
-    state[i] = 2;
+    seen[i] = 2;
   };
-  modules.forEach((m, i) => {
-    if (!usedBy[i].length || m.entry) visit(i, 0);
-  });
-  modules.forEach((_, i) => state[i] === 0 && visit(i, 0));
-  const columns = [];
-  modules.forEach((m, i) => (columns[level[i]] ||= []).push(i));
+  modules.forEach((m, i) => (!usedBy[i].length || m.entry) && visit(i, 0));
+  modules.forEach((_, i) => seen[i] === 0 && visit(i, 0));
+  return { level, cycle };
+}
+
+/** Places boxes of the given heights in columns, centered vertically. */
+function columns(levels, heights, width) {
+  const cols = [];
+  levels.forEach((l, i) => (cols[l] ||= []).push(i));
+  const tallest = Math.max(0, ...cols.map((c) => (c || []).reduce((s, i) => s + heights[i] + ROW_GAP, -ROW_GAP)));
   const pos = [];
-  const heights = modules.map((m) => 58 + Math.min(m.items.length, 6) * 17 + (m.items.length > 6 ? 17 : 0));
-  const tallest = Math.max(
-    0,
-    ...columns.map((col) => col.reduce((sum, i) => sum + heights[i] + ROW_GAP, -ROW_GAP))
-  );
-  columns.forEach((col, c) => {
-    col.sort((a, b) => Number(modules[b].entry) - Number(modules[a].entry) || modules[a].name.localeCompare(modules[b].name));
-    const total = col.reduce((sum, i) => sum + heights[i] + ROW_GAP, -ROW_GAP);
+  cols.forEach((col, c) => {
+    const total = col.reduce((s, i) => s + heights[i] + ROW_GAP, -ROW_GAP);
     let y = (tallest - total) / 2;
     for (const i of col) {
-      pos[i] = { x: c * (NODE_W + COL_GAP), y, h: heights[i] };
+      pos[i] = { x: c * (width + COL_GAP), y };
       y += heights[i] + ROW_GAP;
     }
   });
-  return { pos, cycle, width: columns.length * (NODE_W + COL_GAP) - COL_GAP, height: tallest };
+  return pos;
+}
+
+function moduleGraph(modules) {
+  const { level, cycle } = moduleLevels(modules);
+  const heights = modules.map((m) => 58 + Math.min(m.items.length, 6) * 17 + (m.items.length > 6 ? 17 : 0));
+  const pos = columns(level, heights, NODE_W);
+  const nodes = modules.map((m, i) => ({
+    key: `m:${m.path}`,
+    x: pos[i].x,
+    y: pos[i].y,
+    w: NODE_W,
+    h: heights[i],
+    title: m.name,
+    sub: m.dependency ? `package ${m.package}` : m.entry ? "entry point" : baseName(m.path),
+    lines: m.items.slice(0, 6).concat(m.items.length > 6 ? [`+${m.items.length - 6} more`] : []),
+    cls: ["module", m.entry && "entry", m.dependency && "dep", m.errors && "has-errors", m.path === ctx.state.active && "current"],
+    errors: m.errors,
+    open: { path: m.path, line: 1 },
+  }));
+  const edges = [];
+  modules.forEach((m, i) =>
+    m.uses.forEach((u) => nodes[u] && edges.push({ from: nodes[i].key, to: nodes[u].key, bad: cycle.has(`${i}>${u}`) }))
+  );
+  return { groups: [], nodes, edges };
+}
+
+function codeGraph(modules, functions, globals, withLocals) {
+  const { level } = moduleLevels(modules);
+  // Children of each module: its functions, then its top-level variables.
+  const children = modules.map(() => []);
+  functions.forEach((f, i) => {
+    const locals = withLocals ? f.locals : [];
+    const lines = withLocals
+      ? locals.length
+        ? locals.map((l) => `${l.param ? "◦" : "•"} ${l.name}: ${l.ty}`)
+        : ["(no variables)"]
+      : [f.signature.replace(/^fn /, "")];
+    const h = 44 + lines.length * 17;
+    children[f.module ?? 0]?.push({
+      key: `f:${i}`,
+      w: NODE_W,
+      h,
+      title: `fn ${f.name}`,
+      lines,
+      cls: ["fn", f.name === "main" && modules[f.module]?.entry && "entry"],
+      open: { path: modules[f.module]?.path, line: f.line },
+    });
+  });
+  globals.forEach((g, i) =>
+    children[g.module ?? 0]?.push({
+      key: `g:${i}`,
+      w: NODE_W,
+      h: 30,
+      title: `var ${g.name}: ${g.ty}`,
+      lines: [],
+      cls: ["global"],
+      open: { path: modules[g.module]?.path, line: g.line },
+    })
+  );
+  const groupW = NODE_W + PAD * 2;
+  const heights = children.map((c) => HEAD + c.reduce((s, n) => s + n.h + 10, 0) + PAD - 10 + (c.length ? 0 : 20));
+  const pos = columns(level, heights, groupW);
+  const groups = [];
+  const nodes = [];
+  modules.forEach((m, i) => {
+    const group = {
+      key: `m:${m.path}`,
+      x: pos[i].x,
+      y: pos[i].y,
+      w: groupW,
+      h: heights[i],
+      title: m.name,
+      sub: m.dependency ? `package ${m.package}` : baseName(m.path),
+      cls: ["group", m.entry && "entry", m.dependency && "dep", m.errors && "has-errors"],
+      errors: m.errors,
+      open: { path: m.path, line: 1 },
+    };
+    groups.push(group);
+    let y = HEAD;
+    for (const n of children[i]) {
+      nodes.push({ ...n, group: group.key, rx: PAD, ry: y });
+      y += n.h + 10;
+    }
+  });
+  const edges = [];
+  functions.forEach((f, i) => {
+    for (const c of f.calls) if (c !== i) edges.push({ from: `f:${i}`, to: `f:${c}` });
+    for (const g of f.globals) edges.push({ from: `f:${i}`, to: `g:${g}`, data: true });
+  });
+  return { groups, nodes, edges };
+}
+
+/** Absolute position of a node (children are placed relative to their group). */
+function abs(n) {
+  if (!n.group) return { x: n.x, y: n.y };
+  const g = graph.groups.find((g) => g.key === n.group);
+  return { x: (g?.x ?? 0) + n.rx, y: (g?.y ?? 0) + n.ry };
+}
+
+function edgePath(a, b) {
+  const pa = abs(a);
+  const pb = abs(b);
+  const ya = pa.y + Math.min(a.h / 2, 22);
+  const yb = pb.y + Math.min(b.h / 2, 22);
+  if (pb.x >= pa.x + a.w) {
+    const x1 = pa.x + a.w;
+    const x2 = pb.x - 2;
+    const mid = (x1 + x2) / 2;
+    return `M ${x1} ${ya} C ${mid} ${ya}, ${mid} ${yb}, ${x2} ${yb}`;
+  }
+  if (pb.x + b.w <= pa.x) {
+    const x1 = pa.x;
+    const x2 = pb.x + b.w + 2;
+    const mid = (x1 + x2) / 2;
+    return `M ${x1} ${ya} C ${mid} ${ya}, ${mid} ${yb}, ${x2} ${yb}`;
+  }
+  // Side by side vertically: loop out to the right.
+  const x1 = pa.x + a.w;
+  const x2 = pb.x + b.w + 2;
+  const out = Math.max(x1, x2) + 40 + Math.abs(yb - ya) * 0.15;
+  return `M ${x1} ${ya} C ${out} ${ya}, ${out} ${yb}, ${x2} ${yb}`;
 }
 
 function renderModuleMap() {
-  const modules = ctx.state.modules || [];
+  const s = ctx.state;
+  const modules = s.modules || [];
   const canvas = $("#modmap-svg");
-  const info = $("#modmap-info");
+  for (const b of document.querySelectorAll("#modmap-modes button")) b.classList.toggle("active", b.dataset.mode === mode);
   canvas.replaceChildren();
   if (!modules.length) {
-    info.textContent = "Open a .belsk2 file to see how its modules use each other.";
+    $("#modmap-info").textContent = "Open a .belsk2 file to see how its code fits together.";
     return;
   }
+  graph =
+    mode === "modules"
+      ? moduleGraph(modules)
+      : codeGraph(modules, s.functions || [], s.globals || [], mode === "variables");
+  // Positions the user dragged things to.
+  const saved = loadJson(posKey(), {});
+  for (const item of [...graph.groups, ...graph.nodes]) {
+    const p = saved[item.key];
+    if (!p) continue;
+    if (item.group) [item.rx, item.ry] = p;
+    else [item.x, item.y] = p;
+  }
+
   const errors = modules.reduce((n, m) => n + m.errors, 0);
-  info.textContent = `${modules.length} module${modules.length === 1 ? "" : "s"} · ${modules.reduce((n, m) => n + m.uses.length, 0)} using · ${errors ? `${errors} error${errors === 1 ? "" : "s"}` : "no errors"}`;
+  const counts =
+    mode === "modules"
+      ? `${modules.length} modules · ${graph.edges.length} using`
+      : `${(s.functions || []).length} functions · ${(s.globals || []).length} globals · ${graph.edges.length} links`;
+  $("#modmap-info").textContent = `${counts} · ${errors ? `${errors} error${errors === 1 ? "" : "s"}` : "no errors"}`;
 
-  const { pos, cycle, width, height } = layout(modules);
-  bounds = { x: -40, y: -40, w: Math.max(width, 200) + 80, h: Math.max(height, 100) + 80 };
-  const defs = svg(
-    "defs",
-    {},
-    svg("marker", { id: "arrow", viewBox: "0 0 10 10", refX: "9", refY: "5", markerWidth: "7", markerHeight: "7", orient: "auto-start-reverse" },
-      svg("path", { d: "M 0 0 L 10 5 L 0 10 z", class: "arrow-head" })),
-    svg("marker", { id: "arrow-bad", viewBox: "0 0 10 10", refX: "9", refY: "5", markerWidth: "7", markerHeight: "7", orient: "auto-start-reverse" },
-      svg("path", { d: "M 0 0 L 10 5 L 0 10 z", class: "arrow-head bad" }))
+  const marker = (id, cls) =>
+    svg("marker", { id, viewBox: "0 0 10 10", refX: "9", refY: "5", markerWidth: "7", markerHeight: "7", orient: "auto-start-reverse" },
+      svg("path", { d: "M 0 0 L 10 5 L 0 10 z", class: `arrow-head ${cls}` }));
+  canvas.append(
+    svg("defs", {}, marker("arrow", ""), marker("arrow-bad", "bad"), marker("arrow-data", "data")),
+    svg("g", { class: "groups" }),
+    svg("g", { class: "edges" }),
+    svg("g", { class: "nodes" })
   );
-  const edges = svg("g", { class: "edges" });
-  const nodes = svg("g", { class: "nodes" });
-  canvas.append(defs, edges, nodes);
-
-  modules.forEach((m, i) => {
-    for (const u of m.uses) {
-      const a = pos[i];
-      const b = pos[u];
-      if (!a || !b) continue;
-      const bad = cycle.has(`${i}>${u}`);
-      let d;
-      if (b.x > a.x) {
-        const x1 = a.x + NODE_W;
-        const y1 = a.y + 28;
-        const x2 = b.x - 2;
-        const y2 = b.y + 28;
-        const mid = (x1 + x2) / 2;
-        d = `M ${x1} ${y1} C ${mid} ${y1}, ${mid} ${y2}, ${x2} ${y2}`;
-      } else {
-        // Back edge (a cycle or a same-column use): loop around below.
-        const x1 = a.x + NODE_W / 2;
-        const y1 = a.y + a.h;
-        const x2 = b.x + NODE_W / 2;
-        const y2 = b.y + b.h + 2;
-        const low = Math.max(y1, y2) + 50;
-        d = `M ${x1} ${y1} C ${x1} ${low}, ${x2} ${low}, ${x2} ${y2}`;
-      }
-      edges.append(svg("path", { d, class: `edge${bad ? " bad" : ""}`, "data-from": i, "data-to": u, "marker-end": bad ? "url(#arrow-bad)" : "url(#arrow)" }));
-    }
-  });
-
-  modules.forEach((m, i) => {
-    const p = pos[i];
-    if (!p) return;
-    const cls = ["node", m.entry && "entry", m.dependency && "dep", m.errors && "has-errors", m.path === ctx.state.active && "current"]
-      .filter(Boolean)
-      .join(" ");
-    const g = svg("g", { class: cls, transform: `translate(${p.x} ${p.y})`, "data-i": i });
-    g.append(
-      svg("rect", { width: NODE_W, height: p.h, rx: 12 }),
-      svg("rect", { class: "stripe", width: 4, height: p.h - 20, x: 0, y: 10, rx: 2 }),
-      svg("text", { x: 16, y: 24, class: "title" }, m.name),
-      svg("text", { x: 16, y: 42, class: "sub" }, m.dependency ? `package ${m.package}` : m.entry ? "entry point" : baseName(m.path))
-    );
-    if (m.errors) {
-      g.append(
-        svg("circle", { cx: NODE_W - 18, cy: 20, r: 10, class: "badge" }),
-        svg("text", { x: NODE_W - 18, y: 24, class: "badge-text", "text-anchor": "middle" }, String(m.errors))
-      );
-    }
-    m.items.slice(0, 6).forEach((item, k) => g.append(svg("text", { x: 16, y: 64 + k * 17, class: "item" }, item)));
-    if (m.items.length > 6) g.append(svg("text", { x: 16, y: 64 + 6 * 17, class: "item more" }, `+${m.items.length - 6} more`));
-    const title = svg("title", {}, `${m.path}\nClick to open`);
-    g.append(title);
-    g.addEventListener("click", () => {
-      toggleModuleMap(false);
-      ctx.openFile(m.path);
-    });
-    g.addEventListener("mouseenter", () => highlight(i, true));
-    g.addEventListener("mouseleave", () => highlight(i, false));
-    nodes.append(g);
-  });
+  for (const g of graph.groups) canvas.querySelector(".groups").append(renderBox(g, true));
+  for (const n of graph.nodes) canvas.querySelector(".nodes").append(renderBox(n, false));
+  renderEdges();
+  computeBounds();
   applyView();
 }
 
-function highlight(i, on) {
+function renderBox(item, isGroup) {
+  const p = abs(item);
+  const el = svg("g", { class: [isGroup ? "group" : "node", ...item.cls].filter(Boolean).join(" "), transform: `translate(${p.x} ${p.y})`, "data-key": item.key });
+  el.append(svg("rect", { class: "box", width: item.w, height: item.h, rx: isGroup ? 16 : 12 }));
+  if (!isGroup) el.append(svg("rect", { class: "stripe", width: 4, height: Math.max(item.h - 20, 8), x: 0, y: Math.min(10, item.h / 2 - 4), rx: 2 }));
+  const small = item.h <= 32;
+  el.append(svg("text", { x: 16, y: small ? 19 : isGroup ? 22 : 24, class: isGroup ? "group-title" : small ? "item" : "title" }, item.title));
+  if (item.sub) el.append(svg("text", { x: isGroup ? 16 + item.title.length * 8.5 + 10 : 16, y: isGroup ? 22 : 42, class: "sub" }, item.sub));
+  const top = item.sub && !isGroup ? 64 : 44;
+  (item.lines || []).forEach((line, k) => el.append(svg("text", { x: 16, y: top + k * 17, class: "item" }, line)));
+  if (item.errors) {
+    el.append(
+      svg("circle", { cx: item.w - 18, cy: 20, r: 10, class: "badge" }),
+      svg("text", { x: item.w - 18, y: 24, class: "badge-text", "text-anchor": "middle" }, String(item.errors))
+    );
+  }
+  el.append(svg("title", {}, `${item.open?.path ?? ""}${item.open?.line > 1 ? `:${item.open.line}` : ""}\nDrag to move · click to open`));
+  dragBox(el, item, isGroup);
+  el.addEventListener("mouseenter", () => highlight(item.key, true));
+  el.addEventListener("mouseleave", () => highlight(item.key, false));
+  return el;
+}
+
+function renderEdges() {
+  const layer = $("#modmap-svg .edges");
+  if (!layer) return;
+  const byKey = new Map([...graph.groups, ...graph.nodes].map((n) => [n.key, n]));
+  layer.replaceChildren(
+    ...graph.edges
+      .filter((e) => byKey.get(e.from) && byKey.get(e.to))
+      .map((e) =>
+        svg("path", {
+          d: edgePath(byKey.get(e.from), byKey.get(e.to)),
+          class: `edge${e.bad ? " bad" : ""}${e.data ? " data" : ""}`,
+          "data-from": e.from,
+          "data-to": e.to,
+          "marker-end": e.bad ? "url(#arrow-bad)" : e.data ? "url(#arrow-data)" : "url(#arrow)",
+        })
+      )
+  );
+}
+
+function computeBounds() {
+  const items = [...graph.groups, ...graph.nodes.filter((n) => !n.group)];
+  if (!items.length) return;
+  const x1 = Math.min(...items.map((i) => i.x));
+  const y1 = Math.min(...items.map((i) => i.y));
+  const x2 = Math.max(...items.map((i) => i.x + i.w));
+  const y2 = Math.max(...items.map((i) => i.y + i.h));
+  bounds = { x: x1 - 50, y: y1 - 50, w: x2 - x1 + 100, h: y2 - y1 + 100 };
+}
+
+/** Moves a box with the mouse; a click without movement opens the code. */
+function dragBox(el, item, isGroup) {
+  el.addEventListener("pointerdown", (ev) => {
+    if (ev.button !== 0) return;
+    ev.stopPropagation();
+    const canvas = $("#modmap-svg");
+    const scale = view.w / canvas.getBoundingClientRect().width;
+    const start = { x: ev.clientX, y: ev.clientY, ix: isGroup || !item.group ? item.x : item.rx, iy: isGroup || !item.group ? item.y : item.ry };
+    let moved = false;
+    el.setPointerCapture(ev.pointerId);
+    el.classList.add("dragging");
+    const move = (m) => {
+      const dx = (m.clientX - start.x) * scale;
+      const dy = (m.clientY - start.y) * scale;
+      if (!moved && Math.hypot(m.clientX - start.x, m.clientY - start.y) < 4) return;
+      moved = true;
+      if (item.group) {
+        item.rx = start.ix + dx;
+        item.ry = start.iy + dy;
+      } else {
+        item.x = start.ix + dx;
+        item.y = start.iy + dy;
+      }
+      const p = abs(item);
+      el.setAttribute("transform", `translate(${p.x} ${p.y})`);
+      if (isGroup) {
+        // Children move with their module.
+        for (const n of graph.nodes.filter((n) => n.group === item.key)) {
+          const q = abs(n);
+          $("#modmap-svg").querySelector(`[data-key="${CSS.escape(n.key)}"]`)?.setAttribute("transform", `translate(${q.x} ${q.y})`);
+        }
+      }
+      renderEdges();
+    };
+    const up = () => {
+      el.removeEventListener("pointermove", move);
+      el.removeEventListener("pointerup", up);
+      el.classList.remove("dragging");
+      if (!moved) {
+        if (item.open?.path) {
+          ctx.openFile(item.open.path, item.open.line > 1 ? { chars: { start: { line: item.open.line, col: 1 }, end: { line: item.open.line, col: 1 } } } : undefined);
+        }
+        return;
+      }
+      const saved = loadJson(posKey(), {});
+      saved[item.key] = item.group ? [item.rx, item.ry] : [item.x, item.y];
+      saveJson(posKey(), saved);
+      computeBounds();
+    };
+    el.addEventListener("pointermove", move);
+    el.addEventListener("pointerup", up);
+  });
+}
+
+function resetLayout() {
+  saveJson(posKey(), {});
+  renderModuleMap();
+  fitMap();
+}
+
+function highlight(key, on) {
   const canvas = $("#modmap-svg");
   canvas.classList.toggle("focused", on);
+  const linked = new Set([key]);
+  // A module's highlight covers its functions too.
+  for (const n of graph.nodes) if (n.group === key) linked.add(n.key);
   for (const e of canvas.querySelectorAll(".edge")) {
-    const hit = e.dataset.from === String(i) || e.dataset.to === String(i);
-    e.classList.toggle("lit", on && hit);
+    const hit = on && (linked.has(e.dataset.from) || linked.has(e.dataset.to));
+    e.classList.toggle("lit", hit);
+    if (hit) {
+      linked.add(e.dataset.from);
+      linked.add(e.dataset.to);
+    }
   }
-  for (const n of canvas.querySelectorAll(".node")) {
-    const j = Number(n.dataset.i);
-    const linked =
-      j === i ||
-      [...canvas.querySelectorAll(".edge.lit")].some((e) => e.dataset.from === String(j) || e.dataset.to === String(j));
-    n.classList.toggle("lit", on && linked);
+  for (const n of canvas.querySelectorAll(".node, .group")) n.classList.toggle("lit", on && linked.has(n.dataset.key));
+  if (on) {
+    // Keep the module of a linked function visible.
+    for (const n of graph.nodes) if (linked.has(n.key) && n.group) canvas.querySelector(`[data-key="${CSS.escape(n.group)}"]`)?.classList.add("lit");
   }
 }
 
@@ -308,15 +556,16 @@ function fitMap() {
   applyView();
 }
 
-// Pan with the mouse, zoom with the wheel.
+/** Pan by dragging the background, zoom with the wheel; mode buttons. */
 export function enableMapGestures() {
   const canvas = $("#modmap-svg");
+  for (const b of document.querySelectorAll("#modmap-modes button[data-mode]")) b.onclick = () => setMode(b.dataset.mode);
+  $("#modmap-reset").onclick = () => resetLayout();
   let drag = null;
   canvas.addEventListener("pointerdown", (ev) => {
-    if (ev.target.closest(".node")) return;
     drag = { x: ev.clientX, y: ev.clientY, view: { ...view } };
     canvas.setPointerCapture(ev.pointerId);
-    canvas.classList.add("dragging");
+    canvas.classList.add("panning");
   });
   canvas.addEventListener("pointermove", (ev) => {
     if (!drag) return;
@@ -326,7 +575,7 @@ export function enableMapGestures() {
   });
   canvas.addEventListener("pointerup", () => {
     drag = null;
-    canvas.classList.remove("dragging");
+    canvas.classList.remove("panning");
   });
   canvas.addEventListener(
     "wheel",
@@ -336,7 +585,7 @@ export function enableMapGestures() {
       const factor = ev.deltaY > 0 ? 1.12 : 1 / 1.12;
       const mx = view.x + ((ev.clientX - rect.left) / rect.width) * view.w;
       const my = view.y + ((ev.clientY - rect.top) / rect.height) * view.h;
-      const w = Math.min(8000, Math.max(200, view.w * factor));
+      const w = Math.min(10000, Math.max(200, view.w * factor));
       const h = (w / view.w) * view.h;
       view = { x: mx - ((mx - view.x) * w) / view.w, y: my - ((my - view.y) * h) / view.h, w, h };
       applyView();

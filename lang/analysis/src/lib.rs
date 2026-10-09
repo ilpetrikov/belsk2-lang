@@ -172,6 +172,18 @@ pub struct ModuleNode {
     pub dependency: bool,
 }
 
+/// A function: what it declares and what it uses.
+#[derive(Debug, Clone)]
+pub struct FnInfo {
+    /// The function's symbol.
+    pub symbol: usize,
+    pub file: FileId,
+    /// Parameters and variables declared in it (symbols).
+    pub locals: Vec<usize>,
+    /// Symbols it refers to (functions it calls, globals it reads, ...).
+    pub uses: Vec<usize>,
+}
+
 /// A source file that was analyzed.
 #[derive(Debug, Clone)]
 pub struct FileInfo {
@@ -209,6 +221,8 @@ pub struct Analysis {
     pub symbols: Vec<Symbol>,
     pub hints: Vec<InlayHint>,
     pub modules: Vec<ModuleNode>,
+    /// Every function with its parameters, variables and the names it uses.
+    pub functions: Vec<FnInfo>,
     /// Root directory of the project, if the file belongs to one.
     pub root: Option<PathBuf>,
     refs: Vec<Ref>,

@@ -1221,3 +1221,130 @@ button.link {
   font-size: 11px;
   font-weight: 700;
 }
+
+/* ---- module map: modes, groups, dragging ---- */
+.segmented {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+}
+.segmented button {
+  border: none;
+  border-radius: 0;
+  background: none;
+  padding: 4px 12px;
+  color: var(--fg-muted);
+}
+.segmented button.active {
+  background: var(--accent);
+  color: var(--accent-fg);
+}
+.segmented button:disabled {
+  font-style: italic;
+}
+.icon.map {
+  background: conic-gradient(var(--accent), #c792ea, #4fd6be, var(--accent));
+  border-radius: 50%;
+}
+#modmap-svg.panning {
+  cursor: grabbing;
+}
+#modmap-svg .group .box {
+  fill: color-mix(in srgb, var(--island-side) 55%, transparent);
+  stroke: var(--island-border);
+  stroke-width: 1.2;
+  stroke-dasharray: none;
+}
+#modmap-svg .group.entry .box {
+  stroke: var(--accent);
+}
+#modmap-svg .group.dep .box {
+  stroke-dasharray: 6 4;
+}
+#modmap-svg .group.has-errors .box {
+  stroke: var(--error);
+}
+#modmap-svg .group-title {
+  font-weight: 700;
+  font-size: 14px;
+}
+#modmap-svg .group,
+#modmap-svg .node {
+  cursor: grab;
+}
+#modmap-svg .dragging {
+  cursor: grabbing;
+}
+#modmap-svg .node .box {
+  fill: var(--island-side);
+  stroke: var(--island-border);
+  stroke-width: 1.2;
+  filter: drop-shadow(0 6px 14px #0006);
+}
+#modmap-svg .node:hover .box,
+#modmap-svg .node.current .box,
+#modmap-svg .node.dragging .box {
+  stroke: var(--accent);
+}
+#modmap-svg .node.entry .stripe {
+  fill: var(--accent);
+  opacity: 1;
+}
+#modmap-svg .node.dep .box {
+  stroke-dasharray: 5 4;
+  fill: var(--bg);
+}
+#modmap-svg .node.has-errors .box {
+  stroke: var(--error);
+}
+#modmap-svg .node.global .box {
+  fill: var(--bg);
+}
+#modmap-svg .node.global .stripe {
+  fill: var(--warn);
+  opacity: 0.8;
+}
+#modmap-svg.focused .group:not(.lit) {
+  opacity: 0.45;
+}
+#modmap-svg .edge.data {
+  stroke: var(--warn);
+  stroke-dasharray: 2 5;
+}
+#modmap-svg .arrow-head.data {
+  fill: var(--warn);
+}
+.state-section {
+  margin-bottom: 10px;
+}
+.state-title {
+  padding: 6px 10px 2px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--fg-muted);
+}
+.modmap-bar button,
+.segmented button {
+  white-space: nowrap;
+}
+#modmap-info {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+.modmap-bar .spacer {
+  display: none;
+}
+@container (max-width: 900px) {
+  .modmap-bar .legend {
+    display: none;
+  }
+}
+#modmap {
+  container-type: inline-size;
+}

@@ -107,6 +107,7 @@ fn check_and_run(
     }
     let result = project::run(&loaded, &mut interp, &[], &mut std::io::stdout());
     if let Some(dump) = &dump {
+        interp.snapshot_globals();
         dump();
     }
     let code = result.map_err(|e| report(&[e], &loaded.sources))?;
@@ -125,7 +126,7 @@ fn trace_json(t: &Trace, paths: &BTreeMap<u32, String>) -> String {
         );
     }
     let idb: Vec<(i64, &String)> = t.idb.iter().map(|(k, v)| (*k, v)).collect();
-    serde_json::json!({ "files": files, "idb": idb }).to_string()
+    serde_json::json!({ "files": files, "idb": idb, "globals": t.globals }).to_string()
 }
 
 /// Stdin that saves the trace before the program blocks waiting for input,

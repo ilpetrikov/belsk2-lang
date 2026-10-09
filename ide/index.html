@@ -23,7 +23,7 @@
           <button data-view="explorer" class="active" title="Explorer (Ctrl+Shift+E)">📁</button>
           <button data-view="search" title="Search (Ctrl+Shift+F)">🔍</button>
           <button data-view="problems" title="Problems (Ctrl+Shift+M)">⚠</button>
-          <button data-view="idb" title="idb inspector (Ctrl+K Ctrl+B)">▦</button>
+          <button data-view="idb" title="State inspector: variables and idb (Ctrl+K Ctrl+B)">▦</button>
           <button id="btn-map" title="Module map (Ctrl+K Ctrl+G)">◈</button>
           <span class="spacer"></span>
           <button data-view="settings" title="Settings (Ctrl+,)">⚙</button>
@@ -74,7 +74,7 @@
             </div>
           </section>
           <section id="view-idb" class="view" hidden>
-            <div class="view-title"><span>idb inspector</span></div>
+            <div class="view-title"><span>State inspector</span></div>
             <div id="idb-list"></div>
           </section>
           <section id="view-problems" class="view" hidden>
@@ -89,12 +89,17 @@
             <div id="editor"></div>
             <div id="modmap" hidden>
               <div class="modmap-bar">
-                <b>Module map</b>
+                <span id="modmap-modes" class="segmented">
+                  <button data-mode="modules" title="Modules and their using">Modules</button>
+                  <button data-mode="functions" title="Functions and module variables, with calls">Functions</button>
+                  <button data-mode="variables" title="Functions with their parameters and variables">Variables</button>
+                  <button disabled title="Comes with classes">Classes · soon</button>
+                </span>
                 <span id="modmap-info" class="muted"></span>
                 <span class="spacer"></span>
                 <span class="muted legend"><i class="lg entry"></i>entry <i class="lg dep"></i>dependency <i class="lg err"></i>errors</span>
+                <button id="modmap-reset" title="Undo all dragging">↺ Layout</button>
                 <button id="modmap-fit" title="Fit to screen">⤢ Fit</button>
-                <button id="modmap-close" title="Close (Esc)">×</button>
               </div>
               <svg id="modmap-svg"></svg>
             </div>

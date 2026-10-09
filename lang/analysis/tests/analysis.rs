@@ -155,3 +155,28 @@ fn project_with_unsaved_changes() {
         .any(|c| c.label == "util"));
     assert!(!Path::new(&dir.join("belsk2.lock")).exists());
 }
+
+#[test]
+fn functions_know_their_locals_and_calls() {
+    let a = analyze_source("t.belsk2", SRC);
+    let name = |id: usize| {
+        a.symbols
+            .get(id)
+            .map(|s| s.name.clone())
+            .unwrap_or_default()
+    };
+    let main = a.functions.iter().find(|f| name(f.symbol) == "main");
+    let locals: Vec<String> = main
+        .map(|f| f.locals.iter().map(|&s| name(s)).collect())
+        .unwrap_or_default();
+    assert_eq!(locals, ["total", "x"]);
+    let uses: Vec<String> = main
+        .map(|f| f.uses.iter().map(|&s| name(s)).collect())
+        .unwrap_or_default();
+    assert!(
+        uses.contains(&"add".to_string()) && uses.contains(&"prinb".to_string()),
+        "{uses:?}"
+    );
+    let add = a.functions.iter().find(|f| name(f.symbol) == "add");
+    assert_eq!(add.map(|f| f.locals.len()), Some(2));
+}

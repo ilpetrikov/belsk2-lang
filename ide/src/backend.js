@@ -103,6 +103,11 @@ async function demo(cmd, args) {
           { name: "main", package: "demo", path: "/demo/src/main.belsk2", uses: [1], errors: 0, entry: true, dependency: false, items: ["fn main"] },
           { name: "util", package: "demo", path: "/demo/src/util.belsk2", uses: [], errors: 0, entry: false, dependency: false, items: ["fn twice"] },
         ],
+        functions: [
+          { name: "main", signature: "fn main()", module: 0, line: 3, locals: [{ name: "name", ty: "string", param: false }], calls: [1], globals: [] },
+          { name: "twice", signature: "fn twice(n: int): int", module: 1, line: 1, locals: [{ name: "n", ty: "int", param: true }], calls: [], globals: [0] },
+        ],
+        globals: [{ name: "factor", ty: "int", module: 1, line: 1 }],
       };
     case "complete":
       return ["prinb", "input", "len", "fn", "var", "while"].map((label) => ({ label, kind: "function" }));
@@ -116,6 +121,7 @@ async function demo(cmd, args) {
               "/demo/src/util.belsk2": { 2: { hits: 1, values: [["return", "42"]] } },
             },
             idb: [[1, '"hello"'], [7, "42"]],
+            globals: { factor: "2" },
           }),
         80
       );

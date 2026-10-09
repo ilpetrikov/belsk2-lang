@@ -129,7 +129,101 @@ pub struct Report {
     /// Hints for the requested file.
     hints: Vec<Hint>,
     modules: Vec<ModuleDto>,
+    /// Functions and top-level variables, for the module map.
+    functions: Vec<FnDto>,
+    globals: Vec<GlobalDto>,
     root: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct LocalDto {
+    name: String,
+    ty: String,
+    param: bool,
+}
+
+#[derive(Serialize)]
+pub struct FnDto {
+    name: String,
+    signature: String,
+    /// Index into `modules`.
+    module: Option<usize>,
+    line: usize,
+    locals: Vec<LocalDto>,
+    /// Indices into `functions` of the functions it calls.
+    calls: Vec<usize>,
+    /// Indices into `globals` of the top-level variables it uses.
+    globals: Vec<usize>,
+}
+
+#[derive(Serialize)]
+pub struct GlobalDto {
+    name: String,
+    ty: String,
+    module: Option<usize>,
+    line: usize,
+}
+
+fn graph(a: &Analysis) -> (Vec<FnDto>, Vec<GlobalDto>) {
+    let module_of = |file| a.modules.iter().position(|m| m.file == file);
+    let line_of = |id: usize| {
+        a.symbols
+            .get(id)
+            .and_then(|s| s.def)
+            .map(|d| d.range.start.line)
+            .unwrap_or(1)
+    };
+    let fn_index: HashMap<usize, usize> =
+        a.functions.iter().enumerate().map(|(i, f)| (f.symbol, i)).collect();
+    let global_ids: Vec<usize> = a
+        .symbols
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| s.top_level && s.kind == SymbolKind::Variable)
+        .map(|(i, _)| i)
+        .collect();
+    let globals = global_ids
+        .iter()
+        .filter_map(|&id| {
+            let s = a.symbols.get(id)?;
+            Some(GlobalDto {
+                name: s.name.clone(),
+                ty: s.ty.to_string(),
+                module: s.def.and_then(|d| module_of(d.file)),
+                line: line_of(id),
+            })
+        })
+        .collect();
+    let functions = a
+        .functions
+        .iter()
+        .filter_map(|f| {
+            let s = a.symbols.get(f.symbol)?;
+            Some(FnDto {
+                name: s.name.clone(),
+                signature: s.signature.clone(),
+                module: module_of(f.file),
+                line: line_of(f.symbol),
+                locals: f
+                    .locals
+                    .iter()
+                    .filter_map(|&l| a.symbols.get(l))
+                    .map(|l| LocalDto {
+                        name: l.name.clone(),
+                        ty: l.ty.to_string(),
+                        param: l.kind == SymbolKind::Parameter,
+                    })
+                    .collect(),
+                calls: f.uses.iter().filter_map(|u| fn_index.get(u).copied()).collect(),
+                globals: f
+                    .uses
+                    .iter()
+                    .filter_map(|u| global_ids.iter().position(|g| g == u))
+                    .collect(),
+            })
+        })
+        .collect();
+    (functions, globals)
 }
 
 #[tauri::command]
@@ -180,10 +274,13 @@ pub fn analyze(doc: Doc) -> Report {
                 .collect(),
         })
         .collect();
+    let (functions, globals) = graph(&a);
     Report {
         diagnostics,
         hints,
         modules,
+        functions,
+        globals,
         root: a.root.as_deref().map(plain),
     }
 }

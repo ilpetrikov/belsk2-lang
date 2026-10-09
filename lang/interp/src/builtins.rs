@@ -92,7 +92,11 @@ pub fn call(
                 wrong_type(name, "an integer (idb slot)", first.unwrap_or(&Value::Null))
             })?;
             out.flush()?;
-            let line = interp.input.read_line()?.unwrap_or_default();
+            let line = {
+                interp.snapshot_globals();
+                interp.input.read_line()?
+            }
+            .unwrap_or_default();
             let v = Value::String(line);
             interp.id_bank.insert(id, v.clone());
             Ok(v)
@@ -103,7 +107,13 @@ pub fn call(
                 write!(out, "{prompt}")?;
             }
             out.flush()?;
-            Ok(Value::String(interp.input.read_line()?.unwrap_or_default()))
+            Ok(Value::String(
+                {
+                    interp.snapshot_globals();
+                    interp.input.read_line()?
+                }
+                .unwrap_or_default(),
+            ))
         }
         "len" => {
             arity(name, &args, 1, 1)?;

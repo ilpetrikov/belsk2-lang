@@ -59,6 +59,8 @@ pub struct Interpreter {
     type_env: Vec<HashMap<Rc<str>, Ty>>,
     /// Where to record line hits and values, when an editor asks for it.
     trace: Option<Rc<RefCell<Trace>>>,
+    /// Module scopes, kept while tracing so their variables can be shown.
+    module_envs: Vec<EnvRef>,
 }
 
 impl Default for Interpreter {
@@ -78,6 +80,7 @@ impl Interpreter {
             globals: Env::root(),
             id_bank: HashMap::new(),
             trace: None,
+            module_envs: Vec::new(),
             input: Input::Stdin,
             call_depth: 0,
             max_call_depth: DEFAULT_MAX_CALL_DEPTH,
@@ -90,6 +93,20 @@ impl Interpreter {
     /// into `trace` (for live values in editors).
     pub fn set_trace(&mut self, trace: Rc<RefCell<Trace>>) {
         self.trace = Some(trace);
+    }
+
+    /// Copies the current values of every module's top-level variables
+    /// into the trace.
+    pub fn snapshot_globals(&self) {
+        let mut globals = Vec::new();
+        for env in &self.module_envs {
+            for (name, value, _) in env.borrow().entries() {
+                if !matches!(value, Value::Function(_)) {
+                    globals.push((name, trace::short(&value)));
+                }
+            }
+        }
+        self.record(|t| t.globals = globals.into_iter().collect());
     }
 
     fn record(&self, f: impl FnOnce(&mut Trace)) {
@@ -236,6 +253,9 @@ impl Interpreter {
                 .define(name, value.clone(), ty.clone());
         }
         let module_env = Env::child(&import_env);
+        if self.trace.is_some() {
+            self.module_envs.push(module_env.clone());
+        }
         self.call_depth = 0;
         hoist_functions(&program.stmts, &module_env);
         for stmt in &program.stmts {

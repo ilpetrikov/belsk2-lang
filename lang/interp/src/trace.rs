@@ -28,6 +28,8 @@ pub struct Trace {
     pub lines: BTreeMap<(FileId, usize), LineTrace>,
     /// The id bank: slot -> value.
     pub idb: BTreeMap<i64, String>,
+    /// Top-level variables of every module: name -> value.
+    pub globals: BTreeMap<String, String>,
 }
 
 /// A short text form of a value.

@@ -3,7 +3,11 @@
 
 import { call, listen, pickFolder, isDemo } from "./backend.js";
 import { THEMES, settings, setSetting, attachEditor } from "./theme.js";
-import { initFeatures, setTrace, onRunStart, markStale, applyLiveValues, toggleModuleMap, refreshModuleMap, enableMapGestures, clearTrace } from "./features.js";
+import { initFeatures, setTrace, onRunStart, markStale, applyLiveValues, showModuleMap, hideModuleMap, refreshModuleMap, enableMapGestures, clearTrace } from "./features.js";
+
+/** The module map's tab. */
+const MAP = "belsk2:module-map";
+const tabName = (p) => (p === MAP ? "Module map" : p.split(/[\\/]/).pop());
 import { monaco, models, hooks, createEditor, analyze, bumpVersion, languageFor, toRange } from "./editor.js";
 
 const $ = (sel) => document.querySelector(sel);
@@ -72,6 +76,8 @@ hooks.ensureModel = ensureModel;
 hooks.open = (path, selection) => openFile(path, selection);
 
 async function openFile(path, selection) {
+  if (path === MAP) return openMap();
+  hideModuleMap();
   let model;
   try {
     model = await ensureModel(path);
@@ -102,7 +108,37 @@ async function openFile(path, selection) {
   saveSession();
 }
 
+/** Opens (or switches to) the module map tab. */
+function openMap() {
+  if (state.active && models.get(state.active)) state.viewStates.set(state.active, editor.saveViewState());
+  if (!state.tabs.includes(MAP)) state.tabs.push(MAP);
+  state.active = MAP;
+  $("#welcome").hidden = true;
+  showModuleMap();
+  renderTabs();
+  updateStatus();
+  saveSession();
+  // The map shows the project as analyzed from a file in it.
+  if (!state.modules?.length) {
+    const file = state.tabs.find((t) => t.endsWith(".belsk2")) || findEntry((e) => e.path.endsWith(".belsk2"))?.path;
+    if (file) analyzeFor(file);
+  }
+}
+
+async function analyzeFor(path) {
+  try {
+    const report = await analyze(path);
+    state.modules = report.modules;
+    state.functions = report.functions;
+    state.globals = report.globals;
+    refreshModuleMap();
+  } catch (e) {
+    console.error(e);
+  }
+}
+
 function closeTab(path) {
+  if (path === MAP) hideModuleMap();
   const model = models.get(path);
   if (model?.belsk2Dirty && !confirm(`${baseName(path)} has unsaved changes. Close anyway?`)) return;
   state.tabs = state.tabs.filter((t) => t !== path);
@@ -169,7 +205,7 @@ async function openFolder(path) {
 // ---- sessions: open tabs, the active tab and cursor positions per project ----
 
 const sessionKey = () => state.folder && `session:${state.folder.root}`;
-const exists = (path) => !!findEntry((e) => e.path === path);
+const exists = (path) => path === MAP || !!findEntry((e) => e.path === path);
 
 let sessionTimer = null;
 function saveSession() {
@@ -201,7 +237,7 @@ async function restoreSession() {
     const tabs = session.tabs.filter(exists);
     for (const t of tabs) {
       try {
-        await ensureModel(t);
+        if (t !== MAP) await ensureModel(t);
         if (!state.tabs.includes(t)) state.tabs.push(t);
       } catch {}
     }
@@ -357,6 +393,7 @@ function renderTree() {
 }
 
 function fileKind(name) {
+  if (name === MAP) return "map";
   if (name.endsWith(".belsk2")) return "b2";
   if (name === "belsk2.toml" || name === "belsk2.lock") return "toml";
   return "file";
@@ -531,7 +568,7 @@ function renderTabs() {
         "div",
         { className: "tab" + (path === state.active ? " active" : "") + (errors ? " has-errors" : ""), title: path },
         el("span", { className: "icon " + fileKind(path) }),
-        el("span", { className: "name", textContent: baseName(path) }),
+        el("span", { className: "name", textContent: tabName(path) }),
         el("span", {
           className: "close" + (model?.belsk2Dirty ? " dirty" : ""),
           textContent: model?.belsk2Dirty ? "●" : "×",
@@ -563,6 +600,8 @@ async function runAnalysis() {
     const report = await analyze(path);
     state.problems = report.diagnostics.map((d) => ({ ...d, path: d.path ?? path }));
     state.modules = report.modules;
+    state.functions = report.functions;
+    state.globals = report.globals;
     refreshModuleMap();
   } catch (e) {
     console.error(e);
@@ -628,11 +667,11 @@ function clearOutput() {
 
 function runTarget() {
   if (state.folder?.project) return state.folder.root + sep(state.folder.root) + "src" + sep(state.folder.root) + "main.belsk2";
-  return state.active;
+  return state.active === MAP ? state.tabs.find((t) => t.endsWith(".belsk2")) : state.active;
 }
 
 async function run(check = false) {
-  const target = check ? state.active || runTarget() : runTarget();
+  const target = check ? (state.active !== MAP && state.active) || runTarget() : runTarget();
   if (!target) return log("Open a file or a project to run it.\n", "info");
   await saveAll();
   showPanel("output");
@@ -871,7 +910,7 @@ const commands = [
   { label: "Preferences: Toggle Inline Hints", key: "Ctrl+K Ctrl+H", run: () => toggleSetting("inlayHints") },
   { label: "Run: Toggle Live Values", key: "Ctrl+K Ctrl+V", run: () => toggleSetting("liveValues") },
   { label: "Run: Clear Live Values", run: () => clearTrace() },
-  { label: "View: Module Map", key: "Ctrl+K Ctrl+G", run: () => toggleModuleMap() },
+  { label: "View: Module Map", key: "Ctrl+K Ctrl+G", run: () => openFile(MAP) },
   { label: "View: idb Inspector", key: "Ctrl+K Ctrl+B", run: () => showView("idb") },
   { label: "View: Zoom In (font size)", key: "Ctrl+=", run: () => fontSize(1) },
   { label: "View: Zoom Out (font size)", key: "Ctrl+-", run: () => fontSize(-1) },
@@ -1009,7 +1048,7 @@ async function cmdNewProject() {
 }
 
 $("#btn-run").onclick = () => run(false);
-$("#btn-map").onclick = () => toggleModuleMap();
+$("#btn-map").onclick = () => openFile(MAP);
 $("#btn-stop").onclick = () => call("stop");
 $("#btn-check").onclick = () => run(true);
 $("#btn-palette").onclick = () => palette(commandItems, "Type a command", ">");
@@ -1123,9 +1162,7 @@ renderRecent();
 renderSettings();
 initFeatures({ state, openFile });
 enableMapGestures();
-window.addEventListener("keydown", (ev) => {
-  if (ev.key === "Escape" && !$("#modmap").hidden && $("#palette").hidden) toggleModuleMap(false);
-});
+
 renderTree();
 renderProblems();
 updateStatus();
