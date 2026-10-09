@@ -32,6 +32,7 @@ REPL accepts statements outside functions.
 | `lang/belsk2` | `belsk2`: the main crate that re-exports everything (use this from Rust) |
 | `lang/analysis` | `belsk2-analysis`: diagnostics, hover, completion, navigation for editors |
 | `lang/fmt` | `belsk2-fmt`: the code formatter (`belsk2 fmt`, `belsk2fmt.toml`) |
+| `lang/wasm` | `belsk2-wasm`: the WebAssembly backend (`belsk2 build <file>`) |
 | `lang/lsp` | `belsk2-lsp`: the language server (`belsk2 lsp`) |
 | `editors/vscode` | the VS Code extension |
 | `cli` | `belsk2` command-line tool |
@@ -182,7 +183,7 @@ assert_eq!(v, Value::from(49.0));
 ```
 
 Nothing in the toolchain panics: every failure is returned as a `belsk2::Error`
-with a kind (`Syntax`, `Type`, `Runtime`, `Io`), a message and a source location.
+with a kind (`Syntax`, `Type`, `Runtime`, `Io`, `Project`, `Compile`), a message and a source location.
 
 ## Formatting
 
@@ -204,6 +205,26 @@ space_around_operators = true
 line_ending = "auto"           # "lf", "crlf" or "auto" (keep the file's)
 trailing_newline = true
 ```
+
+## WebAssembly
+
+`belsk2 build app.belsk2` compiles a file to `app.wasm` (`-o` picks another
+path). Every top-level function is exported under its own name, so the
+module can be used from any WebAssembly host:
+
+```belsk2
+fn fib(n: int): int {
+    if n < 2 {
+        return n;
+    }
+    return fib(n - 1) + fib(n - 2);
+}
+```
+
+WASM builds have no input or output: `prinb`, `input`, `reab` and `idb` are
+compile errors. Parameters and returned values need declared types. The
+backend currently supports numbers, `bool`, `char`, functions, variables and
+`if`/`while`; strings, arrays and generics are next (see ROADMAP.md).
 
 ## Editor support
 

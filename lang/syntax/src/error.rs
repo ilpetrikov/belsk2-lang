@@ -15,6 +15,9 @@ pub enum ErrorKind {
     Io,
     /// A problem with `belsk2.toml`, modules or dependencies.
     Project,
+    /// Code the compiler cannot translate (for example, I/O in a WASM
+    /// build).
+    Compile,
 }
 
 impl ErrorKind {
@@ -25,6 +28,7 @@ impl ErrorKind {
             ErrorKind::Runtime => "runtime error",
             ErrorKind::Io => "io error",
             ErrorKind::Project => "project error",
+            ErrorKind::Compile => "compile error",
         }
     }
 }
@@ -71,6 +75,10 @@ impl Error {
 
     pub fn project(message: impl Into<String>) -> Self {
         Error::new(ErrorKind::Project, message)
+    }
+
+    pub fn compile(message: impl Into<String>) -> Self {
+        Error::new(ErrorKind::Compile, message)
     }
 
     /// Sets the location of the error.

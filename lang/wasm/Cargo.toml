@@ -1,0 +1,21 @@
+[package]
+name = "belsk2-wasm"
+description = "WebAssembly backend for the Belsk2 programming language"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+belsk2-syntax.workspace = true
+belsk2-typeck.workspace = true
+wasm-encoder = "0.261"
+wasmparser = "0.261"
+
+[dev-dependencies]
+belsk2-interp.workspace = true
+wasmtime = { version = "49", default-features = false, features = ["cranelift", "runtime", "std", "gc", "gc-drc"] }
+
+[lints]
+workspace = true

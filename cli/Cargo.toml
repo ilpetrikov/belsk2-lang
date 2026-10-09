@@ -15,6 +15,7 @@ path = "src/main.rs"
 belsk2.workspace = true
 belsk2-lsp.workspace = true
 belsk2-fmt.workspace = true
+belsk2-wasm.workspace = true
 clap.workspace = true
 
 [lints]

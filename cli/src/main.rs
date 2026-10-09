@@ -61,8 +61,14 @@ enum Command {
         /// Source files
         files: Vec<PathBuf>,
     },
-    /// Build the current project
-    Build,
+    /// Build the current project, or compile a file to WebAssembly
+    Build {
+        /// Source file to compile to a .wasm module
+        file: Option<PathBuf>,
+        /// Where to write the module (default: next to the file)
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
     /// Move git dependencies to the newest commit of their branch or tag
     /// and rewrite belsk2.lock
     Update,
@@ -100,7 +106,14 @@ fn main() -> ExitCode {
         (Some(Command::Run { file: None, args }), _) => run_project(&args, &options),
         (Some(Command::Check { files }), _) if files.is_empty() => build(false, &options),
         (Some(Command::Check { files }), _) => check_files(&files),
-        (Some(Command::Build), _) => build(true, &options),
+        (Some(Command::Build { file: None, .. }), _) => build(true, &options),
+        (
+            Some(Command::Build {
+                file: Some(file),
+                output,
+            }),
+            _,
+        ) => build_wasm(&file, output),
         (Some(Command::Update), _) => update(&options),
         (Some(Command::New { name, lib }), _) => new_project(&PathBuf::from(&name), &name, lib),
         (Some(Command::Init { name, lib }), _) => init(name, lib),
@@ -386,12 +399,34 @@ fn build(is_build: bool, options: &project::Options) -> Result<(), ()> {
     }
     let summary = project::summary(&loaded);
     if is_build {
-        // Code generation arrives with the WASM backend; until then a build
-        // is a full check of the project and its dependencies.
-        println!("Checked {summary}; no compiled output yet (the WASM backend is not ready)");
+        // Projects are compiled to WebAssembly in a later stage; until then a
+        // project build is a full check of the project and its dependencies.
+        println!("Checked {summary}; to compile a file to WebAssembly, run `belsk2 build <file>`");
     } else {
         println!("Checked {summary}");
     }
+    Ok(())
+}
+
+/// Compiles one file to a WebAssembly module.
+fn build_wasm(file: &Path, output: Option<PathBuf>) -> Result<(), ()> {
+    let mut loaded =
+        project::load_file(file).map_err(|(errors, sources)| report(&errors, &sources))?;
+    let errors = project::check(&mut loaded);
+    if !errors.is_empty() {
+        report(&errors, &loaded.sources);
+        return Err(());
+    }
+    let Some(module) = loaded.entry.and_then(|m| loaded.modules.get(m)) else {
+        eprintln!("project error: nothing to build in {}", file.display());
+        return Err(());
+    };
+    let wasm =
+        belsk2_wasm::compile(&module.program).map_err(|errors| report(&errors, &loaded.sources))?;
+    let output = output.unwrap_or_else(|| file.with_extension("wasm"));
+    std::fs::write(&output, &wasm)
+        .map_err(|e| eprintln!("io error: cannot write {}: {e}", output.display()))?;
+    println!("Wrote {} ({} bytes)", output.display(), wasm.len());
     Ok(())
 }
 

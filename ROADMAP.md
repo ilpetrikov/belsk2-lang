@@ -22,6 +22,15 @@
       tests run exported functions in `wasmtime` and compare with the interpreter.
       Stages: W1 numbers/functions/control flow/globals; W2 strings, arrays, generics;
       W3 components; later dictionaries, `any`, `str(double)`.
+  - [x] W1: `lang/wasm`, `belsk2 build <file>` writes a `.wasm`. Numbers with C#
+        semantics, `bool`, `char`, functions, locals, globals (set by the start
+        function), `if`/`while`/`break`/`continue`, conversions, `bel` checks (trap).
+        Every top-level function is exported.
+  - [ ] W2: strings, arrays, `for`, `len`/`push`/`pop`/`substr`/`str(int)`, generics.
+  - [ ] W3: components, project builds (several modules).
+  - Known differences from the interpreter: runtime errors are traps without a message;
+    float-to-integer conversions saturate at the `long` range (the interpreter wraps
+    huge values); `%` on doubles uses `a - b * trunc(a / b)`, inexact for huge quotients.
 - [ ] Components (our own "wit-bindgen backend"): `[component] world = "wit/app.wit"` in
       `belsk2.toml`; exports are plain `fn`s with matching names, imports become functions
       usable via `using`; canonical ABI glue for numbers, bool, char, string, list<T>;
@@ -66,7 +75,8 @@
       with `.Key` and `.Value`. Switch to that once `struct` exists
       (and update `examples/collections.belsk2` and the tests).
 - [ ] Function types (`fn(int): bool`) instead of the untyped `fn`; comes with lambdas.
-- [ ] `belsk2 build` only checks the project; it should produce output once the WASM backend exists.
+- [ ] `belsk2 build` (without a file) only checks the project; it should produce a `.wasm`
+      once project builds land in WASM stage W3.
 - [ ] Access modifiers for modules: today every top-level function and variable is exported.
       Add `public`/`private` together with the class access modifiers.
 - [ ] `belsk2.lock` stores a relative git URL (a local path) as an absolute path, so such a
