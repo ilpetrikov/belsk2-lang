@@ -57,6 +57,10 @@
               <label class="switch"><input type="checkbox" id="set-depthStripe" /><span class="track"></span> Nesting stripe <kbd>Ctrl+K Ctrl+D</kbd></label>
               <label class="switch"><input type="checkbox" id="set-minimap" /><span class="track"></span> Minimap <kbd>Ctrl+K Ctrl+M</kbd></label>
               <label class="switch"><input type="checkbox" id="set-inlayHints" /><span class="track"></span> Inline type hints <kbd>Ctrl+K Ctrl+H</kbd></label>
+              <div class="setting-title">Behavior</div>
+              <label class="switch"><input type="checkbox" id="set-autoSave" /><span class="track"></span> Auto save</label>
+              <label class="switch"><input type="checkbox" id="set-reopenLast" /><span class="track"></span> Reopen last project on start</label>
+              <label class="switch"><input type="checkbox" id="set-clearOnRun" /><span class="track"></span> Clear output on run</label>
               <div class="setting-title">Font size <kbd>Ctrl+= / Ctrl+-</kbd></div>
               <div class="stepper">
                 <button id="font-down" title="Smaller (Ctrl+-)">−</button>
@@ -84,9 +88,9 @@
                   <button id="w-open" class="primary">Open Folder…</button>
                   <button id="w-new">New Project…</button>
                 </div>
-                <h3>Recent</h3>
+                <h3>Recent projects <kbd>Ctrl+R</kbd></h3>
                 <ul id="recent"></ul>
-                <p class="muted keys">Ctrl+P quick open · Ctrl+Shift+P commands · F5 run</p>
+                <p class="muted keys"><kbd>Ctrl+P</kbd> quick open · <kbd>Ctrl+Shift+P</kbd> commands · <kbd>F5</kbd> run · <kbd>Ctrl+K Ctrl+S</kbd> all shortcuts</p>
               </div>
             </div>
           </div>
@@ -96,7 +100,7 @@
               <button data-panel="output" class="active">Output</button>
               <button data-panel="problems">Problems <span id="problem-count" class="badge">0</span></button>
               <span class="spacer"></span>
-              <button id="btn-clear" title="Clear output">⌫</button>
+              <button id="btn-clear" title="Clear output (Ctrl+K Ctrl+L)">⌫ Clear</button>
             </div>
             <div id="panel-output" class="panel-body">
               <pre id="output"></pre>

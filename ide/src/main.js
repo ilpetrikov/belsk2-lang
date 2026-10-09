@@ -55,6 +55,10 @@ async function ensureModel(path) {
   model.belsk2Dirty = false;
   model.onDidChangeContent(() => {
     model.belsk2Dirty = model.getAlternativeVersionId() !== model.belsk2Saved;
+    if (settings.autoSave && model.belsk2Dirty) {
+      clearTimeout(model.belsk2AutoSave);
+      model.belsk2AutoSave = setTimeout(() => saveFile(path), 1000);
+    }
     bumpVersion();
     renderTabs();
     scheduleAnalysis();
@@ -89,9 +93,10 @@ async function openFile(path, selection) {
   editor.focus();
   $("#welcome").hidden = true;
   renderTabs();
-  renderTree();
+  revealActive();
   updateStatus();
   scheduleAnalysis(0);
+  saveSession();
 }
 
 function closeTab(path) {
@@ -114,6 +119,7 @@ function closeTab(path) {
       updateStatus();
     }
   } else renderTabs();
+  saveSession();
 }
 
 async function saveFile(path = state.active) {
@@ -142,17 +148,136 @@ async function openFolder(path) {
   } catch (e) {
     return alert(String(e));
   }
-  const recent = [state.folder.root, ...load("recent", []).filter((r) => r !== state.folder.root)].slice(0, 8);
-  save("recent", recent);
+  addRecent(state.folder);
+  save("lastFolder", state.folder.root);
   state.expanded.add(state.folder.root);
   for (const e of state.folder.entries) if (e.dir && e.name === "src") state.expanded.add(e.path);
   state.selectedDir = state.folder.root;
   $("#explorer-title").textContent = state.folder.name;
   $("#title-project").textContent = state.folder.project ? `${state.folder.project} — Belsk2 project` : state.folder.name;
+  restoreOutput();
   renderTree();
   updateStatus();
+  if (await restoreSession()) return;
   const main = findEntry((e) => /[\\/]src[\\/]main\.belsk2$/.test(e.path)) || findEntry((e) => e.path.endsWith(".belsk2"));
   if (main && !state.active) openFile(main.path);
+}
+
+// ---- sessions: open tabs, the active tab and cursor positions per project ----
+
+const sessionKey = () => state.folder && `session:${state.folder.root}`;
+const exists = (path) => !!findEntry((e) => e.path === path);
+
+let sessionTimer = null;
+function saveSession() {
+  clearTimeout(sessionTimer);
+  sessionTimer = setTimeout(saveSessionNow, 300);
+}
+
+function saveSessionNow() {
+  const key = sessionKey();
+  if (!key || state.restoring) return;
+  if (state.active && editor.getModel()) state.viewStates.set(state.active, editor.saveViewState());
+  const views = {};
+  for (const t of state.tabs) if (state.viewStates.get(t)) views[t] = state.viewStates.get(t);
+  save(key, {
+    tabs: state.tabs,
+    active: state.active,
+    views,
+    expanded: [...state.expanded].filter((p) => p.startsWith(state.folder.root)),
+  });
+}
+
+async function restoreSession() {
+  const session = load(sessionKey(), null);
+  if (!session?.tabs?.length) return false;
+  state.restoring = true;
+  try {
+    for (const p of session.expanded || []) state.expanded.add(p);
+    for (const [p, view] of Object.entries(session.views || {})) state.viewStates.set(p, view);
+    const tabs = session.tabs.filter(exists);
+    for (const t of tabs) {
+      try {
+        await ensureModel(t);
+        if (!state.tabs.includes(t)) state.tabs.push(t);
+      } catch {}
+    }
+    const active = tabs.includes(session.active) ? session.active : tabs[tabs.length - 1];
+    if (active) await openFile(active);
+    renderTree();
+    return !!active;
+  } finally {
+    state.restoring = false;
+  }
+}
+
+function closeFolder() {
+  saveSessionNow();
+  saveOutputNow();
+  for (const t of [...state.tabs]) {
+    const m = models.get(t);
+    if (m?.belsk2Dirty && !confirm(`${baseName(t)} has unsaved changes. Close anyway?`)) return;
+  }
+  for (const [p, m] of models) {
+    m.belsk2Dirty = false;
+    m.dispose();
+    models.delete(p);
+  }
+  state.tabs = [];
+  state.active = null;
+  state.folder = null;
+  state.problems = [];
+  save("lastFolder", null);
+  editor.setModel(null);
+  $("#welcome").hidden = false;
+  $("#explorer-title").textContent = "Explorer";
+  $("#title-project").textContent = "";
+  restoreOutput();
+  renderRecent();
+  renderTabs();
+  renderTree();
+  renderProblems();
+  updateStatus();
+}
+
+// ---- recent projects ----
+
+function addRecent(folder) {
+  const recent = load("recent", [])
+    .map((r) => (typeof r === "string" ? { root: r, name: baseName(r) } : r))
+    .filter((r) => r.root !== folder.root);
+  recent.unshift({ root: folder.root, name: folder.project || folder.name, opened: Date.now() });
+  save("recent", recent.slice(0, 12));
+  renderRecent();
+}
+
+function recentList() {
+  return load("recent", []).map((r) => (typeof r === "string" ? { root: r, name: baseName(r) } : r));
+}
+
+function openRecent() {
+  palette(
+    () => recentList().map((r) => ({ label: r.name, detail: r.root, run: () => switchFolder(r.root) })),
+    "Open a recent project"
+  );
+}
+
+async function switchFolder(root) {
+  if (state.folder) closeFolder();
+  if (!state.folder) await openFolder(root);
+}
+
+function revealActive() {
+  if (!state.active || !state.folder) return;
+  let dir = dirName(state.active);
+  while (dir.length >= state.folder.root.length) {
+    state.expanded.add(dir);
+    const parent = dirName(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  renderTree();
+  document.querySelector("#tree .row.active")?.scrollIntoView({ block: "nearest" });
 }
 
 async function refreshFolder() {
@@ -470,7 +595,31 @@ function renderProblems() {
 function log(text, stream = "stdout") {
   const out = $("#output");
   out.append(el("span", { className: stream, textContent: text }));
+  // Keep the output bounded.
+  while (out.childNodes.length > 5000) out.firstChild.remove();
   out.scrollTop = out.scrollHeight;
+  saveOutput();
+}
+
+// The output is kept per project between sessions.
+const outputKey = () => `output:${state.folder?.root ?? ""}`;
+let outputTimer = null;
+function saveOutput() {
+  clearTimeout(outputTimer);
+  outputTimer = setTimeout(saveOutputNow, 500);
+}
+function saveOutputNow() {
+  const parts = [...$("#output").children].slice(-2000).map((s) => [s.className, s.textContent]);
+  save(outputKey(), parts);
+}
+function restoreOutput() {
+  const out = $("#output");
+  out.replaceChildren(...load(outputKey(), []).map(([cls, text]) => el("span", { className: cls, textContent: text })));
+  out.scrollTop = out.scrollHeight;
+}
+function clearOutput() {
+  $("#output").replaceChildren();
+  saveOutputNow();
 }
 
 function runTarget() {
@@ -483,7 +632,8 @@ async function run(check = false) {
   if (!target) return log("Open a file or a project to run it.\n", "info");
   await saveAll();
   showPanel("output");
-  $("#output").replaceChildren();
+  if (settings.clearOnRun) clearOutput();
+  else if ($("#output").childNodes.length) log("\n", "info");
   log(`${check ? "Checking" : "Running"} ${baseName(target)}…\n`, "info");
   try {
     await call("start", { path: target, check });
@@ -556,7 +706,7 @@ function renderSettings() {
       return card;
     })
   );
-  for (const key of ["islands", "depthStripe", "minimap", "inlayHints"]) {
+  for (const key of ["islands", "depthStripe", "minimap", "inlayHints", "autoSave", "reopenLast", "clearOnRun"]) {
     const box = $(`#set-${key}`);
     box.checked = !!settings[key];
     box.onchange = () => setSetting(key, box.checked);
@@ -723,8 +873,19 @@ const commands = [
   { label: "File: Open Folder… (VS Code chord)", key: "Ctrl+K Ctrl+O", run: () => cmdOpenFolder() },
   { label: "File: New Project…", key: "Ctrl+Shift+N", run: () => cmdNewProject() },
   { label: "Editor: Format Document", key: "Shift+Alt+F", run: () => editor.getAction("editor.action.formatDocument")?.run() },
+  { label: "Editor: Toggle Line Comment", key: "Ctrl+/", run: () => editor.getAction("editor.action.commentLine")?.run() },
+  { label: "Editor: Toggle Block Comment", key: "Shift+Alt+A", run: () => editor.getAction("editor.action.blockComment")?.run() },
   { label: "Editor: Add Line Comment", key: "Ctrl+K Ctrl+C", run: () => editor.getAction("editor.action.addCommentLine")?.run() },
   { label: "Editor: Remove Line Comment", key: "Ctrl+K Ctrl+U", run: () => editor.getAction("editor.action.removeCommentLine")?.run() },
+  { label: "Editor: Duplicate Line", key: "Shift+Alt+Down", run: () => editor.getAction("editor.action.copyLinesDownAction")?.run() },
+  { label: "Editor: Move Line Up", key: "Alt+Up", run: () => editor.getAction("editor.action.moveLinesUpAction")?.run() },
+  { label: "Editor: Move Line Down", key: "Alt+Down", run: () => editor.getAction("editor.action.moveLinesDownAction")?.run() },
+  { label: "Editor: Delete Line", key: "Ctrl+Shift+K", run: () => editor.getAction("editor.action.deleteLines")?.run() },
+  { label: "Editor: Go to Line…", key: "Ctrl+G", run: () => editor.getAction("editor.action.gotoLine")?.run() },
+  { label: "File: Open Recent…", key: "Ctrl+R", run: () => openRecent() },
+  { label: "File: Close Folder", key: "Ctrl+K F", run: () => closeFolder() },
+  { label: "Output: Clear", key: "Ctrl+K Ctrl+L", run: () => clearOutput() },
+  { label: "Explorer: Reveal Active File", run: () => revealActive() },
   { label: "Editor: Fold All", key: "Ctrl+K Ctrl+0", run: () => editor.getAction("editor.foldAll")?.run() },
   { label: "Editor: Unfold All", key: "Ctrl+K Ctrl+J", run: () => editor.getAction("editor.unfoldAll")?.run() },
   { label: "Editor: Rename Symbol", key: "F2", run: () => editor.getAction("editor.action.rename")?.run() },
@@ -844,7 +1005,7 @@ $("#btn-palette").onclick = () => palette(commandItems, "Type a command", ">");
 $("#btn-new-file").onclick = () => newEntry(false);
 $("#btn-new-folder").onclick = () => newEntry(true);
 $("#btn-refresh").onclick = () => refreshFolder();
-$("#btn-clear").onclick = () => $("#output").replaceChildren();
+$("#btn-clear").onclick = () => clearOutput();
 $("#w-open").onclick = cmdOpenFolder;
 $("#w-new").onclick = cmdNewProject;
 
@@ -867,6 +1028,7 @@ const PREFIXES = new Set([...BINDINGS.keys()].filter((k) => k.includes(" ")).map
 
 function keyName(ev) {
   let key = ev.key.toLowerCase();
+  if (key.startsWith("arrow")) key = key.slice(5);
   if (key === "+") key = "=";
   if (key === "_") key = "-";
   if (ev.code === "Backquote") key = "`";
@@ -921,11 +1083,28 @@ window.addEventListener("beforeunload", (ev) => {
 // ---- start -----------------------------------------------------------------------------------
 
 function renderRecent() {
-  const recent = load("recent", []);
+  const recent = recentList();
   $("#recent").replaceChildren(
     ...(recent.length
-      ? recent.map((r) => el("li", {}, el("a", { href: "#", textContent: r, onclick: (ev) => (ev.preventDefault(), openFolder(r)) })))
-      : [el("li", { className: "muted", textContent: "Nothing yet" })])
+      ? recent.map((r) =>
+          el(
+            "li",
+            { className: "recent-item", title: r.root, onclick: () => switchFolder(r.root) },
+            el("span", { className: "icon b2" }),
+            el("span", { className: "recent-text" }, el("b", { textContent: r.name }), el("span", { className: "muted", textContent: r.root })),
+            el("button", {
+              className: "recent-remove",
+              title: "Remove from the list",
+              textContent: "×",
+              onclick: (ev) => {
+                ev.stopPropagation();
+                save("recent", recentList().filter((x) => x.root !== r.root));
+                renderRecent();
+              },
+            })
+          )
+        )
+      : [el("li", { className: "muted", textContent: "No projects yet. Open a folder or create a project." })])
   );
 }
 
@@ -934,4 +1113,14 @@ renderSettings();
 renderTree();
 renderProblems();
 updateStatus();
+// Reopen the last project, or show the welcome page with recent projects.
+const last = load("lastFolder", null);
 if (isDemo) openFolder("/demo");
+else if (last && settings.reopenLast) openFolder(last);
+else restoreOutput();
+editor.onDidChangeCursorPosition(() => saveSession());
+editor.onDidScrollChange(() => saveSession());
+window.addEventListener("beforeunload", () => {
+  saveSessionNow();
+  saveOutputNow();
+});

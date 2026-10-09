@@ -72,6 +72,9 @@ const DEFAULTS = {
   fontSize: 14,
   minimap: true,
   inlayHints: true,
+  autoSave: false,
+  reopenLast: true,
+  clearOnRun: false,
 };
 
 function load() {
