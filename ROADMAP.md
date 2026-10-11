@@ -45,7 +45,7 @@
   - [x] `belsk2 run` runs component projects in wasmtime (exported `run`/`main`, or
         `--call name -- args`) with printing stub imports; `--interpreted` for the
         interpreter. wasmtime is a default feature of the CLI (`--no-default-features`
-        builds without it).
+        builds without it). MSRV is 1.98; raise it to 1.99 once that is released.
   - [ ] W5: records, enums, variants, option/result, resources (with struct/enum/class).
   - Known differences from the interpreter: runtime errors are traps without a message;
     float-to-integer conversions saturate at the `long` range (the interpreter wraps

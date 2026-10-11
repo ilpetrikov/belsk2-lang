@@ -13,8 +13,8 @@ path = "src/main.rs"
 
 [features]
 default = ["wasmtime"]
-# Runs component projects with `belsk2 run` (needs a newer Rust than the
-# rest of the toolchain).
+# Runs component projects with `belsk2 run`. Building without it is faster
+# and gives a much smaller binary.
 wasmtime = ["dep:wasmtime"]
 
 [dependencies]

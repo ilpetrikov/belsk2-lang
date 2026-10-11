@@ -42,7 +42,7 @@ REPL accepts statements outside functions.
 
 ## Building
 
-Requires [Rust](https://rustup.rs) 1.80 or newer.
+Requires [Rust](https://rustup.rs) 1.98 or newer.
 
 ```sh
 cargo build --release
