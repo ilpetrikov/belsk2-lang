@@ -262,8 +262,15 @@ interface is implemented in `src/<interface>.belsk2`. `belsk2 bindgen`
 prints the whole world as Belsk2 declarations, and `belsk2 bindgen --stubs`
 adds stubs for exports that are not implemented yet.
 Supported WIT types: integers, `f32`, `f64`, `bool`, `char`, `string` and
-`list<T>`. Imports only exist in the component: `belsk2 run` reports an
-error when one is called.
+`list<T>`.
+
+`belsk2 run` builds a component project and runs it in wasmtime. It calls
+the exported `run` (or `main`); `belsk2 run --call greet -- Ann` calls any
+other export (`--call hooks.update` for one of an exported interface),
+with arguments parsed by their WIT types (lists as `1,2,3`). There is no
+real host, so imports are stubs that print the call
+(`[host] canvas.draw("hi", 3)`) and return a default value. `belsk2 run
+--interpreted` uses the interpreter instead, where imports do not exist.
 
 ## Editor support
 

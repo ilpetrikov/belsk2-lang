@@ -126,6 +126,7 @@ dependencies = [
  "belsk2-lsp",
  "belsk2-wasm",
  "clap",
+ "wasmtime",
 ]
 
 [[package]]

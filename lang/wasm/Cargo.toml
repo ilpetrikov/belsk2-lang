@@ -19,7 +19,7 @@ wit-component.workspace = true
 [dev-dependencies]
 belsk2-interp.workspace = true
 belsk2.workspace = true
-wasmtime = { version = "49", default-features = false, features = ["cranelift", "runtime", "std", "gc", "gc-drc", "component-model"] }
+wasmtime.workspace = true
 
 [lints]
 workspace = true

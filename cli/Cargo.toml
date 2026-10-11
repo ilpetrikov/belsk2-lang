@@ -11,7 +11,14 @@ rust-version.workspace = true
 name = "belsk2"
 path = "src/main.rs"
 
+[features]
+default = ["wasmtime"]
+# Runs component projects with `belsk2 run` (needs a newer Rust than the
+# rest of the toolchain).
+wasmtime = ["dep:wasmtime"]
+
 [dependencies]
+wasmtime = { workspace = true, optional = true }
 belsk2.workspace = true
 belsk2-lsp.workspace = true
 belsk2-fmt.workspace = true

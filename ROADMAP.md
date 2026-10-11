@@ -42,6 +42,10 @@
         WIT packages come from `wit/deps/`. Functions whose WIT types Belsk2 lacks stay
         visible but are a compile error when used. `belsk2 bindgen` prints the world as
         Belsk2 declarations (`-o` to a file); `--stubs` adds missing exports.
+  - [x] `belsk2 run` runs component projects in wasmtime (exported `run`/`main`, or
+        `--call name -- args`) with printing stub imports; `--interpreted` for the
+        interpreter. wasmtime is a default feature of the CLI (`--no-default-features`
+        builds without it).
   - [ ] W5: records, enums, variants, option/result, resources (with struct/enum/class).
   - Known differences from the interpreter: runtime errors are traps without a message;
     float-to-integer conversions saturate at the `long` range (the interpreter wraps
@@ -55,7 +59,8 @@
 
 ### Rust integration
 - [ ] Calling Belsk2 from Rust (API, macros, wasmtime)
-- [ ] IDE: hover and completion for WIT functions; `belsk2 run` stubs for imports
+- [ ] IDE: hover and completion for WIT functions
+- [ ] `belsk2 run --interpreted` for components: stub imports in the interpreter too
 - [ ] Rust dependencies (crates.io / git) in `belsk2.toml`
 
 ### Language

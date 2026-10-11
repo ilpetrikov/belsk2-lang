@@ -1,3 +1,6 @@
+#[cfg(feature = "wasmtime")]
+mod host;
+
 use std::io::{self, BufRead, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -52,9 +55,17 @@ enum Command {
     Run {
         /// Source file; `-` reads from stdin
         file: Option<PathBuf>,
-        /// Arguments passed to `main(args: string[])`
+        /// Arguments passed to `main(args: string[])` (or to the function
+        /// given with --call)
         #[arg(last = true)]
         args: Vec<String>,
+        /// Run a component project in the interpreter instead of wasmtime
+        #[arg(long)]
+        interpreted: bool,
+        /// Component projects: the exported function to call (default: `run`
+        /// or `main`); `interface.name` for functions of exported interfaces
+        #[arg(long)]
+        call: Option<String>,
     },
     /// Check the current project (or the given files) without running it
     Check {
@@ -109,11 +120,29 @@ fn main() -> ExitCode {
             Some(Command::Run {
                 file: Some(file),
                 args,
+                interpreted,
+                call,
+            }),
+            _,
+        ) if file.is_dir() => run_project(&file, &args, interpreted, call, &options),
+        (
+            Some(Command::Run {
+                file: Some(file),
+                args,
+                ..
             }),
             _,
         ) => run_file(&file, &args, &options),
         (None, Some(file)) => run_file(&file, &[], &options),
-        (Some(Command::Run { file: None, args }), _) => run_project(&args, &options),
+        (
+            Some(Command::Run {
+                file: None,
+                args,
+                interpreted,
+                call,
+            }),
+            _,
+        ) => project_root().and_then(|root| run_project(&root, &args, interpreted, call, &options)),
         (Some(Command::Check { files }), _) if files.is_empty() => check_project(&options),
         (Some(Command::Check { files }), _) => check_files(&files),
         (Some(Command::Build { file: None, output }), _) => build_project(output, &options),
@@ -240,9 +269,66 @@ fn project_root() -> Result<PathBuf, ()> {
     })
 }
 
-fn run_project(args: &[String], options: &project::Options) -> Result<(), ()> {
-    let root = project_root()?;
-    check_and_run(project::load_with(&root, Mode::Run, options), args)
+/// Runs a project: in the interpreter, or in wasmtime for a component
+/// (unless `interpreted`).
+fn run_project(
+    root: &Path,
+    args: &[String],
+    interpreted: bool,
+    call: Option<String>,
+    options: &project::Options,
+) -> Result<(), ()> {
+    let manifest_path = root.join(project::MANIFEST);
+    if !manifest_path.is_file() {
+        eprintln!(
+            "project error: no {} in {}",
+            project::MANIFEST,
+            root.display()
+        );
+        return Err(());
+    }
+    let component = project::Manifest::load(&manifest_path)
+        .map_err(|e| eprintln!("{}", e.render_in(&SourceMap::new())))?
+        .component
+        .is_some();
+    if component && !interpreted {
+        return run_component(root, call.as_deref(), args, options);
+    }
+    if call.is_some() {
+        eprintln!("error: --call only works for component projects run in wasmtime");
+        return Err(());
+    }
+    check_and_run(project::load_with(root, Mode::Run, options), args)
+}
+
+/// Builds a component project and runs it in wasmtime.
+fn run_component(
+    root: &Path,
+    call: Option<&str>,
+    args: &[String],
+    options: &project::Options,
+) -> Result<(), ()> {
+    let mut loaded = project::load_with(root, Mode::All, options)
+        .map_err(|(errors, sources)| report(&errors, &sources))?;
+    let errors = project::check(&mut loaded);
+    if !errors.is_empty() {
+        report(&errors, &loaded.sources);
+        return Err(());
+    }
+    let wasm =
+        belsk2_wasm::compile_project(&loaded).map_err(|errors| report(&errors, &loaded.sources))?;
+    run_wasm(&wasm, call, args)
+}
+
+#[cfg(feature = "wasmtime")]
+fn run_wasm(wasm: &[u8], call: Option<&str>, args: &[String]) -> Result<(), ()> {
+    host::run(wasm, call, args).map_err(|e| eprintln!("error: {e}"))
+}
+
+#[cfg(not(feature = "wasmtime"))]
+fn run_wasm(_: &[u8], _: Option<&str>, _: &[String]) -> Result<(), ()> {
+    eprintln!("error: this belsk2 was built without wasmtime; use `belsk2 run --interpreted`");
+    Err(())
 }
 
 fn update(options: &project::Options) -> Result<(), ()> {

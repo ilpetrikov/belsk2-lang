@@ -34,6 +34,7 @@ wasm-encoder = "0.261"
 wasmparser = "0.261"
 wit-parser = "0.261"
 wit-component = "0.261"
+wasmtime = { version = "49", default-features = false, features = ["cranelift", "runtime", "std", "gc", "gc-drc", "component-model"] }
 
 # The whole toolchain is panic-free: every failure is reported as a
 # `belsk2::Error`. These lints keep it that way.
