@@ -25,10 +25,12 @@ pub fn unsupported(what: impl Into<String>, span: Span) -> Error {
 }
 
 fn no_io(what: &str, span: Span) -> Error {
-    Error::compile(format!(
-        "{what} is not available in WASM builds: they have no input or output"
-    ))
-    .at(span)
+    let hint = if what.starts_with("idb") || what.starts_with("reab") {
+        "the id bank is not supported in WASM builds yet"
+    } else {
+        "the wasm32 target has no input or output; build for `--target wasi0.2` to use it"
+    };
+    Error::compile(format!("{what} is not available: {hint}")).at(span)
 }
 
 /// The numeric view of a type for arithmetic; `char` counts as `ushort`.
@@ -137,6 +139,8 @@ pub struct Ctx {
     /// Host functions that cannot be called yet, with the reason.
     pub unavailable: HashMap<String, String>,
     pub extra_exports: Vec<(String, ExportKind, u32)>,
+    /// Set for the wasi0.2 target.
+    pub wasi: Option<crate::wasi::Wasi>,
 }
 
 impl Ctx {
@@ -1106,7 +1110,7 @@ impl<'c> FnGen<'c> {
             return Err(unsupported("calling this expression is", span));
         };
         if belsk2_typeck::is_builtin(name) {
-            return self.builtin(name, args, span).map(Some);
+            return self.builtin(name, args, span);
         }
         let f = match self.resolve(name) {
             Some(Res::Fn(unit, decl)) => {
@@ -1139,13 +1143,34 @@ impl<'c> FnGen<'c> {
         })
     }
 
-    fn builtin(&mut self, name: &str, args: &[Expr], span: Span) -> R<ValType> {
+    fn builtin(&mut self, name: &str, args: &[Expr], span: Span) -> R<Option<ValType>> {
         let sref = nullable(self.ctx.types.string());
         let arg = |i: usize| {
             args.get(i)
                 .ok_or_else(|| Error::compile(format!("{name}() needs more arguments")).at(span))
         };
         match name {
+            "prinb" | "input" if self.ctx.wasi.is_some() => {
+                // `input(prompt)` writes the prompt without a newline.
+                match args.first() {
+                    Some(a) => self.emit_str(a)?,
+                    None => {
+                        let ops = self.ctx.string_lit("");
+                        self.a.ops(ops);
+                    }
+                }
+                if name == "prinb" {
+                    let newline = self.ctx.string_lit("\n");
+                    self.a.ops(newline);
+                    self.helper(Helper::Concat);
+                }
+                self.helper(Helper::WasiWrite);
+                if name == "prinb" {
+                    return Ok(None);
+                }
+                self.helper(Helper::WasiReadLine);
+                return Ok(Some(sref));
+            }
             "prinb" | "input" | "reab" => return Err(no_io(&format!("{name}()"), span)),
             "len" => {
                 let a = arg(0)?;
@@ -1165,11 +1190,11 @@ impl<'c> FnGen<'c> {
                     }
                     other => return Err(unsupported(format!("len() of {other} is"), span)),
                 }
-                return Ok(ValType::I32);
+                return Ok(Some(ValType::I32));
             }
             "str" => {
                 self.emit_str(arg(0)?)?;
-                return Ok(sref);
+                return Ok(Some(sref));
             }
             "substr" => {
                 let s = arg(0)?;
@@ -1186,7 +1211,7 @@ impl<'c> FnGen<'c> {
                     self.emit_to_i64(n);
                 }
                 self.helper(Helper::Substr);
-                return Ok(sref);
+                return Ok(Some(sref));
             }
             "push" | "pop" => {
                 let a = arg(0)?;
@@ -1200,11 +1225,11 @@ impl<'c> FnGen<'c> {
                 if name == "push" {
                     self.value(arg(1)?, &elem)?;
                     self.helper(Helper::ArrPush(elem));
-                    return Ok(obj);
+                    return Ok(Some(obj));
                 }
                 let t = self.vt(&elem, span)?;
                 self.helper(Helper::ArrPop(elem));
-                return Ok(t);
+                return Ok(Some(t));
             }
             _ => {}
         }
@@ -1216,7 +1241,7 @@ impl<'c> FnGen<'c> {
             return Err(unsupported(format!("{name}() is"), span));
         };
         self.convert_expr(arg(0)?, &target, span)?;
-        self.vt(&target, span)
+        self.vt(&target, span).map(Some)
     }
 
     /// Emits `e` as a non-null string, as `str(e)` and `+` format it.

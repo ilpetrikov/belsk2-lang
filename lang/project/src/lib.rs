@@ -25,7 +25,8 @@ pub use loader::{
 };
 pub use lockfile::{Lockfile, LOCKFILE};
 pub use manifest::{
-    module_name, valid_package_name, ComponentInfo, Dependency, Manifest, PackageInfo, MANIFEST,
+    module_name, valid_package_name, BuildInfo, ComponentInfo, Dependency, Manifest, PackageInfo,
+    MANIFEST,
 };
 pub use wit::{WitFunc, WitInterface, WitTy, World};
 

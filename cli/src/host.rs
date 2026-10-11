@@ -1,15 +1,34 @@
 //! `belsk2 run` for component projects: runs the component in wasmtime.
 //!
-//! There is no real host (the application that would embed the component),
-//! so every import is a stub that prints the call and returns a default
-//! value (`0`, `false`, `""`, an empty list, ...).
+//! WASI 0.2 imports (stdout, stdin, ...) are provided by wasmtime-wasi.
+//! There is no real host for the other imports (the application that would
+//! embed the component), so each is a stub that prints the call and
+//! returns a default value (`0`, `false`, `""`, an empty list, ...).
 
 use wasmtime::component::types::{ComponentFunc, ComponentItem};
-use wasmtime::component::{Component, Linker, LinkerInstance, Type, Val};
+use wasmtime::component::{Component, Linker, LinkerInstance, ResourceTable, Type, Val};
 use wasmtime::{Config, Engine, Store};
+use wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView};
 
-/// Runs export `call` (default: `run` or `main`) with `args` parsed by
-/// its parameter types, and prints what it returns.
+struct Host {
+    wasi: WasiCtx,
+    table: ResourceTable,
+}
+
+impl WasiView for Host {
+    fn ctx(&mut self) -> WasiCtxView<'_> {
+        WasiCtxView {
+            ctx: &mut self.wasi,
+            table: &mut self.table,
+        }
+    }
+}
+
+/// The export of a WASI command.
+const WASI_RUN: &str = "wasi:cli/run@0.2.0";
+
+/// Runs export `call` (default: the WASI `run`, or `run` or `main`) with
+/// `args` parsed by its parameter types, and prints what it returns.
 pub fn run(wasm: &[u8], call: Option<&str>, args: &[String]) -> Result<(), String> {
     let err = |e: wasmtime::Error| format!("{e:#}");
     let mut config = Config::new();
@@ -19,8 +38,12 @@ pub fn run(wasm: &[u8], call: Option<&str>, args: &[String]) -> Result<(), Strin
     let component = Component::new(&engine, wasm).map_err(err)?;
     let ty = component.component_type();
 
-    let mut linker: Linker<()> = Linker::new(&engine);
+    let mut linker: Linker<Host> = Linker::new(&engine);
+    wasmtime_wasi::p2::add_to_linker_sync(&mut linker).map_err(err)?;
     for (name, item) in ty.imports(&engine) {
+        if name.starts_with("wasi:") {
+            continue;
+        }
         match item.ty {
             ComponentItem::ComponentFunc(_) => stub(&mut linker.root(), name, name.to_string())?,
             ComponentItem::ComponentInstance(instance) => {
@@ -61,7 +84,7 @@ pub fn run(wasm: &[u8], call: Option<&str>, args: &[String]) -> Result<(), Strin
     }
     let wanted: Vec<&str> = match call {
         Some(c) => vec![c],
-        None => vec!["run", "main"],
+        None => vec!["run.run", "run", "main"],
     };
     let chosen = wanted.iter().find_map(|w| {
         exports
@@ -80,7 +103,21 @@ pub fn run(wasm: &[u8], call: Option<&str>, args: &[String]) -> Result<(), Strin
         ));
     };
 
-    let mut store = Store::new(&engine, ());
+    let wasi_run = iface.as_deref() == Some(WASI_RUN);
+    // A WASI command gets the arguments; for other exports they are the
+    // function's parameters.
+    let mut wasi = WasiCtx::builder();
+    wasi.inherit_stdio();
+    if wasi_run {
+        let mut argv = vec!["main".to_string()];
+        argv.extend(args.iter().cloned());
+        wasi.args(&argv);
+    }
+    let host = Host {
+        wasi: wasi.build(),
+        table: ResourceTable::new(),
+    };
+    let mut store = Store::new(&engine, host);
     let instance = linker.instantiate(&mut store, &component).map_err(err)?;
     let parent = match &iface {
         Some(i) => Some(
@@ -98,6 +135,7 @@ pub fn run(wasm: &[u8], call: Option<&str>, args: &[String]) -> Result<(), Strin
         .ok_or_else(|| format!("'{shown}' is not a function"))?;
     let fty = func.ty(&store);
     let params: Vec<(String, Type)> = fty.params().map(|(n, t)| (n.to_string(), t)).collect();
+    let args = if wasi_run { &[] } else { args };
     if params.len() != args.len() {
         let names: Vec<&str> = params.iter().map(|(n, _)| n.as_str()).collect();
         return Err(format!(
@@ -115,6 +153,12 @@ pub fn run(wasm: &[u8], call: Option<&str>, args: &[String]) -> Result<(), Strin
     let mut results: Vec<Val> = fty.results().map(|_| Val::Bool(false)).collect();
     func.call(&mut store, &values, &mut results)
         .map_err(|e| format!("runtime error in '{shown}': {e}"))?;
+    if wasi_run {
+        return match results.first() {
+            Some(Val::Result(Err(_))) => Err("`main` returned a non-zero exit code".to_string()),
+            _ => Ok(()),
+        };
+    }
     for r in &results {
         println!("{}", show(r, true));
     }
@@ -127,7 +171,7 @@ fn short_name(name: &str) -> &str {
     name.split('@').next().unwrap_or(name)
 }
 
-fn stub(li: &mut LinkerInstance<'_, ()>, name: &str, shown: String) -> Result<(), String> {
+fn stub(li: &mut LinkerInstance<'_, Host>, name: &str, shown: String) -> Result<(), String> {
     li.func_new(
         name,
         move |_, ty: ComponentFunc, params: &[Val], results: &mut [Val]| {

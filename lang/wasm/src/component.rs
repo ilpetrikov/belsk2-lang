@@ -74,12 +74,12 @@ fn core_name(f: &WitFunc) -> String {
     }
 }
 
-/// Sets up the memory, the allocator and the imports. Must run before
-/// any other function is defined.
-pub fn imports(ctx: &mut Ctx, world: &World) {
+/// Sets up the memory, the allocator and the imports of the world (and
+/// of WASI with `wasi`). Must run before any other function is defined.
+pub fn imports(ctx: &mut Ctx, world: Option<&World>, wasi: bool) {
     ctx.memory = true;
     let mut core = Vec::new();
-    for f in &world.imports {
+    for f in world.iter().flat_map(|w| w.imports.iter()) {
         if let Some(why) = &f.unsupported {
             ctx.unavailable.insert(f.name.clone(), why.clone());
             continue;
@@ -105,6 +105,9 @@ pub fn imports(ctx: &mut Ctx, world: &World) {
         core.push((f, ctx.import(&module, &f.wit_name, ty)));
     }
 
+    if wasi {
+        crate::wasi::imports(ctx);
+    }
     let heap = ctx.add_global_init(ValType::I32, HEAP_BASE);
     let realloc = ctx.define(realloc(heap));
     ctx.realloc = Some(realloc);
@@ -796,7 +799,11 @@ fn load(t: &WitTy) -> I<'static> {
 }
 
 /// Wraps a core module into a component of the world.
-pub fn encode(mut core: Vec<u8>, world: &World) -> Result<Vec<u8>, Vec<Error>> {
+pub fn encode(
+    mut core: Vec<u8>,
+    resolve: &wit_parser::Resolve,
+    world: wit_parser::WorldId,
+) -> Result<Vec<u8>, Vec<Error>> {
     let fail = |e: &dyn std::fmt::Display| {
         vec![Error::compile(format!(
             "internal compiler error: cannot build the component: {e:#}"
@@ -804,8 +811,8 @@ pub fn encode(mut core: Vec<u8>, world: &World) -> Result<Vec<u8>, Vec<Error>> {
     };
     wit_component::embed_component_metadata(
         &mut core,
-        &world.resolve,
-        world.id,
+        resolve,
+        world,
         wit_component::StringEncoding::UTF8,
         false,
     )

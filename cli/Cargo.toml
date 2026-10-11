@@ -15,10 +15,11 @@ path = "src/main.rs"
 default = ["wasmtime"]
 # Runs component projects with `belsk2 run`. Building without it is faster
 # and gives a much smaller binary.
-wasmtime = ["dep:wasmtime"]
+wasmtime = ["dep:wasmtime", "dep:wasmtime-wasi"]
 
 [dependencies]
 wasmtime = { workspace = true, optional = true }
+wasmtime-wasi = { workspace = true, optional = true }
 belsk2.workspace = true
 belsk2-lsp.workspace = true
 belsk2-fmt.workspace = true

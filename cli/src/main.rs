@@ -7,6 +7,7 @@ use std::process::ExitCode;
 
 use belsk2::project::{self, Loaded, Mode, Template};
 use belsk2::{Error, Interpreter, SourceMap};
+use belsk2_wasm::Target;
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
@@ -66,6 +67,10 @@ enum Command {
         /// or `main`); `interface.name` for functions of exported interfaces
         #[arg(long)]
         call: Option<String>,
+        /// Build for this target and run it in wasmtime (wasi0.2 runs any
+        /// program with `fn main()`)
+        #[arg(long)]
+        target: Option<String>,
     },
     /// Check the current project (or the given files) without running it
     Check {
@@ -80,6 +85,10 @@ enum Command {
         /// project, or next to the file)
         #[arg(short, long)]
         output: Option<PathBuf>,
+        /// What to build: wasm32 (default) or wasi0.2. Default: `[build]
+        /// target` in belsk2.toml
+        #[arg(long)]
+        target: Option<String>,
     },
     /// Move git dependencies to the newest commit of their branch or tag
     /// and rewrite belsk2.lock
@@ -118,41 +127,42 @@ fn main() -> ExitCode {
     let result = match (cli.command, cli.file) {
         (
             Some(Command::Run {
-                file: Some(file),
+                file,
                 args,
                 interpreted,
                 call,
+                target,
             }),
             _,
-        ) if file.is_dir() => run_project(&file, &args, interpreted, call, &options),
-        (
-            Some(Command::Run {
-                file: Some(file),
-                args,
-                ..
-            }),
-            _,
-        ) => run_file(&file, &args, &options),
+        ) => run(
+            file,
+            &args,
+            RunMode {
+                interpreted,
+                call,
+                target,
+            },
+            &options,
+        ),
         (None, Some(file)) => run_file(&file, &[], &options),
-        (
-            Some(Command::Run {
-                file: None,
-                args,
-                interpreted,
-                call,
-            }),
-            _,
-        ) => project_root().and_then(|root| run_project(&root, &args, interpreted, call, &options)),
         (Some(Command::Check { files }), _) if files.is_empty() => check_project(&options),
         (Some(Command::Check { files }), _) => check_files(&files),
-        (Some(Command::Build { file: None, output }), _) => build_project(output, &options),
+        (
+            Some(Command::Build {
+                file: None,
+                output,
+                target,
+            }),
+            _,
+        ) => build_project(output, target, &options),
         (
             Some(Command::Build {
                 file: Some(file),
                 output,
+                target,
             }),
             _,
-        ) => build_wasm(&file, output),
+        ) => build_wasm(&file, output, target),
         (Some(Command::Update), _) => update(&options),
         (Some(Command::New { name, lib }), _) => new_project(&PathBuf::from(&name), &name, lib),
         (Some(Command::Init { name, lib }), _) => init(name, lib),
@@ -271,15 +281,36 @@ fn project_root() -> Result<PathBuf, ()> {
 
 /// Runs a project: in the interpreter, or in wasmtime for a component
 /// (unless `interpreted`).
-fn run_project(
-    root: &Path,
-    args: &[String],
+/// How `belsk2 run` runs a program.
+struct RunMode {
     interpreted: bool,
     call: Option<String>,
-    options: &project::Options,
-) -> Result<(), ()> {
-    let manifest_path = root.join(project::MANIFEST);
-    if !manifest_path.is_file() {
+    target: Option<String>,
+}
+
+/// The build target: `flag`, else `[build] target` of the manifest, else
+/// wasm32.
+fn target(flag: Option<&str>, manifest: Option<&project::Manifest>) -> Result<Target, ()> {
+    let name = flag.or_else(|| {
+        manifest
+            .and_then(|m| m.build.as_ref())
+            .and_then(|b| b.target.as_deref())
+    });
+    let Some(name) = name else {
+        return Ok(Target::default());
+    };
+    Target::parse(name).ok_or_else(|| {
+        let names: Vec<&str> = Target::ALL.iter().map(|t| t.name()).collect();
+        eprintln!(
+            "error: unknown target '{name}'; use one of: {}",
+            names.join(", ")
+        );
+    })
+}
+
+fn load_manifest(root: &Path) -> Result<project::Manifest, ()> {
+    let path = root.join(project::MANIFEST);
+    if !path.is_file() {
         eprintln!(
             "project error: no {} in {}",
             project::MANIFEST,
@@ -287,37 +318,63 @@ fn run_project(
         );
         return Err(());
     }
-    let component = project::Manifest::load(&manifest_path)
-        .map_err(|e| eprintln!("{}", e.render_in(&SourceMap::new())))?
-        .component
-        .is_some();
-    if component && !interpreted {
-        return run_component(root, call.as_deref(), args, options);
+    project::Manifest::load(&path).map_err(|e| eprintln!("{}", e.render_in(&SourceMap::new())))
+}
+
+fn run(
+    file: Option<PathBuf>,
+    args: &[String],
+    mode: RunMode,
+    options: &project::Options,
+) -> Result<(), ()> {
+    match file {
+        Some(file) if file.is_dir() => run_project(&file, args, mode, options),
+        Some(file) => {
+            let target = target(mode.target.as_deref(), None)?;
+            if target == Target::Wasi02 && !mode.interpreted {
+                let wasm = compile_file(&file, target)?;
+                return run_wasm(&wasm, mode.call.as_deref(), args);
+            }
+            if mode.call.is_some() {
+                eprintln!(
+                    "error: --call needs a component (a [component] project or --target wasi0.2)"
+                );
+                return Err(());
+            }
+            run_file(&file, args, options)
+        }
+        None => project_root().and_then(|root| run_project(&root, args, mode, options)),
     }
-    if call.is_some() {
-        eprintln!("error: --call only works for component projects run in wasmtime");
+}
+
+/// Runs a project: in wasmtime for a component or the wasi0.2 target
+/// (unless `interpreted`), else in the interpreter.
+fn run_project(
+    root: &Path,
+    args: &[String],
+    mode: RunMode,
+    options: &project::Options,
+) -> Result<(), ()> {
+    let manifest = load_manifest(root)?;
+    let target = target(mode.target.as_deref(), Some(&manifest))?;
+    let wasm = manifest.component.is_some() || target == Target::Wasi02;
+    if wasm && !mode.interpreted {
+        let mut loaded = project::load_with(root, Mode::All, options)
+            .map_err(|(errors, sources)| report(&errors, &sources))?;
+        let errors = project::check(&mut loaded);
+        if !errors.is_empty() {
+            report(&errors, &loaded.sources);
+            return Err(());
+        }
+        let wasm = belsk2_wasm::compile_project(&loaded, target)
+            .map_err(|errors| report(&errors, &loaded.sources))?;
+        return run_wasm(&wasm, mode.call.as_deref(), args);
+    }
+    if mode.call.is_some() {
+        eprintln!("error: --call needs a component (a [component] project or --target wasi0.2)");
         return Err(());
     }
     check_and_run(project::load_with(root, Mode::Run, options), args)
-}
-
-/// Builds a component project and runs it in wasmtime.
-fn run_component(
-    root: &Path,
-    call: Option<&str>,
-    args: &[String],
-    options: &project::Options,
-) -> Result<(), ()> {
-    let mut loaded = project::load_with(root, Mode::All, options)
-        .map_err(|(errors, sources)| report(&errors, &sources))?;
-    let errors = project::check(&mut loaded);
-    if !errors.is_empty() {
-        report(&errors, &loaded.sources);
-        return Err(());
-    }
-    let wasm =
-        belsk2_wasm::compile_project(&loaded).map_err(|errors| report(&errors, &loaded.sources))?;
-    run_wasm(&wasm, call, args)
 }
 
 #[cfg(feature = "wasmtime")]
@@ -499,8 +556,13 @@ fn check_project(options: &project::Options) -> Result<(), ()> {
 }
 
 /// Compiles the current project to `bin/<package>.wasm` (or `output`).
-fn build_project(output: Option<PathBuf>, options: &project::Options) -> Result<(), ()> {
+fn build_project(
+    output: Option<PathBuf>,
+    target_flag: Option<String>,
+    options: &project::Options,
+) -> Result<(), ()> {
     let root = project_root()?;
+    let target = target(target_flag.as_deref(), Some(&load_manifest(&root)?))?;
     let mut loaded = project::load_with(&root, Mode::All, options)
         .map_err(|(errors, sources)| report(&errors, &sources))?;
     let errors = project::check(&mut loaded);
@@ -508,8 +570,8 @@ fn build_project(output: Option<PathBuf>, options: &project::Options) -> Result<
         report(&errors, &loaded.sources);
         return Err(());
     }
-    let wasm =
-        belsk2_wasm::compile_project(&loaded).map_err(|errors| report(&errors, &loaded.sources))?;
+    let wasm = belsk2_wasm::compile_project(&loaded, target)
+        .map_err(|errors| report(&errors, &loaded.sources))?;
     let name = loaded
         .root_package()
         .map(|p| p.name.clone())
@@ -530,7 +592,13 @@ fn write_output(output: &Path, wasm: &[u8]) -> Result<(), ()> {
 }
 
 /// Compiles one file to a WebAssembly module.
-fn build_wasm(file: &Path, output: Option<PathBuf>) -> Result<(), ()> {
+fn build_wasm(file: &Path, output: Option<PathBuf>, target_flag: Option<String>) -> Result<(), ()> {
+    let wasm = compile_file(file, target(target_flag.as_deref(), None)?)?;
+    let output = output.unwrap_or_else(|| file.with_extension("wasm"));
+    write_output(&output, &wasm)
+}
+
+fn compile_file(file: &Path, target: Target) -> Result<Vec<u8>, ()> {
     let mut loaded =
         project::load_file(file).map_err(|(errors, sources)| report(&errors, &sources))?;
     let errors = project::check(&mut loaded);
@@ -542,10 +610,7 @@ fn build_wasm(file: &Path, output: Option<PathBuf>) -> Result<(), ()> {
         eprintln!("project error: nothing to build in {}", file.display());
         return Err(());
     };
-    let wasm =
-        belsk2_wasm::compile(&module.program).map_err(|errors| report(&errors, &loaded.sources))?;
-    let output = output.unwrap_or_else(|| file.with_extension("wasm"));
-    write_output(&output, &wasm)
+    belsk2_wasm::compile(&module.program, target).map_err(|errors| report(&errors, &loaded.sources))
 }
 
 /// `belsk2 bindgen`: shows the WIT world as Belsk2 declarations, or with

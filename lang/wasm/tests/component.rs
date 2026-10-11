@@ -32,7 +32,7 @@ fn build(dir: &Path) -> Result<Vec<u8>, String> {
     if !errors.is_empty() {
         return Err(format!("{errors:?}"));
     }
-    belsk2_wasm::compile_project(&loaded).map_err(|errors| {
+    belsk2_wasm::compile_project(&loaded, belsk2_wasm::Target::Wasm32).map_err(|errors| {
         errors
             .iter()
             .map(|e| e.message.clone())

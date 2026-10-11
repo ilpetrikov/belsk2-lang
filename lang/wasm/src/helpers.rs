@@ -85,6 +85,10 @@ pub enum Helper {
     LiftList(WitTy),
     /// Canonical ABI: a Belsk2 array to a list in linear memory.
     LowerList(WitTy),
+    /// WASI: writes a string to stdout.
+    WasiWrite,
+    /// WASI: reads a line from stdin (`""` at the end of input).
+    WasiReadLine,
 }
 
 /// Builds the body of a helper.
@@ -97,6 +101,7 @@ pub fn build(ctx: &mut Ctx, h: &Helper) -> Result<Asm, Error> {
         Helper::LiftStr | Helper::LowerStr | Helper::LiftList(_) | Helper::LowerList(_) => {
             return crate::component::helper(ctx, h);
         }
+        Helper::WasiWrite | Helper::WasiReadLine => return crate::wasi::helper(ctx, h),
         Helper::DivI32 | Helper::DivI64 => {
             let wide = *h == Helper::DivI64;
             let t = if wide { I64 } else { I32 };

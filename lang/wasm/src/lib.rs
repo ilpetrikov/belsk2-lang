@@ -20,6 +20,7 @@ mod codegen;
 mod component;
 mod helpers;
 mod types;
+mod wasi;
 
 use std::collections::HashMap;
 
@@ -41,7 +42,7 @@ pub struct Unit<'a> {
 
 /// Compiles a program that has already been checked (types filled in).
 /// Returns every error found.
-pub fn compile(program: &Program) -> Result<Vec<u8>, Vec<Error>> {
+pub fn compile(program: &Program, target: Target) -> Result<Vec<u8>, Vec<Error>> {
     compile_units(
         &[Unit {
             name: "main".to_string(),
@@ -51,36 +52,87 @@ pub fn compile(program: &Program) -> Result<Vec<u8>, Vec<Error>> {
         }],
         Some(0),
         None,
+        target,
     )
+}
+
+/// What `belsk2 build` produces.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Target {
+    /// A plain WebAssembly module (a component with `[component]`) with no
+    /// input or output.
+    #[default]
+    Wasm32,
+    /// A WASI 0.2 component: `prinb` and `input` use stdout and stdin, and
+    /// `main` is exported as `wasi:cli/run`.
+    Wasi02,
+}
+
+impl Target {
+    pub const ALL: [Target; 2] = [Target::Wasm32, Target::Wasi02];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Target::Wasm32 => "wasm32",
+            Target::Wasi02 => "wasi0.2",
+        }
+    }
+
+    pub fn parse(name: &str) -> Option<Target> {
+        match name {
+            "wasm32" => Some(Target::Wasm32),
+            "wasi0.2" | "wasip2" => Some(Target::Wasi02),
+            _ => None,
+        }
+    }
 }
 
 /// Compiles checked modules into one WebAssembly module that exports the
 /// functions of unit `exported` (if any). Units must come after the units
 /// they use.
 ///
-/// With a WIT `world`, the result is a component instead: it imports and
-/// exports exactly what the world says.
+/// With a WIT `world` or the wasi0.2 target, the result is a component
+/// instead: it imports and exports exactly what the world says.
 pub fn compile_units(
     units: &[Unit],
     exported: Option<usize>,
     world: Option<&World>,
+    target: Target,
 ) -> Result<Vec<u8>, Vec<Error>> {
+    let wasi = target == Target::Wasi02;
     let mut ctx = codegen::Ctx::default();
-    if let Some(world) = world {
-        component::imports(&mut ctx, world);
+    if world.is_some() || wasi {
+        component::imports(&mut ctx, world, wasi);
     }
     codegen::declare(&mut ctx, units);
-    match world {
-        Some(world) => component::exports(&mut ctx, world, units, exported),
-        None => {
-            if let Some(unit) = exported {
-                codegen::export_unit(&mut ctx, units, unit);
+    if let Some(world) = world {
+        component::exports(&mut ctx, world, units, exported);
+    }
+    let main = exported.and_then(|u| ctx.unit_fn(u, "main").map(|d| (u, d)));
+    if wasi {
+        match &main {
+            Some((unit, decl)) => {
+                if let Err(e) = wasi::run_export(&mut ctx, decl, *unit) {
+                    ctx.errors.push(e);
+                }
             }
+            None if world.is_none() => ctx.errors.push(Error::compile(
+                "the wasi0.2 target runs `fn main()`, and there is none",
+            )),
+            None => {}
+        }
+    } else if world.is_none() {
+        if let Some(unit) = exported {
+            codegen::export_unit(&mut ctx, units, unit);
         }
     }
     let core = validate(codegen::finish(ctx)?)?;
+    if wasi {
+        let (resolve, id) = wasi::world(world, main.is_some())?;
+        return component::encode(core, &resolve, id);
+    }
     match world {
-        Some(world) => component::encode(core, world),
+        Some(world) => component::encode(core, &world.resolve, world.id),
         None => Ok(core),
     }
 }
@@ -88,7 +140,7 @@ pub fn compile_units(
 /// Compiles a loaded and checked project. The functions of its entry
 /// module (`main.belsk2`), or of `lib.belsk2` for a library, are exported;
 /// a project with `[component]` becomes a component of its WIT world.
-pub fn compile_project(loaded: &Loaded) -> Result<Vec<u8>, Vec<Error>> {
+pub fn compile_project(loaded: &Loaded, target: Target) -> Result<Vec<u8>, Vec<Error>> {
     // A component also exports interfaces from modules `main` does not use.
     let order = if loaded.entry.is_some() && loaded.world.is_none() {
         loaded.run_order()
@@ -123,7 +175,7 @@ pub fn compile_project(loaded: &Loaded) -> Result<Vec<u8>, Vec<Error>> {
                 .collect(),
         })
         .collect();
-    compile_units(&units, exported, loaded.world.as_deref())
+    compile_units(&units, exported, loaded.world.as_deref(), target)
 }
 
 fn validate(bytes: Vec<u8>) -> Result<Vec<u8>, Vec<Error>> {
@@ -142,5 +194,5 @@ pub fn compile_source(source: &str) -> Result<Vec<u8>, Vec<Error>> {
     if !errors.is_empty() {
         return Err(errors);
     }
-    compile(&program)
+    compile(&program, Target::Wasm32)
 }

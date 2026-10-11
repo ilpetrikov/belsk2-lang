@@ -31,6 +31,17 @@ pub struct Manifest {
     /// Set for a WebAssembly component: the WIT world it implements.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub component: Option<ComponentInfo>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build: Option<BuildInfo>,
+}
+
+/// `[build]`: `target` is what `belsk2 build` produces by default
+/// (`wasm32` or `wasi0.2`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BuildInfo {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
 }
 
 /// `[component]`: `world` is a `.wit` file or a directory of them
@@ -106,6 +117,7 @@ impl Manifest {
             },
             dependencies: BTreeMap::new(),
             component: None,
+            build: None,
         }
     }
 

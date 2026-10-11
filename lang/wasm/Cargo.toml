@@ -20,6 +20,7 @@ wit-component.workspace = true
 belsk2-interp.workspace = true
 belsk2.workspace = true
 wasmtime.workspace = true
+wasmtime-wasi.workspace = true
 
 [lints]
 workspace = true

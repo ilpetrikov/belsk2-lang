@@ -223,8 +223,20 @@ fn fib(n: int): int {
 }
 ```
 
-WASM builds have no input or output: `prinb`, `input`, `reab` and `idb` are
-compile errors. Parameters and returned values need declared types. Strings,
+There are two targets, chosen with `--target` or in `belsk2.toml`:
+
+```toml
+[build]
+target = "wasi0.2"   # or "wasm32" (the default)
+```
+
+- `wasm32`: a plain module (or a component, see below) with no input or
+  output: `prinb`, `input`, `reab` and `idb` are compile errors.
+- `wasi0.2`: a [WASI 0.2](https://wasi.dev) component. `prinb` and `input`
+  use stdout and stdin, and `fn main()` is exported as `wasi:cli/run`, so
+  the result runs with `wasmtime run app.wasm`. `belsk2 run --target
+  wasi0.2` (or a project whose `[build] target` is `wasi0.2`) builds the
+  program and runs it in wasmtime. `reab` and `idb` are not supported yet. Parameters and returned values need declared types. Strings,
 arrays, generics and all statements are supported; dictionaries, `any` and
 `str()` of floating-point numbers are not yet (see ROADMAP.md).
 

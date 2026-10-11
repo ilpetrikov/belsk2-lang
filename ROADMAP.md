@@ -57,7 +57,13 @@
       `belsk2.toml`; exports are plain `fn`s with matching names, imports become functions
       usable via `using`; canonical ABI glue for numbers, bool, char, string, list<T>;
       packaged with `wit-component`. Records/variants come with struct/enum.
-- [ ] WASI 0.2 / 0.3: not now (not needed yet; 0.3 is barely supported)
+- [x] Targets: `wasm32` (no I/O) and `wasi0.2` (`--target` or `[build] target`): a WASI 0.2
+      component where `prinb`/`input` use `wasi:cli/stdout`/`stdin` and `main` is exported
+      as `wasi:cli/run` (merged with the project's own world, if any); `belsk2 run`
+      runs it in wasmtime with wasmtime-wasi.
+- [ ] wasi0.2: `main(args: string[])` (via `wasi:cli/environment`), `reab`/`idb`,
+      exit codes other than 0/1, reading stdin in bigger chunks.
+- [ ] WASI 0.3: later (barely supported yet)
 
 ### Rust integration
 - [ ] Calling Belsk2 from Rust (API, macros, wasmtime)
