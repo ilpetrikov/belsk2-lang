@@ -37,8 +37,11 @@
         `snake_case`) and signatures; world-level imports are callable everywhere.
         Canonical ABI glue for numbers, bool, char, string and `list<T>` (nested too):
         linear memory with a bump allocator reset after every export call.
-  - [ ] W4: imported/exported interfaces as modules (`using graphics;`, exports in
-        `src/<interface>.belsk2`), `belsk2 bindgen` (API listing and export stubs).
+  - [x] W4: interfaces. An imported interface is a module without source
+        (`using canvas;`); an exported one is implemented in `src/<interface>.belsk2`.
+        WIT packages come from `wit/deps/`. Functions whose WIT types Belsk2 lacks stay
+        visible but are a compile error when used. `belsk2 bindgen` prints the world as
+        Belsk2 declarations (`-o` to a file); `--stubs` adds missing exports.
   - [ ] W5: records, enums, variants, option/result, resources (with struct/enum/class).
   - Known differences from the interpreter: runtime errors are traps without a message;
     float-to-integer conversions saturate at the `long` range (the interpreter wraps
@@ -52,6 +55,7 @@
 
 ### Rust integration
 - [ ] Calling Belsk2 from Rust (API, macros, wasmtime)
+- [ ] IDE: hover and completion for WIT functions; `belsk2 run` stubs for imports
 - [ ] Rust dependencies (crates.io / git) in `belsk2.toml`
 
 ### Language

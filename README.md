@@ -256,6 +256,11 @@ fn greet(name: string): string {
 
 Every export needs a function with the same name (`kebab-case` becomes
 `snake_case`) and matching types; imports can be called from any module.
+Interfaces work like modules: an imported interface (from the world's
+package or from `wit/deps/`) is used with `using canvas;`, and an exported
+interface is implemented in `src/<interface>.belsk2`. `belsk2 bindgen`
+prints the whole world as Belsk2 declarations, and `belsk2 bindgen --stubs`
+adds stubs for exports that are not implemented yet.
 Supported WIT types: integers, `f32`, `f64`, `bool`, `char`, `string` and
 `list<T>`. Imports only exist in the component: `belsk2 run` reports an
 error when one is called.

@@ -318,3 +318,109 @@ pub fn load_world(path: &Path, world_name: Option<&str>) -> Result<World, Error>
         resolve,
     })
 }
+
+fn doc_lines(docs: Option<&String>, out: &mut String) {
+    for line in docs.into_iter().flat_map(|d| d.lines()) {
+        let line = line.trim_end();
+        if line.is_empty() {
+            out.push_str("///\n");
+        } else {
+            out.push_str(&format!("/// {line}\n"));
+        }
+    }
+}
+
+/// The source file (relative to the project root) where an export is
+/// implemented: `src/<interface>.belsk2`, or `src/<root_module>` for
+/// functions of the world itself.
+pub fn export_file(f: &WitFunc, root_module: &str) -> PathBuf {
+    let mut path = PathBuf::from("src");
+    match &f.interface {
+        Some(i) => {
+            for part in i.module.split('.') {
+                path.push(part);
+            }
+            path.set_extension("belsk2");
+        }
+        None => path.push(root_module),
+    }
+    path
+}
+
+/// A function stub for an export, returning a default value.
+pub fn stub(f: &WitFunc) -> String {
+    let mut out = String::new();
+    doc_lines(f.docs.as_ref(), &mut out);
+    out.push_str(&format!("{} {{\n", f.signature()));
+    out.push_str("    // TODO: implement\n");
+    if let Some(t) = &f.result {
+        let value = match t {
+            WitTy::Bool => "false",
+            WitTy::Int(_) => "0",
+            WitTy::Float(_) => "0.0",
+            WitTy::Char => "char(32)",
+            WitTy::String => "\"\"",
+            WitTy::List(_) => "[]",
+        };
+        out.push_str(&format!("    return {value};\n"));
+    }
+    out.push_str("}\n");
+    out
+}
+
+impl World {
+    /// The world as Belsk2 declarations, for reading (`belsk2 bindgen`).
+    pub fn describe(&self) -> String {
+        let name = self
+            .resolve
+            .worlds
+            .get(self.id)
+            .map(|w| match w.package {
+                Some(pkg) => self.resolve.id_of_name(pkg, &w.name),
+                None => w.name.clone(),
+            })
+            .unwrap_or_default();
+        let mut out = format!(
+            "// The WIT world {name} ({}), as Belsk2 sees it.\n",
+            crate::display_path(&self.path)
+        );
+        let sig = |f: &WitFunc, out: &mut String| {
+            doc_lines(f.docs.as_ref(), out);
+            match &f.unsupported {
+                Some(why) => {
+                    out.push_str(&format!("// `{}` cannot be used yet: {why}\n", f.wit_name))
+                }
+                None => out.push_str(&format!("{};\n", f.signature())),
+            }
+        };
+        let roots: Vec<&WitFunc> = self.root_imports().collect();
+        if !roots.is_empty() {
+            out.push_str("\n// Imports, callable from every module:\n\n");
+            for f in roots {
+                sig(f, &mut out);
+            }
+        }
+        for iface in &self.import_interfaces {
+            out.push_str(&format!("\n// Imported interface {}:\n", iface.key));
+            doc_lines(iface.docs.as_ref(), &mut out);
+            out.push_str(&format!("using {};\n\n", iface.module));
+            for f in self.interface_imports(&iface.module) {
+                sig(f, &mut out);
+            }
+        }
+        if !self.exports.is_empty() {
+            out.push_str("\n// Exports: implement these (`belsk2 bindgen --stubs` adds them).\n");
+            let mut last = None;
+            for f in &self.exports {
+                let file = export_file(f, "main.belsk2 or src/lib.belsk2");
+                if last.as_ref() != Some(&file) {
+                    let shown = file.to_string_lossy().replace('\\', "/");
+                    out.push_str(&format!("\n// in {shown}\n"));
+                    last = Some(file);
+                }
+                sig(f, &mut out);
+            }
+        }
+        out
+    }
+}

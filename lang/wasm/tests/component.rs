@@ -209,3 +209,110 @@ fn bad_wit_is_a_project_error() {
     );
     assert!(build(&dir).is_err());
 }
+
+const HOST_WIT: &str = r#"
+package demo:host@0.1.0;
+
+interface canvas {
+    /// Draws text at a column.
+    draw: func(text: string, x: s32) -> bool;
+    record point { x: s32, y: s32 }
+    center: func() -> point;
+}
+"#;
+
+const APP_WIT: &str = r#"
+package demo:app;
+
+interface hooks {
+    update: func(frame: u32) -> string;
+}
+
+world app {
+    import demo:host/canvas@0.1.0;
+    export hooks;
+    export version: func() -> string;
+}
+"#;
+
+#[test]
+fn interfaces_are_modules() {
+    let hooks = r#"
+using canvas;
+
+fn update(frame: uint): string {
+    if draw("frame " + str(frame), 3) {
+        return "drawn " + str(frame);
+    }
+    return "skipped";
+}
+"#;
+    let dir = project(
+        "interfaces",
+        &[
+            ("belsk2.toml", MANIFEST),
+            ("wit/app.wit", APP_WIT),
+            ("wit/deps/host/host.wit", HOST_WIT),
+            (
+                "src/lib.belsk2",
+                "fn version(): string { return \"1.0\"; }\n",
+            ),
+            ("src/hooks.belsk2", hooks),
+        ],
+    );
+    let wasm = build(&dir).unwrap();
+
+    let engine = engine();
+    let component = Component::new(&engine, &wasm).unwrap();
+    let mut linker: Linker<Vec<String>> = Linker::new(&engine);
+    linker
+        .instance("demo:host/canvas@0.1.0")
+        .unwrap()
+        .func_wrap("draw", |mut store, (text, x): (String, i32)| {
+            store.data_mut().push(format!("{x}:{text}"));
+            Ok((x > 0,))
+        })
+        .unwrap();
+    let mut store = Store::new(&engine, Vec::new());
+    let instance = linker.instantiate(&mut store, &component).unwrap();
+
+    let version = instance
+        .get_typed_func::<(), (String,)>(&mut store, "version")
+        .unwrap();
+    assert_eq!(version.call(&mut store, ()).unwrap().0, "1.0");
+
+    let iface = instance
+        .get_export_index(&mut store, None, "demo:app/hooks")
+        .unwrap();
+    let index = instance
+        .get_export_index(&mut store, Some(&iface), "update")
+        .unwrap();
+    let update = instance
+        .get_typed_func::<(u32,), (String,)>(&mut store, &index)
+        .unwrap();
+    assert_eq!(update.call(&mut store, (7,)).unwrap().0, "drawn 7");
+    assert_eq!(store.data(), &vec!["3:frame 7".to_string()]);
+}
+
+#[test]
+fn unsupported_wit_types_are_reported_when_used() {
+    let hooks = "using canvas;\n\nfn update(frame: uint): string {\n    var p = center();\n    return \"\";\n}\n";
+    let dir = project(
+        "unsupported",
+        &[
+            ("belsk2.toml", MANIFEST),
+            ("wit/app.wit", APP_WIT),
+            ("wit/deps/host/host.wit", HOST_WIT),
+            (
+                "src/lib.belsk2",
+                "fn version(): string { return \"1.0\"; }\n",
+            ),
+            ("src/hooks.belsk2", hooks),
+        ],
+    );
+    let errors = build(&dir).unwrap_err();
+    assert!(
+        errors.contains("'center' cannot be used in Belsk2 yet: it uses record 'point'"),
+        "{errors}"
+    );
+}

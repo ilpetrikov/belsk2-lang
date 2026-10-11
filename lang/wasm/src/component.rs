@@ -139,11 +139,11 @@ pub fn imports(ctx: &mut Ctx, world: &World) {
 /// Exports the world's functions, implemented by Belsk2 functions of the
 /// unit named after their interface, or of `exported` for functions of
 /// the world itself.
-pub fn exports(ctx: &mut Ctx, world: &World, units: &[Unit], exported: usize) {
+pub fn exports(ctx: &mut Ctx, world: &World, units: &[Unit], exported: Option<usize>) {
     let at = Span::in_file(
         units
-            .get(exported)
-            .and_then(|u| u.program.stmts.first())
+            .iter()
+            .find_map(|u| u.program.stmts.first())
             .map_or(0, |s| s.span.file),
         1,
         1,
@@ -155,7 +155,7 @@ pub fn exports(ctx: &mut Ctx, world: &World, units: &[Unit], exported: usize) {
     }
 }
 
-fn export(ctx: &mut Ctx, f: &WitFunc, units: &[Unit], exported: usize) -> R<()> {
+fn export(ctx: &mut Ctx, f: &WitFunc, units: &[Unit], exported: Option<usize>) -> R<()> {
     let what = format!("the WIT world exports '{}'", core_name(f));
     if let Some(why) = &f.unsupported {
         return Err(Error::compile(format!(
@@ -165,14 +165,20 @@ fn export(ctx: &mut Ctx, f: &WitFunc, units: &[Unit], exported: usize) -> R<()> 
     let unit = match &f.interface {
         Some(i) => units
             .iter()
-            .position(|u| u.name == i.module)
+            .position(|u| u.name == i.module && !u.interface)
             .ok_or_else(|| {
                 Error::compile(format!(
-                    "{what}; implement it in src/{}.belsk2",
+                    "{what}; add `{}` to src/{}.belsk2",
+                    f.signature(),
                     i.module.replace('.', "/")
                 ))
             })?,
-        None => exported,
+        None => exported.ok_or_else(|| {
+            Error::compile(format!(
+                "{what}; add `{}` to src/main.belsk2 or src/lib.belsk2",
+                f.signature()
+            ))
+        })?,
     };
     let module = units.get(unit).map(|u| u.name.clone()).unwrap_or_default();
     let decl = ctx.unit_fn(unit, &f.name).ok_or_else(|| {

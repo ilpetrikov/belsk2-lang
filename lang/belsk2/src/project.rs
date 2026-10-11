@@ -14,6 +14,7 @@
 use std::collections::HashMap;
 use std::io::Write;
 
+pub use belsk2_project::wit;
 pub use belsk2_project::{
     create, display_path, find_root, load, load_file, load_file_lenient, load_lenient, load_with,
     module_name, ComponentInfo, Dependency, Loaded, Lockfile, Manifest, Mode, Module, ModuleId,
@@ -36,6 +37,17 @@ pub fn check(loaded: &mut Loaded) -> Vec<Error> {
         let Some(module) = loaded.modules.get_mut(id) else {
             continue;
         };
+        // An interface of the WIT world: its functions come from the host.
+        if let (Some(world), Some(iface)) = (&loaded.world, &module.interface) {
+            let items = world
+                .interface_imports(&iface.module)
+                .map(|f| (f.name.clone(), f.ty()))
+                .collect();
+            if let Some(slot) = exports.get_mut(id) {
+                *slot = Some(items);
+            }
+            continue;
+        }
         let mut checker = Checker::new();
         // Functions the WIT world imports are visible in the whole project.
         if let (Some(world), 0) = (&loaded.world, module.package) {

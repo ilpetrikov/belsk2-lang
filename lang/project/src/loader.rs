@@ -8,7 +8,7 @@ use belsk2_syntax::{Error, FileId, SourceMap, Span};
 use crate::git::{self, default_home, normalize_url, GitCache, GitRef};
 use crate::lockfile::{LockedPackage, Lockfile};
 use crate::manifest::{module_name, Dependency, Manifest, MANIFEST};
-use crate::wit::World;
+use crate::wit::{WitInterface, World};
 
 pub type ModuleId = usize;
 
@@ -35,6 +35,9 @@ pub struct Module {
     /// The modules this one imports, in the order of its `using` statements,
     /// with the span of each `using`.
     pub uses: Vec<(ModuleId, Span)>,
+    /// Set for an interface imported by the WIT world (`using graphics;`):
+    /// the module has no source; its functions come from the host.
+    pub interface: Option<WitInterface>,
 }
 
 /// A loaded project: packages, parsed modules and their sources.
@@ -558,6 +561,7 @@ impl Loader {
             file,
             program,
             uses: Vec::new(),
+            interface: None,
         });
 
         let mut uses = Vec::new();
@@ -592,6 +596,10 @@ impl Loader {
         }
         let dotted = parts.join(".");
         let local = module_file(&pkg.src, parts);
+        if let Some(id) = self.interface_module(package, &dotted, &local, span) {
+            return id;
+        }
+        let pkg = self.packages.get(package)?;
 
         let (target_pkg, file, name) = if let Some(&dep) = pkg.deps.get(first) {
             if local.is_file() {
@@ -643,6 +651,57 @@ impl Loader {
             return None;
         }
         self.load_module(target_pkg, name, &file)
+    }
+
+    /// `using graphics;` for an interface the WIT world imports: a module
+    /// without source whose functions the host provides. `None` if `name`
+    /// is not such an interface.
+    fn interface_module(
+        &mut self,
+        package: usize,
+        name: &str,
+        local: &Path,
+        span: Span,
+    ) -> Option<Option<ModuleId>> {
+        if package != 0 {
+            return None;
+        }
+        let world = self.world.clone()?;
+        let iface = world
+            .import_interfaces
+            .iter()
+            .find(|i| i.module == name)?
+            .clone();
+        if local.is_file() {
+            self.errors.push(
+                Error::project(format!(
+                    "'{name}' is ambiguous: it names both the WIT interface '{}' and {}",
+                    iface.key,
+                    local.display()
+                ))
+                .at(span),
+            );
+            return Some(None);
+        }
+        let key = world.path.join(format!("#{name}"));
+        if let Some(&id) = self.module_by_path.get(&key) {
+            return Some(Some(id));
+        }
+        let file = self
+            .sources
+            .add(format!("<wit {}>", iface.key), String::new().as_str());
+        let id = self.modules.len();
+        self.module_by_path.insert(key, id);
+        self.modules.push(Module {
+            package,
+            name: name.to_string(),
+            path: world.path.clone(),
+            file,
+            program: Program { stmts: Vec::new() },
+            uses: Vec::new(),
+            interface: Some(iface),
+        });
+        Some(Some(id))
     }
 
     /// Orders modules so that each comes after the modules it uses, and

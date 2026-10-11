@@ -81,6 +81,8 @@ fn ret_type(decl: &FnDecl) -> R<Option<Ty>> {
 enum Item {
     Fn(usize, Rc<FnDecl>),
     Global(u32, Ty),
+    /// A function of an imported WIT interface.
+    Extern(FnRef),
 }
 
 /// A function that can be called: its index and (concrete) signature.
@@ -315,6 +317,11 @@ pub fn declare(ctx: &mut Ctx, units: &[Unit]) {
     let mut inits = Vec::new();
     for (u, unit) in units.iter().enumerate() {
         let mut scope = HashMap::new();
+        if unit.interface {
+            for (name, f) in ctx.wit_externs.get(&unit.name).into_iter().flatten() {
+                scope.insert(name.clone(), Item::Extern(f.clone()));
+            }
+        }
         for stmt in &unit.program.stmts {
             let span = stmt.span;
             match &stmt.kind {
@@ -621,6 +628,7 @@ impl<'c> FnGen<'c> {
         match self.ctx.scopes.get(self.unit).and_then(|s| s.get(name)) {
             Some(Item::Global(i, ty)) => Some(Res::Global(*i, ty.clone())),
             Some(Item::Fn(u, decl)) => Some(Res::Fn(*u, Rc::clone(decl))),
+            Some(Item::Extern(f)) => Some(Res::Extern(f.clone())),
             None => self.ctx.externs.get(name).cloned().map(Res::Extern),
         }
     }

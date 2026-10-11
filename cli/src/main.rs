@@ -86,6 +86,15 @@ enum Command {
     },
     /// Start the language server (for editors), talking LSP over stdin/stdout
     Lsp,
+    /// Show the project's WIT world as Belsk2 declarations
+    Bindgen {
+        /// Add stubs for exported functions that are not implemented yet
+        #[arg(long)]
+        stubs: bool,
+        /// Write the declarations to a file instead of printing them
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
 }
 
 fn main() -> ExitCode {
@@ -120,6 +129,7 @@ fn main() -> ExitCode {
         (Some(Command::Init { name, lib }), _) => init(name, lib),
         (Some(Command::Repl), _) => repl(),
         (Some(Command::Fmt { files, check }), _) => fmt(&files, check),
+        (Some(Command::Bindgen { stubs, output }), _) => bindgen(stubs, output, &options),
         (Some(Command::Lsp), _) => belsk2_lsp::run().map_err(|e| eprintln!("belsk2 lsp: {e}")),
         (None, None) if io::stdin().is_terminal() => repl(),
         (None, None) => run_file(Path::new("-"), &[], &options).map(|_| ()),
@@ -450,6 +460,81 @@ fn build_wasm(file: &Path, output: Option<PathBuf>) -> Result<(), ()> {
         belsk2_wasm::compile(&module.program).map_err(|errors| report(&errors, &loaded.sources))?;
     let output = output.unwrap_or_else(|| file.with_extension("wasm"));
     write_output(&output, &wasm)
+}
+
+/// `belsk2 bindgen`: shows the WIT world as Belsk2 declarations, or with
+/// `stubs` adds missing exported functions to the project's sources.
+fn bindgen(stubs: bool, output: Option<PathBuf>, options: &project::Options) -> Result<(), ()> {
+    let root = project_root()?;
+    let (loaded, errors) = project::load_lenient(&root, Mode::All, options);
+    let Some(world) = loaded.world.clone() else {
+        if errors.is_empty() {
+            eprintln!(
+                "project error: {} has no [component] section naming a WIT world",
+                root.join(project::MANIFEST).display()
+            );
+        } else {
+            report(&errors, &loaded.sources);
+        }
+        return Err(());
+    };
+    if !stubs {
+        let text = world.describe();
+        return match output {
+            Some(path) => std::fs::write(&path, text)
+                .map_err(|e| eprintln!("io error: cannot write {}: {e}", path.display())),
+            None => {
+                print!("{text}");
+                Ok(())
+            }
+        };
+    }
+    let root_module = if root.join("src/main.belsk2").is_file() || loaded.entry.is_some() {
+        "main.belsk2"
+    } else {
+        "lib.belsk2"
+    };
+    let mut added = 0;
+    for f in &world.exports {
+        if let Some(why) = &f.unsupported {
+            eprintln!("skipped `{}`: {why}", f.wit_name);
+            continue;
+        }
+        let path = root.join(project::wit::export_file(f, root_module));
+        let text = std::fs::read_to_string(&path).unwrap_or_default();
+        let declared = belsk2::syntax::parse(&text).is_ok_and(|p| {
+            p.stmts.iter().any(
+                |s| matches!(&s.kind, belsk2::syntax::ast::StmtKind::FnDecl(d) if d.name == f.name),
+            )
+        });
+        if declared {
+            continue;
+        }
+        let mut new_text = text.clone();
+        if !new_text.is_empty() {
+            if !new_text.ends_with('\n') {
+                new_text.push('\n');
+            }
+            new_text.push('\n');
+        }
+        new_text.push_str(&project::wit::stub(f));
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)
+                .map_err(|e| eprintln!("io error: cannot create {}: {e}", dir.display()))?;
+        }
+        std::fs::write(&path, new_text)
+            .map_err(|e| eprintln!("io error: cannot write {}: {e}", path.display()))?;
+        println!(
+            "Added `{}` to {}",
+            f.signature(),
+            project::display_path(&path)
+        );
+        added += 1;
+    }
+    if added == 0 {
+        println!("Every export of the WIT world is already implemented");
+    }
+    Ok(())
 }
 
 fn new_project(dir: &Path, name: &str, lib: bool) -> Result<(), ()> {

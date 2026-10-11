@@ -31,6 +31,9 @@ use belsk2_syntax::Error;
 pub struct Unit<'a> {
     /// The module name (`main`, `utils`, `net.http`).
     pub name: String,
+    /// Whether this is an interface imported by the WIT world (no source;
+    /// the host provides its functions).
+    pub interface: bool,
     pub program: &'a Program,
     /// The units this one imports with `using` (indices into the list).
     pub uses: Vec<usize>,
@@ -42,22 +45,24 @@ pub fn compile(program: &Program) -> Result<Vec<u8>, Vec<Error>> {
     compile_units(
         &[Unit {
             name: "main".to_string(),
+            interface: false,
             program,
             uses: Vec::new(),
         }],
-        0,
+        Some(0),
         None,
     )
 }
 
 /// Compiles checked modules into one WebAssembly module that exports the
-/// functions of unit `exported`. Units must come after the units they use.
+/// functions of unit `exported` (if any). Units must come after the units
+/// they use.
 ///
 /// With a WIT `world`, the result is a component instead: it imports and
 /// exports exactly what the world says.
 pub fn compile_units(
     units: &[Unit],
-    exported: usize,
+    exported: Option<usize>,
     world: Option<&World>,
 ) -> Result<Vec<u8>, Vec<Error>> {
     let mut ctx = codegen::Ctx::default();
@@ -67,7 +72,11 @@ pub fn compile_units(
     codegen::declare(&mut ctx, units);
     match world {
         Some(world) => component::exports(&mut ctx, world, units, exported),
-        None => codegen::export_unit(&mut ctx, units, exported),
+        None => {
+            if let Some(unit) = exported {
+                codegen::export_unit(&mut ctx, units, unit);
+            }
+        }
     }
     let core = validate(codegen::finish(ctx)?)?;
     match world {
@@ -80,7 +89,8 @@ pub fn compile_units(
 /// module (`main.belsk2`), or of `lib.belsk2` for a library, are exported;
 /// a project with `[component]` becomes a component of its WIT world.
 pub fn compile_project(loaded: &Loaded) -> Result<Vec<u8>, Vec<Error>> {
-    let order = if loaded.entry.is_some() {
+    // A component also exports interfaces from modules `main` does not use.
+    let order = if loaded.entry.is_some() && loaded.world.is_none() {
         loaded.run_order()
     } else {
         loaded.order.clone()
@@ -93,16 +103,18 @@ pub fn compile_project(loaded: &Loaded) -> Result<Vec<u8>, Vec<Error>> {
     });
     let positions: HashMap<ModuleId, usize> =
         order.iter().enumerate().map(|(i, &m)| (m, i)).collect();
-    let Some(&exported) = exported.and_then(|m| positions.get(&m)) else {
+    let exported = exported.and_then(|m| positions.get(&m)).copied();
+    if exported.is_none() && loaded.world.is_none() {
         return Err(vec![Error::project(
             "nothing to build: the project has neither src/main.belsk2 nor src/lib.belsk2",
         )]);
-    };
+    }
     let units: Vec<Unit> = order
         .iter()
         .filter_map(|&m| loaded.modules.get(m))
         .map(|m| Unit {
             name: m.name.clone(),
+            interface: m.interface.is_some(),
             program: &m.program,
             uses: m
                 .uses

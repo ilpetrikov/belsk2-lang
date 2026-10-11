@@ -253,6 +253,7 @@ pub fn analyze_source(name: &str, text: &str) -> Analysis {
             file,
             program,
             uses: Vec::new(),
+            interface: None,
         }],
         sources,
         entry: Some(0),
