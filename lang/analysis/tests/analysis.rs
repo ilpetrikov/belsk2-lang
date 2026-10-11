@@ -180,3 +180,48 @@ fn functions_know_their_locals_and_calls() {
     let add = a.functions.iter().find(|f| name(f.symbol) == "add");
     assert_eq!(add.map(|f| f.locals.len()), Some(2));
 }
+
+#[test]
+fn wit_functions_have_hover_and_completion() {
+    let dir = std::env::temp_dir()
+        .join("belsk2-analysis-tests")
+        .join("component");
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::create_dir_all(dir.join("src"));
+    let _ = std::fs::create_dir_all(dir.join("wit"));
+    let _ = std::fs::write(
+        dir.join("belsk2.toml"),
+        "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n\n[component]\nworld = \"wit\"\n",
+    );
+    let _ = std::fs::write(
+        dir.join("wit/app.wit"),
+        "package demo:app;\n\ninterface canvas {\n    /// Draws text.\n    draw: func(text: string) -> bool;\n}\n\nworld app {\n    /// Writes to the log.\n    import log: func(msg: string);\n    import canvas;\n    export run: func();\n}\n",
+    );
+    let main = dir.join("src/main.belsk2");
+    let _ = std::fs::write(
+        &main,
+        "using canvas;\n\nfn run() {\n    log(\"hi\");\n    draw(\"x\");\n    \n}\n",
+    );
+    let a = analyze_path(&main, &HashMap::new());
+    assert!(a.diagnostics.is_empty(), "{:?}", a.diagnostics);
+    let f = a.file_id(&main).unwrap_or_default();
+    let hover = a.hover(f, Pos::new(4, 5)).map(|h| h.1).unwrap_or_default();
+    assert!(
+        hover.contains("fn log(msg: string)") && hover.contains("Writes to the log."),
+        "{hover}"
+    );
+    let hover = a.hover(f, Pos::new(5, 5)).map(|h| h.1).unwrap_or_default();
+    assert!(
+        hover.contains("fn draw(text: string): bool") && hover.contains("demo:app/canvas"),
+        "{hover}"
+    );
+    let labels: Vec<String> = a
+        .completions(f, Pos::new(6, 5))
+        .into_iter()
+        .map(|c| c.label)
+        .collect();
+    assert!(
+        labels.contains(&"log".to_string()) && labels.contains(&"draw".to_string()),
+        "{labels:?}"
+    );
+}

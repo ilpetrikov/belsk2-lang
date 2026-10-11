@@ -33,11 +33,33 @@ pub(crate) fn index(analysis: &mut Analysis, loaded: &Loaded) {
         });
     }
 
+    // Functions of the WIT world: those it imports directly are visible
+    // in every module of the project; those of an imported interface are
+    // the exports of its (source-less) module.
+    let mut world_items = HashMap::new();
+    if let Some(world) = &loaded.world {
+        for f in world.root_imports() {
+            let id = wit_symbol(analysis, f, "the component world");
+            world_items.insert(f.name.clone(), id);
+        }
+    }
+
     let mut exports: Vec<Option<HashMap<String, usize>>> = vec![None; loaded.modules.len()];
     for &id in &loaded.order {
         let Some(module) = loaded.modules.get(id) else {
             continue;
         };
+        if let (Some(world), Some(iface)) = (&loaded.world, &module.interface) {
+            let mut items = HashMap::new();
+            for f in world.interface_imports(&iface.module) {
+                let from = format!("WIT interface {}", iface.key);
+                items.insert(f.name.clone(), wit_symbol(analysis, f, &from));
+            }
+            if let Some(slot) = exports.get_mut(id) {
+                *slot = Some(items);
+            }
+            continue;
+        }
         let Some(file) = analysis.files.iter().position(|f| f.id == module.file) else {
             continue;
         };
@@ -46,6 +68,9 @@ pub(crate) fn index(analysis: &mut Analysis, loaded: &Loaded) {
             continue;
         };
         let mut imports = HashMap::new();
+        if module.package == 0 {
+            imports.extend(world_items.iter().map(|(k, v)| (k.clone(), *v)));
+        }
         for &(used, _) in &module.uses {
             if let Some(Some(items)) = exports.get(used) {
                 imports.extend(items.iter().map(|(k, v)| (k.clone(), *v)));
@@ -72,6 +97,40 @@ pub(crate) fn index(analysis: &mut Analysis, loaded: &Loaded) {
             *slot = Some(own);
         }
     }
+}
+
+/// A symbol for a function the host provides through WIT.
+fn wit_symbol(analysis: &mut Analysis, f: &belsk2::project::WitFunc, from: &str) -> usize {
+    let mut doc = f.docs.clone().unwrap_or_default();
+    if let Some(why) = &f.unsupported {
+        if !doc.is_empty() {
+            doc.push_str("\n\n");
+        }
+        doc.push_str(&format!("Cannot be used in Belsk2 yet: {why}."));
+    }
+    if !doc.is_empty() {
+        doc.push_str("\n\n");
+    }
+    doc.push_str(&format!(
+        "Provided by the host (`{}` in {from}).",
+        f.wit_name
+    ));
+    analysis.symbols.push(Symbol {
+        name: f.name.clone(),
+        kind: SymbolKind::Function,
+        ty: f.ty(),
+        signature: f.signature(),
+        doc: Some(doc),
+        def: None,
+        module: None,
+        top_level: true,
+        params: f
+            .params
+            .iter()
+            .map(|(n, _)| belsk2::project::wit::snake(n))
+            .collect(),
+    });
+    analysis.symbols.len() - 1
 }
 
 struct Indexer<'a> {
