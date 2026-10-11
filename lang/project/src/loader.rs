@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 use belsk2_syntax::ast::{Program, StmtKind};
 use belsk2_syntax::{Error, FileId, SourceMap, Span};
@@ -7,6 +8,7 @@ use belsk2_syntax::{Error, FileId, SourceMap, Span};
 use crate::git::{self, default_home, normalize_url, GitCache, GitRef};
 use crate::lockfile::{LockedPackage, Lockfile};
 use crate::manifest::{module_name, Dependency, Manifest, MANIFEST};
+use crate::wit::World;
 
 pub type ModuleId = usize;
 
@@ -46,6 +48,8 @@ pub struct Loaded {
     pub entry: Option<ModuleId>,
     /// Every module, each after the modules it uses.
     pub order: Vec<ModuleId>,
+    /// The WIT world of a component project (`[component]`).
+    pub world: Option<Rc<World>>,
 }
 
 impl Loaded {
@@ -133,6 +137,7 @@ struct Loader {
     package_by_root: HashMap<PathBuf, usize>,
     modules: Vec<Module>,
     module_by_path: HashMap<PathBuf, ModuleId>,
+    world: Option<Rc<World>>,
     sources: SourceMap,
     errors: Vec<Error>,
     /// Canonical path -> unsaved contents.
@@ -331,6 +336,7 @@ impl Loader {
             package_by_root: HashMap::new(),
             modules: Vec::new(),
             module_by_path: HashMap::new(),
+            world: None,
             sources: SourceMap::new(),
             errors: Vec::new(),
             overlays: options
@@ -351,6 +357,7 @@ impl Loader {
             sources: self.sources,
             entry,
             order,
+            world: self.world,
         };
         (loaded, errors)
     }
@@ -366,6 +373,7 @@ impl Loader {
             sources: self.sources,
             entry,
             order,
+            world: self.world,
         })
     }
 
@@ -384,6 +392,13 @@ impl Loader {
         };
         let idx = self.packages.len();
         self.package_by_root.insert(key, idx);
+        if let (0, Some(component)) = (idx, &manifest.component) {
+            let path = root.join(&component.world);
+            match crate::wit::load_world(&path, component.name.as_deref()) {
+                Ok(world) => self.world = Some(Rc::new(world)),
+                Err(e) => self.errors.push(e),
+            }
+        }
         self.packages.push(Package {
             name: manifest.package.name.clone(),
             version: manifest.package.version.clone(),

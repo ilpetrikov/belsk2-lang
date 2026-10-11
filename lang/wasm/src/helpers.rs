@@ -1,6 +1,7 @@
 //! Runtime functions the generated code calls. Each is added to the module
 //! only when it is used.
 
+use belsk2_project::WitTy;
 use belsk2_syntax::{Error, FloatKind, Ty};
 use wasm_encoder::{BlockType, Instruction as I, ValType};
 
@@ -75,6 +76,15 @@ pub enum Helper {
     ArrPop(Ty),
     /// Element-wise equality.
     ArrEq(Ty),
+    /// Canonical ABI: a UTF-8 string in linear memory to a GC string.
+    LiftStr,
+    /// Canonical ABI: a GC string to UTF-8 in linear memory (pointer and
+    /// length).
+    LowerStr,
+    /// Canonical ABI: a list in linear memory to a Belsk2 array.
+    LiftList(WitTy),
+    /// Canonical ABI: a Belsk2 array to a list in linear memory.
+    LowerList(WitTy),
 }
 
 /// Builds the body of a helper.
@@ -84,6 +94,9 @@ pub fn build(ctx: &mut Ctx, h: &Helper) -> Result<Asm, Error> {
     let sref = nullable(s);
     let mut a;
     match h {
+        Helper::LiftStr | Helper::LowerStr | Helper::LiftList(_) | Helper::LowerList(_) => {
+            return crate::component::helper(ctx, h);
+        }
         Helper::DivI32 | Helper::DivI64 => {
             let wide = *h == Helper::DivI64;
             let t = if wide { I64 } else { I32 };

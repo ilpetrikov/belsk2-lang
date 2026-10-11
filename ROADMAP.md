@@ -31,7 +31,15 @@
         string and array equality, generics by monomorphization. Project builds:
         `belsk2 build` compiles every module the entry point needs into
         `bin/<package>.wasm` (`-o` picks another path); libraries export `lib.belsk2`.
-  - [ ] W3: components.
+  - [x] W3: components. `[component] world = "wit"` (a `.wit` file or a directory with
+        `deps/`, optional `name` for the world) in `belsk2.toml`; `belsk2 build` writes a
+        component. Exports are plain functions with matching names (`kebab-case` becomes
+        `snake_case`) and signatures; world-level imports are callable everywhere.
+        Canonical ABI glue for numbers, bool, char, string and `list<T>` (nested too):
+        linear memory with a bump allocator reset after every export call.
+  - [ ] W4: imported/exported interfaces as modules (`using graphics;`, exports in
+        `src/<interface>.belsk2`), `belsk2 bindgen` (API listing and export stubs).
+  - [ ] W5: records, enums, variants, option/result, resources (with struct/enum/class).
   - Known differences from the interpreter: runtime errors are traps without a message;
     float-to-integer conversions saturate at the `long` range (the interpreter wraps
     huge values); `%` on doubles uses `a - b * trunc(a / b)`, inexact for huge quotients;

@@ -17,17 +17,20 @@
 //! floating-point numbers come later (see ROADMAP.md).
 
 mod codegen;
+mod component;
 mod helpers;
 mod types;
 
 use std::collections::HashMap;
 
-use belsk2_project::{Loaded, ModuleId};
+use belsk2_project::{Loaded, ModuleId, World};
 use belsk2_syntax::ast::Program;
 use belsk2_syntax::Error;
 
 /// One module of a multi-file program.
 pub struct Unit<'a> {
+    /// The module name (`main`, `utils`, `net.http`).
+    pub name: String,
     pub program: &'a Program,
     /// The units this one imports with `using` (indices into the list).
     pub uses: Vec<usize>,
@@ -38,24 +41,44 @@ pub struct Unit<'a> {
 pub fn compile(program: &Program) -> Result<Vec<u8>, Vec<Error>> {
     compile_units(
         &[Unit {
+            name: "main".to_string(),
             program,
             uses: Vec::new(),
         }],
         0,
+        None,
     )
 }
 
 /// Compiles checked modules into one WebAssembly module that exports the
 /// functions of unit `exported`. Units must come after the units they use.
-pub fn compile_units(units: &[Unit], exported: usize) -> Result<Vec<u8>, Vec<Error>> {
+///
+/// With a WIT `world`, the result is a component instead: it imports and
+/// exports exactly what the world says.
+pub fn compile_units(
+    units: &[Unit],
+    exported: usize,
+    world: Option<&World>,
+) -> Result<Vec<u8>, Vec<Error>> {
     let mut ctx = codegen::Ctx::default();
+    if let Some(world) = world {
+        component::imports(&mut ctx, world);
+    }
     codegen::declare(&mut ctx, units);
-    codegen::export_unit(&mut ctx, units, exported);
-    validate(codegen::finish(ctx)?)
+    match world {
+        Some(world) => component::exports(&mut ctx, world, units, exported),
+        None => codegen::export_unit(&mut ctx, units, exported),
+    }
+    let core = validate(codegen::finish(ctx)?)?;
+    match world {
+        Some(world) => component::encode(core, world),
+        None => Ok(core),
+    }
 }
 
 /// Compiles a loaded and checked project. The functions of its entry
-/// module (`main.belsk2`), or of `lib.belsk2` for a library, are exported.
+/// module (`main.belsk2`), or of `lib.belsk2` for a library, are exported;
+/// a project with `[component]` becomes a component of its WIT world.
 pub fn compile_project(loaded: &Loaded) -> Result<Vec<u8>, Vec<Error>> {
     let order = if loaded.entry.is_some() {
         loaded.run_order()
@@ -79,6 +102,7 @@ pub fn compile_project(loaded: &Loaded) -> Result<Vec<u8>, Vec<Error>> {
         .iter()
         .filter_map(|&m| loaded.modules.get(m))
         .map(|m| Unit {
+            name: m.name.clone(),
             program: &m.program,
             uses: m
                 .uses
@@ -87,7 +111,7 @@ pub fn compile_project(loaded: &Loaded) -> Result<Vec<u8>, Vec<Error>> {
                 .collect(),
         })
         .collect();
-    compile_units(&units, exported)
+    compile_units(&units, exported, loaded.world.as_deref())
 }
 
 fn validate(bytes: Vec<u8>) -> Result<Vec<u8>, Vec<Error>> {

@@ -228,6 +228,38 @@ compile errors. Parameters and returned values need declared types. Strings,
 arrays, generics and all statements are supported; dictionaries, `any` and
 `str()` of floating-point numbers are not yet (see ROADMAP.md).
 
+### Components
+
+A project becomes a [WebAssembly component](https://component-model.bytecodealliance.org/)
+when `belsk2.toml` names a WIT world:
+
+```toml
+[component]
+world = "wit"        # a .wit file or a directory (with deps/)
+```
+
+```wit
+package demo:app;
+
+world app {
+    import log: func(msg: string);
+    export greet: func(name: string) -> string;
+}
+```
+
+```belsk2
+fn greet(name: string): string {
+    log("greeting " + name);
+    return "Hi, " + name;
+}
+```
+
+Every export needs a function with the same name (`kebab-case` becomes
+`snake_case`) and matching types; imports can be called from any module.
+Supported WIT types: integers, `f32`, `f64`, `bool`, `char`, `string` and
+`list<T>`. Imports only exist in the component: `belsk2 run` reports an
+error when one is called.
+
 ## Editor support
 
 `belsk2 lsp` is a language server: errors as you type, hover types,

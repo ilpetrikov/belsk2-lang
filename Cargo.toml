@@ -30,6 +30,10 @@ serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 semver = "1"
 clap = { version = "4", features = ["derive"] }
+wasm-encoder = "0.261"
+wasmparser = "0.261"
+wit-parser = "0.261"
+wit-component = "0.261"
 
 # The whole toolchain is panic-free: every failure is reported as a
 # `belsk2::Error`. These lints keep it that way.

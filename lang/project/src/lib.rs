@@ -15,6 +15,7 @@ pub mod git;
 mod loader;
 pub mod lockfile;
 pub mod manifest;
+pub mod wit;
 
 use std::path::{Path, PathBuf};
 
@@ -23,7 +24,10 @@ pub use loader::{
     Module, ModuleId, Options, Package,
 };
 pub use lockfile::{Lockfile, LOCKFILE};
-pub use manifest::{module_name, valid_package_name, Dependency, Manifest, PackageInfo, MANIFEST};
+pub use manifest::{
+    module_name, valid_package_name, ComponentInfo, Dependency, Manifest, PackageInfo, MANIFEST,
+};
+pub use wit::{WitFunc, WitInterface, WitTy, World};
 
 /// Looks for `belsk2.toml` in `start` and its parent directories.
 pub fn find_root(start: &Path) -> Option<PathBuf> {

@@ -16,8 +16,9 @@ use std::io::Write;
 
 pub use belsk2_project::{
     create, display_path, find_root, load, load_file, load_file_lenient, load_lenient, load_with,
-    module_name, Dependency, Loaded, Lockfile, Manifest, Mode, Module, ModuleId, Options, Package,
-    PackageInfo, Template, LOCKFILE, MANIFEST,
+    module_name, ComponentInfo, Dependency, Loaded, Lockfile, Manifest, Mode, Module, ModuleId,
+    Options, Package, PackageInfo, Template, WitFunc, WitInterface, WitTy, World, LOCKFILE,
+    MANIFEST,
 };
 use belsk2_syntax::Ty;
 use belsk2_typeck::Checker;
@@ -36,6 +37,12 @@ pub fn check(loaded: &mut Loaded) -> Vec<Error> {
             continue;
         };
         let mut checker = Checker::new();
+        // Functions the WIT world imports are visible in the whole project.
+        if let (Some(world), 0) = (&loaded.world, module.package) {
+            for f in world.root_imports() {
+                checker.declare_import(&f.name, f.ty(), "the component world");
+            }
+        }
         let mut imported: HashMap<String, ModuleId> = HashMap::new();
         for &(used, span) in &module.uses {
             let Some(Some(items)) = exports.get(used) else {
@@ -59,7 +66,9 @@ pub fn check(loaded: &mut Loaded) -> Vec<Error> {
         }
         let (errs, items) = checker.check_module(&mut module.program);
         errors.extend(errs);
-        if Some(id) == loaded.entry && !items.iter().any(|(name, _)| name == "main") {
+        // A component starts in the functions its WIT world exports.
+        let needs_main = loaded.world.is_none();
+        if needs_main && Some(id) == loaded.entry && !items.iter().any(|(name, _)| name == "main") {
             errors.push(
                 Error::type_error(format!(
                     "{} has no `fn main()`; a program starts in `main`",

@@ -11,12 +11,15 @@ rust-version.workspace = true
 belsk2-syntax.workspace = true
 belsk2-project.workspace = true
 belsk2-typeck.workspace = true
-wasm-encoder = "0.261"
-wasmparser = "0.261"
+wasm-encoder.workspace = true
+wasmparser.workspace = true
+wit-parser.workspace = true
+wit-component.workspace = true
 
 [dev-dependencies]
 belsk2-interp.workspace = true
-wasmtime = { version = "49", default-features = false, features = ["cranelift", "runtime", "std", "gc", "gc-drc"] }
+belsk2.workspace = true
+wasmtime = { version = "49", default-features = false, features = ["cranelift", "runtime", "std", "gc", "gc-drc", "component-model"] }
 
 [lints]
 workspace = true

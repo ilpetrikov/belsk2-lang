@@ -117,7 +117,7 @@ pub struct Ctx {
     imports: Vec<(String, String, u32)>,
     keys: HashMap<String, FnRef>,
     pending: Vec<(u32, Job)>,
-    globals: Vec<ValType>,
+    globals: Vec<(ValType, i32)>,
     data: Vec<Vec<u8>>,
     data_ids: HashMap<String, u32>,
     start: Option<u32>,
@@ -126,6 +126,14 @@ pub struct Ctx {
     pub externs: HashMap<String, FnRef>,
     /// Whether the module has a linear memory (for the canonical ABI).
     pub memory: bool,
+    /// `cabi_realloc`, for the canonical ABI.
+    pub realloc: Option<u32>,
+    /// The allocator's next free address.
+    pub heap: Option<u32>,
+    /// Functions of imported WIT interfaces, by interface module name.
+    pub wit_externs: HashMap<String, HashMap<String, FnRef>>,
+    /// Host functions that cannot be called yet, with the reason.
+    pub unavailable: HashMap<String, String>,
     pub extra_exports: Vec<(String, ExportKind, u32)>,
 }
 
@@ -169,7 +177,13 @@ impl Ctx {
     }
 
     pub fn add_global(&mut self, t: ValType) -> u32 {
-        self.globals.push(t);
+        self.add_global_init(t, 0)
+    }
+
+    /// A global whose initial value is `init` (`0` or `null` for types
+    /// other than `i32`).
+    pub fn add_global_init(&mut self, t: ValType, init: i32) -> u32 {
+        self.globals.push((t, init));
         self.globals.len() as u32 - 1
     }
 
@@ -437,13 +451,13 @@ fn assemble(ctx: &Ctx) -> Vec<u8> {
         });
     }
     let mut globals = GlobalSection::new();
-    for t in &ctx.globals {
+    for (t, init) in &ctx.globals {
         let zero = match t {
             ValType::I64 => ConstExpr::i64_const(0),
             ValType::F32 => ConstExpr::f32_const(0.0.into()),
             ValType::F64 => ConstExpr::f64_const(0.0.into()),
             ValType::Ref(r) => ConstExpr::ref_null(r.heap_type),
-            _ => ConstExpr::i32_const(0),
+            _ => ConstExpr::i32_const(*init),
         };
         let ty = GlobalType {
             val_type: *t,
@@ -1099,7 +1113,13 @@ impl<'c> FnGen<'c> {
             }
             Some(Res::Extern(f)) => f,
             Some(_) => return Err(unsupported("calling a variable is", callee.span)),
-            None => return Err(Error::compile(format!("undefined function '{name}'")).at(span)),
+            None => {
+                let msg = match self.ctx.unavailable.get(name.as_str()) {
+                    Some(why) => format!("'{name}' cannot be used in Belsk2 yet: {why}"),
+                    None => format!("undefined function '{name}'"),
+                };
+                return Err(Error::compile(msg).at(span));
+            }
         };
         for (arg, param) in args.iter().zip(&f.params) {
             self.value(arg, param)?;

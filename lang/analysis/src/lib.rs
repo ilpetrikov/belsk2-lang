@@ -257,6 +257,7 @@ pub fn analyze_source(name: &str, text: &str) -> Analysis {
         sources,
         entry: Some(0),
         order: vec![0],
+        world: None,
     };
     build(loaded, errors, None)
 }

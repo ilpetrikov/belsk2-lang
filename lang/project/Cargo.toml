@@ -12,6 +12,7 @@ belsk2-syntax.workspace = true
 serde.workspace = true
 toml.workspace = true
 semver.workspace = true
+wit-parser.workspace = true
 
 [lints]
 workspace = true
