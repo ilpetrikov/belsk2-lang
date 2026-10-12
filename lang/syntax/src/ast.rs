@@ -1,7 +1,7 @@
 use std::rc::Rc;
 
 use crate::span::Span;
-use crate::types::{Access, FloatKind, IntKind, Ty, TypeExpr, TypeInfo, TypeKind};
+use crate::types::{Access, FloatKind, IntKind, Ty, TypeExpr, TypeInfo, TypeKind, Virt};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Program {
@@ -79,6 +79,10 @@ pub struct TypeDecl {
     pub kind: TypeKind,
     /// `private struct ...` is visible only in its module.
     pub access: Access,
+    /// `abstract class`: cannot be created, may have abstract methods.
+    pub is_abstract: bool,
+    /// The base class and the implemented interfaces, after `:`.
+    pub bases: Vec<TypeExpr>,
     pub members: Vec<Member>,
     pub span: Span,
     /// The type, created by the checker. The declaration owns it.
@@ -92,12 +96,14 @@ pub struct Member {
     pub span: Span,
 }
 
-/// `public`, `private`, `protected`, `static`.
+/// `public`, `private`, `protected`, `static`, `virtual`, `override`,
+/// `abstract`.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Modifiers {
     /// `None` when not written: public.
     pub access: Option<Access>,
     pub is_static: bool,
+    pub virt: Virt,
 }
 
 impl Modifiers {
@@ -110,14 +116,18 @@ impl Modifiers {
 pub enum MemberKind {
     /// `x: int;`, `x: int = 1;`, `var x = 1;`, `int x;`
     Field(Box<FieldDecl>),
-    /// `fn name(...) { ... }`
+    /// `fn name(...) { ... }`; abstract and interface methods have no body.
     Method(Rc<FnDecl>),
-    /// `init(...) { ... }`, the constructor.
+    /// `init(...) { ... }`, the constructor. `init(...) : base(args)`
+    /// becomes a call `base(args)` at the start of the body.
     Init(Rc<FnDecl>),
     /// A property with `get`/`set` bodies.
     Prop(Box<PropDecl>),
     /// A case of an enum: `High` or `High = 10`.
-    Case { name: String, value: Option<Expr> },
+    Case {
+        name: String,
+        value: Option<Box<Expr>>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -248,6 +258,20 @@ pub enum ExprKind {
     },
     /// `this`, the value a method runs on.
     This,
+    /// `base` in `base.method()` (and `base(...)` at the start of `init`).
+    Base,
+    /// `x is Dog`
+    Is {
+        expr: Box<Expr>,
+        ty: TypeExpr,
+        resolved: Ty,
+    },
+    /// `x as Dog`: `x` if it is a `Dog`, else `null`.
+    As {
+        expr: Box<Expr>,
+        ty: TypeExpr,
+        resolved: Ty,
+    },
     /// The type whose method is running, inserted by the checker for a
     /// static member used without its type name (`count` for
     /// `Counter.count`).
@@ -264,6 +288,7 @@ impl Expr {
             | ExprKind::Null
             | ExprKind::Ident(_)
             | ExprKind::This
+            | ExprKind::Base
             | ExprKind::SelfType => 0,
             ExprKind::Array(items) => max_depth(items.iter()),
             ExprKind::Map(entries) => max_depth(entries.iter().flat_map(|(k, v)| [k, v])),
@@ -272,7 +297,9 @@ impl Expr {
             ExprKind::Call { callee, args, .. } => callee.depth.max(max_depth(args.iter())),
             ExprKind::Member { object, .. } => object.depth,
             ExprKind::Index { object, index } => object.depth.max(index.depth),
-            ExprKind::Convert { expr, .. } => expr.depth,
+            ExprKind::Convert { expr, .. }
+            | ExprKind::Is { expr, .. }
+            | ExprKind::As { expr, .. } => expr.depth,
         };
         Expr {
             kind,

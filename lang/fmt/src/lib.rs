@@ -38,6 +38,13 @@ const KEYWORDS: &[&str] = &[
     "private",
     "protected",
     "static",
+    "interface",
+    "virtual",
+    "override",
+    "abstract",
+    "base",
+    "is",
+    "as",
 ];
 
 /// Keywords after which an expression starts.
@@ -59,6 +66,9 @@ struct Tok {
     unary: bool,
     /// A `{` (or its `}`) that starts a dictionary literal, not a block.
     literal: bool,
+    /// The `:` before base types (`class Dog : Animal`) or `base(...)`,
+    /// written with spaces around it.
+    spaced: bool,
 }
 
 impl Tok {
@@ -152,6 +162,7 @@ fn tokens(source: &str) -> Result<Vec<Tok>, Error> {
                 joined: false,
                 unary: false,
                 literal: false,
+                spaced: false,
             }
         })
         .collect();
@@ -229,6 +240,28 @@ fn tokens(source: &str) -> Result<Vec<Tok>, Error> {
         }
     }
 
+    // `class Dog : Animal`, `init(...) : base(...)`.
+    let code: Vec<usize> = (0..toks.len())
+        .filter(|&i| toks.get(i).is_some_and(|t| !t.is_comment()))
+        .collect();
+    for (k, &i) in code.iter().enumerate() {
+        if !toks.get(i).is_some_and(|t| t.is(K::Colon)) {
+            continue;
+        }
+        let word = |d: isize| {
+            k.checked_add_signed(d)
+                .and_then(|k| code.get(k))
+                .and_then(|&j| toks.get(j))
+                .map(|t| t.text.clone())
+                .unwrap_or_default()
+        };
+        let spaced = matches!(word(-2).as_str(), "struct" | "class" | "enum" | "interface")
+            || word(1) == "base";
+        if let Some(t) = toks.get_mut(i) {
+            t.spaced = spaced;
+        }
+    }
+
     // Mark the `}` that closes each literal `{`.
     let mut stack: Vec<bool> = Vec::new();
     for t in toks.iter_mut() {
@@ -278,6 +311,9 @@ fn space(p: &Tok, t: &Tok, config: &Config) -> bool {
     if p.is_comment() || t.is_comment() {
         return true;
     }
+    if t.is(K::Colon) && t.spaced {
+        return true;
+    }
     if t.is(K::Comma)
         || t.is(K::Semicolon)
         || t.is(K::RParen)
@@ -293,7 +329,11 @@ fn space(p: &Tok, t: &Tok, config: &Config) -> bool {
     if (p.is(K::Lt) && p.generic) || (t.is(K::Lt) && t.generic) || (t.is(K::Gt) && t.generic) {
         return false;
     }
-    let value_end = p.name() || p.is(K::RParen) || p.is(K::RBracket) || (p.is(K::Gt) && p.generic);
+    let value_end = p.name()
+        || (p.is(K::Ident) && matches!(p.text.as_str(), "base" | "this"))
+        || p.is(K::RParen)
+        || p.is(K::RBracket)
+        || (p.is(K::Gt) && p.generic);
     if t.is(K::LParen) {
         return !value_end;
     }

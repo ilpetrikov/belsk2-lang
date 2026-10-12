@@ -5,7 +5,7 @@ use crate::error::{Error, Result};
 use crate::lexer::{tokenize, tokenize_file};
 use crate::span::{FileId, Span};
 use crate::token::{Token, TokenKind};
-use crate::types::{Access, FloatKind, IntKind, Ty, TypeExpr, TypeExprKind, TypeKind};
+use crate::types::{Access, FloatKind, IntKind, Ty, TypeExpr, TypeExprKind, TypeKind, Virt};
 
 /// Maximum height of a single expression tree.
 pub const MAX_EXPR_DEPTH: u32 = 512;
@@ -37,6 +37,13 @@ pub const KEYWORDS: &[&str] = &[
     "private",
     "protected",
     "static",
+    "interface",
+    "base",
+    "virtual",
+    "override",
+    "abstract",
+    "is",
+    "as",
 ];
 
 /// Parses a whole program.
@@ -136,6 +143,12 @@ impl Parser {
         }
     }
 
+    fn expect_word_span(&mut self, word: &str) -> Result<Span> {
+        let span = self.span();
+        self.expect_word(word)?;
+        Ok(span)
+    }
+
     fn expect_word(&mut self, word: &str) -> Result<()> {
         if self.at_word(word) {
             self.bump();
@@ -218,8 +231,10 @@ impl Parser {
             match t.text.as_str() {
                 "var" => return self.parse_var_decl(),
                 "fn" => return self.parse_fn_decl(),
-                "struct" | "enum" | "class" => return self.parse_type_decl(Access::Public),
-                "public" | "private" | "protected" | "static" => {
+                "struct" | "enum" | "class" | "interface" => {
+                    return self.parse_type_decl(Access::Public, false)
+                }
+                "public" | "private" | "protected" | "static" | "abstract" => {
                     return self.parse_declaration(span)
                 }
                 "if" => return self.parse_if(),
@@ -442,6 +457,23 @@ impl Parser {
         let mut mods = Modifiers::default();
         loop {
             let t = self.peek().clone();
+            let virt = match t.text.as_str() {
+                "virtual" => Some(Virt::Virtual),
+                "override" => Some(Virt::Override),
+                "abstract" => Some(Virt::Abstract),
+                _ => None,
+            };
+            if let (Some(virt), TokenKind::Ident) = (virt, t.kind) {
+                if mods.virt != Virt::None {
+                    return Err(Error::syntax(
+                        "use only one of 'virtual', 'override' and 'abstract'",
+                        t.span,
+                    ));
+                }
+                self.bump();
+                mods.virt = virt;
+                continue;
+            }
             let access = match t.text.as_str() {
                 _ if t.kind != TokenKind::Ident => return Ok(mods),
                 "public" => Access::Public,
@@ -485,6 +517,15 @@ impl Parser {
         if access == Access::Protected {
             return Err(Error::syntax("'protected' is for members of a type", span));
         }
+        let is_abstract = mods.virt == Virt::Abstract;
+        if matches!(mods.virt, Virt::Virtual | Virt::Override)
+            || (is_abstract && !self.at_word("class"))
+        {
+            return Err(Error::syntax(
+                "'virtual', 'override' and 'abstract' are for members ('abstract class' is allowed)",
+                span,
+            ));
+        }
         let t = self.peek().clone();
         let word = if t.kind == TokenKind::Ident {
             t.text.as_str()
@@ -492,7 +533,9 @@ impl Parser {
             ""
         };
         let mut stmt = match word {
-            "struct" | "enum" | "class" => return self.parse_type_decl(access),
+            "struct" | "enum" | "class" | "interface" => {
+                return self.parse_type_decl(access, is_abstract)
+            }
             "fn" => self.parse_fn_decl()?,
             "var" => self.parse_var_decl()?,
             _ => match self.try_decl_type() {
@@ -553,7 +596,7 @@ impl Parser {
     }
 
     fn parse_fn_decl(&mut self) -> Result<Stmt> {
-        let decl = self.parse_fn()?;
+        let decl = self.parse_fn(false)?;
         let span = decl.span;
         Ok(Stmt {
             kind: StmtKind::FnDecl(decl),
@@ -561,8 +604,9 @@ impl Parser {
         })
     }
 
-    /// `fn name<T>(params): ret { body }`
-    fn parse_fn(&mut self) -> Result<Rc<FnDecl>> {
+    /// `fn name<T>(params): ret { body }`; with `bodyless`, the body is
+    /// left out: `fn name(params): ret;`.
+    fn parse_fn(&mut self, bodyless: bool) -> Result<Rc<FnDecl>> {
         let span = self.bump().span;
         let name = self.expect_name("a function name")?;
         let mut type_params: Vec<String> = Vec::new();
@@ -590,7 +634,21 @@ impl Parser {
         } else {
             None
         };
-        let body = self.parse_body()?;
+        let body = if bodyless {
+            if self.kind() == TokenKind::LBrace {
+                return Err(Error::syntax(
+                    "an abstract or interface method has no body; end it with ';'",
+                    self.span(),
+                ));
+            }
+            self.end_stmt();
+            Block {
+                stmts: Vec::new(),
+                span,
+            }
+        } else {
+            self.parse_body()?
+        };
         Ok(Rc::new(FnDecl {
             name,
             type_params,
@@ -648,12 +706,13 @@ impl Parser {
 
     /// `struct Point { x: double; fn len(): double { ... } }`,
     /// `enum Mode { Low, High = 10 }`, `class Player { ... }`
-    fn parse_type_decl(&mut self, access: Access) -> Result<Stmt> {
+    fn parse_type_decl(&mut self, access: Access, is_abstract: bool) -> Result<Stmt> {
         let kw = self.bump();
         let span = kw.span;
         let kind = match kw.text.as_str() {
             "enum" => TypeKind::Enum,
             "class" => TypeKind::Class,
+            "interface" => TypeKind::Interface,
             _ => TypeKind::Struct,
         };
         if self.nesting != 1 || self.fn_depth > 0 {
@@ -672,6 +731,15 @@ impl Parser {
                 self.span(),
             ));
         }
+        let mut bases = Vec::new();
+        if self.eat(TokenKind::Colon) {
+            loop {
+                bases.push(self.parse_type()?);
+                if !self.eat(TokenKind::Comma) {
+                    break;
+                }
+            }
+        }
         self.expect(TokenKind::LBrace)?;
         let mut members = Vec::new();
         if kind == TypeKind::Enum {
@@ -684,7 +752,7 @@ impl Parser {
             if self.eat(TokenKind::Semicolon) {
                 continue;
             }
-            let member = self.parse_member()?;
+            let member = self.parse_member(kind)?;
             if kind == TypeKind::Enum
                 && !matches!(member.kind, MemberKind::Method(_) | MemberKind::Prop(_))
                 && !(member.mods.is_static && matches!(member.kind, MemberKind::Field(_)))
@@ -701,6 +769,8 @@ impl Parser {
                 name,
                 kind,
                 access,
+                is_abstract,
+                bases,
                 members,
                 span,
                 info: None,
@@ -724,7 +794,7 @@ impl Parser {
                 ));
             }
             let value = if self.eat(TokenKind::Eq) {
-                Some(self.parse_expr()?)
+                Some(Box::new(self.parse_expr()?))
             } else {
                 None
             };
@@ -741,7 +811,7 @@ impl Parser {
     }
 
     /// A field, `fn` or `init` in a type body.
-    fn parse_member(&mut self) -> Result<Member> {
+    fn parse_member(&mut self, owner: TypeKind) -> Result<Member> {
         let span = self.span();
         let mods = self.parse_modifiers()?;
         let t = self.peek().clone();
@@ -749,12 +819,37 @@ impl Parser {
             return Err(self.unexpected("a field, `fn` or `init`"));
         }
         let kind = match t.text.as_str() {
-            "fn" => MemberKind::Method(self.parse_fn()?),
+            "fn" => {
+                let bodyless = owner == TypeKind::Interface || mods.virt == Virt::Abstract;
+                MemberKind::Method(self.parse_fn(bodyless)?)
+            }
             "init" if self.peek_at(1).kind == TokenKind::LParen => {
                 self.bump();
                 self.bump();
                 let params = self.parse_params()?;
-                let body = self.parse_body()?;
+                // `: base(args)` calls the base class's init first.
+                let base_call = if self.eat(TokenKind::Colon) {
+                    let base = self.expect_word_span("base")?;
+                    self.expect(TokenKind::LParen)?;
+                    let args = self.parse_list(TokenKind::RParen)?;
+                    let callee = self.mk(ExprKind::Base, base)?;
+                    let call = ExprKind::Call {
+                        callee: Box::new(callee),
+                        type_args: Vec::new(),
+                        args,
+                        inst: Vec::new(),
+                    };
+                    Some(Stmt {
+                        kind: StmtKind::Expr(self.mk(call, base)?),
+                        span: base,
+                    })
+                } else {
+                    None
+                };
+                let mut body = self.parse_body()?;
+                if let Some(call) = base_call {
+                    body.stmts.insert(0, call);
+                }
                 MemberKind::Init(Rc::new(FnDecl {
                     name: "init".to_string(),
                     type_params: Vec::new(),
@@ -766,7 +861,7 @@ impl Parser {
                     access: Access::Public,
                 }))
             }
-            "struct" | "enum" | "class" => {
+            "struct" | "enum" | "class" | "interface" => {
                 return Err(Error::syntax("nested types are not supported", span))
             }
             "var" => {
@@ -1061,6 +1156,27 @@ impl Parser {
                 TokenKind::Gte => BinOp::Ge,
                 // `>` directly followed by `>=` is the `>>=` operator.
                 TokenKind::Gt if !self.adjacent(TokenKind::Gte) => BinOp::Gt,
+                TokenKind::Ident if self.at_word("is") || self.at_word("as") => {
+                    let is = self.at_word("is");
+                    let span = self.bump().span;
+                    let ty = self.parse_type()?;
+                    let expr = Box::new(lhs);
+                    let kind = if is {
+                        ExprKind::Is {
+                            expr,
+                            ty,
+                            resolved: Ty::Any,
+                        }
+                    } else {
+                        ExprKind::As {
+                            expr,
+                            ty,
+                            resolved: Ty::Any,
+                        }
+                    };
+                    lhs = self.mk(kind, span)?;
+                    continue;
+                }
                 _ => return Ok(lhs),
             };
             let span = self.bump().span;
@@ -1236,6 +1352,7 @@ impl Parser {
                     "false" => ExprKind::Bool(false),
                     "null" => ExprKind::Null,
                     "this" => ExprKind::This,
+                    "base" => ExprKind::Base,
                     word if KEYWORDS.contains(&word) => {
                         return Err(self.unexpected("an expression"))
                     }

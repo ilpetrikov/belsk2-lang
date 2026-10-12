@@ -2,7 +2,7 @@ use std::fmt;
 use std::rc::Rc;
 
 use belsk2_syntax::ast::{FnDecl, MemberKind, PropDecl, TypeDecl};
-use belsk2_syntax::{FloatKind, IntKind, Ty, TypeRef};
+use belsk2_syntax::{FloatKind, IntKind, Ty, TypeRef, Virt};
 
 pub use crate::collections::{Array, Map};
 use crate::env::EnvRef;
@@ -56,6 +56,8 @@ pub struct Class {
     /// The static fields and their values.
     pub static_fields: Vec<(String, Ty)>,
     pub statics: std::cell::RefCell<Vec<Value>>,
+    /// The base class, linked once every type of the block is defined.
+    pub base: std::cell::OnceCell<Rc<Class>>,
 }
 
 impl Class {
@@ -67,17 +69,42 @@ impl Class {
         self.static_fields.iter().position(|(n, _)| n == name)
     }
 
-    pub fn prop(&self, name: &str) -> Option<&PropDecl> {
-        self.decl.members.iter().find_map(|m| match &m.kind {
-            MemberKind::Prop(p) if p.name == name => Some(&**p),
-            _ => None,
+    /// This class and its base classes, nearest first.
+    pub fn chain(self: &Rc<Self>) -> Vec<Rc<Class>> {
+        let mut out = vec![Rc::clone(self)];
+        while let Some(base) = out.last().and_then(|c| c.base.get()).cloned() {
+            if out.len() > 64 {
+                break;
+            }
+            out.push(base);
+        }
+        out
+    }
+
+    /// The method `name` this class runs (its own, or inherited) and the
+    /// class that declares it. Abstract methods have no code and are
+    /// skipped.
+    pub fn find_method(self: &Rc<Self>, name: &str) -> Option<(Rc<Class>, Rc<FnDecl>)> {
+        self.chain().into_iter().find_map(|c| {
+            let decl = c.decl.members.iter().find_map(|m| match &m.kind {
+                MemberKind::Method(d) if d.name == name && m.mods.virt != Virt::Abstract => {
+                    Some(Rc::clone(d))
+                }
+                _ => None,
+            })?;
+            Some((c, decl))
         })
     }
 
-    pub fn method(&self, name: &str) -> Option<&Rc<FnDecl>> {
-        self.decl.members.iter().find_map(|m| match &m.kind {
-            MemberKind::Method(d) if d.name == name => Some(d),
-            _ => None,
+    /// The property `name` (its own, or inherited) and the class that
+    /// declares it.
+    pub fn find_prop(self: &Rc<Self>, name: &str) -> Option<(Rc<Class>, PropDecl)> {
+        self.chain().into_iter().find_map(|c| {
+            let prop = c.decl.members.iter().find_map(|m| match &m.kind {
+                MemberKind::Prop(p) if p.name == name => Some((**p).clone()),
+                _ => None,
+            })?;
+            Some((c, prop))
         })
     }
 
@@ -230,9 +257,9 @@ impl Value {
                 (k.is_any() || *m.key_ty() == *k) && (v.is_any() || *m.value_ty() == *v)
             }
             (Ty::Fn(_), Value::Function(_) | Value::Native(_)) => true,
-            (Ty::Named(t), Value::Struct(s)) => s.class.ty == t,
-            (Ty::Named(t), Value::Object(o)) => o.class.ty == t,
-            (Ty::Named(t), Value::Enum(c, _)) => c.ty == t,
+            (Ty::Named(t), Value::Struct(s)) => s.class.ty.is_subtype_of(&t),
+            (Ty::Named(t), Value::Object(o)) => o.class.ty.is_subtype_of(&t),
+            (Ty::Named(t), Value::Enum(c, _)) => c.ty.is_subtype_of(&t),
             (Ty::Type(t), Value::Type(c)) => c.ty == t,
             _ => false,
         }

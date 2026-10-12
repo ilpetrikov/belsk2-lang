@@ -77,8 +77,10 @@
 - [x] `enum`: typed cases (`Mode.High`) with numbers (`Low = 1`), methods, `int(m)`, dictionary keys
 - [ ] Enums with data (`Circle(radius: double)`) together with `match`
 - [x] `class`: fields, methods, `init`, `this`; reference semantics, `null`
-- [ ] Inheritance, `virtual`/`override`, `base`
-- [ ] `interface`
+- [x] Inheritance: one base class, `virtual`/`override`/`abstract`, `abstract class`, `base.m()`,
+      `init(...) : base(...)`, `protected`, `is`/`as`
+- [x] `interface`: methods and properties, interfaces extending interfaces, implemented by
+      classes, structs and enums
 - [x] Properties (auto `{ get; private set; }` and with `get`/`set` code), `static` fields,
       properties and methods, `public`/`private`/`protected` (also for top-level declarations)
 - [ ] `switch`/`case`

@@ -1,0 +1,60 @@
+interface INamed {
+    Name: string { get; }
+    fn describe(): string;
+}
+
+interface IPet : INamed {
+    fn play(): string;
+}
+
+abstract class Animal : INamed {
+    Name: string { get; }
+    protected legs: int = 4;
+
+    init(name: string) { Name = name; }
+
+    abstract fn speak(): string;
+    virtual fn describe(): string { return Name + " says " + speak(); }
+}
+
+class Dog : Animal, IPet {
+    tricks: int = 0;
+
+    init(name: string, tricks: int) : base(name) { this.tricks = tricks; }
+
+    override fn speak(): string { return "woof"; }
+    override fn describe(): string { return base.describe() + " (" + str(tricks) + " tricks)"; }
+    fn play(): string { return Name + " fetches"; }
+}
+
+class Bird : Animal {
+    init(name: string) : base(name) { legs = 2; }
+    override fn speak(): string { return "tweet"; }
+    fn legCount(): int { return legs; }
+}
+
+struct Tag : INamed {
+    Name: string { get; }
+    fn describe(): string { return "tag " + Name; }
+}
+
+fn show(x: INamed) { prinb(x.describe()); }
+
+fn main() {
+    Animal[] zoo = [Dog("Rex", 3), Bird("Tweety")];
+    for a in zoo {
+        prinb(a.describe());
+    }
+    show(Tag("blue"));
+    show(Dog("Ace", 1));
+    var a: Animal = Bird("Kiwi");
+    prinb(a is Bird);
+    prinb(a is Dog);
+    prinb(a is INamed);
+    var d = a as Dog;
+    prinb(d == null);
+    var b = a as Bird;
+    prinb(b.legCount());
+    IPet p = Dog("Max", 0);
+    prinb(p.play());
+}

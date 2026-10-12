@@ -1043,9 +1043,11 @@ impl<'c> FnGen<'c> {
             ExprKind::Null => return Err(unsupported("null without a known type is", span)),
             ExprKind::Map(_) => return Err(unsupported("dictionaries are", span)),
             ExprKind::Member { .. } => return Err(unsupported("members are", span)),
-            ExprKind::This | ExprKind::SelfType => {
-                return Err(unsupported("user-defined types are", span))
-            }
+            ExprKind::This
+            | ExprKind::SelfType
+            | ExprKind::Base
+            | ExprKind::Is { .. }
+            | ExprKind::As { .. } => return Err(unsupported("user-defined types are", span)),
         }
         self.vt(&e.ty, span).map(Some)
     }

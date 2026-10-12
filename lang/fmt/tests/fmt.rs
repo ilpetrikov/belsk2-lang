@@ -105,3 +105,11 @@ fn types_and_properties() {
         "class P {\n    private static count: int = 0;\n    Name: string { get; private set; }\n    Id: int { get; } = 5;\n    Area: double {\n        get {\n            return 1;\n        }\n    }\n}\n"
     );
 }
+
+#[test]
+fn inheritance() {
+    assert_eq!(
+        fmt("abstract class A:I{\nabstract fn f():int;\n}\nclass B:A,I{init():base(){}\n}\nfn g(x:A):bool{return x is B;}\n"),
+        "abstract class A : I {\n    abstract fn f(): int;\n}\nclass B : A, I {\n    init() : base() {}\n}\nfn g(x: A): bool {\n    return x is B;\n}\n"
+    );
+}

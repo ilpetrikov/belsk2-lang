@@ -348,7 +348,17 @@ impl Indexer<'_> {
             &decl.name,
             SymbolKind::Type,
             ty,
-            format!("{} {}", decl.kind.keyword(), decl.name),
+            {
+                let mut sig = format!("{} {}", decl.kind.keyword(), decl.name);
+                if decl.is_abstract {
+                    sig = format!("abstract {sig}");
+                }
+                if !decl.bases.is_empty() {
+                    let bases: Vec<String> = decl.bases.iter().map(|b| b.to_string()).collect();
+                    sig.push_str(&format!(" : {}", bases.join(", ")));
+                }
+                sig
+            },
             range,
         );
         self.declare(sym);
@@ -369,6 +379,12 @@ impl Indexer<'_> {
             }
             if m.mods.is_static {
                 mods.push_str("static ");
+            }
+            match m.mods.virt {
+                belsk2::syntax::Virt::Virtual => mods.push_str("virtual "),
+                belsk2::syntax::Virt::Override => mods.push_str("override "),
+                belsk2::syntax::Virt::Abstract => mods.push_str("abstract "),
+                belsk2::syntax::Virt::None => {}
             }
             let (name, kind, ty, signature) = match &m.kind {
                 MemberKind::Field(f) => {
@@ -675,7 +691,8 @@ impl Indexer<'_> {
             | ExprKind::Bool(_)
             | ExprKind::Null => {}
             ExprKind::This => self.reference("this", e.span),
-            ExprKind::SelfType => {}
+            ExprKind::SelfType | ExprKind::Base => {}
+            ExprKind::Is { expr, .. } | ExprKind::As { expr, .. } => self.expr(expr),
             ExprKind::Ident(name) => self.reference(name, e.span),
             ExprKind::Array(items) => items.iter().for_each(|i| self.expr(i)),
             ExprKind::Map(entries) => {

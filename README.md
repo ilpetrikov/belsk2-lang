@@ -289,6 +289,52 @@ At the top level, `private fn`, `private var` and `private struct` (or
 `enum`, `class`) are visible only in their own module; everything else is
 `public`, as before. A WASM module exports only public functions.
 
+## Inheritance and interfaces
+
+```belsk2
+interface INamed {
+    Name: string { get; }               // implemented by a field or property
+    fn describe(): string;
+}
+
+abstract class Animal : INamed {
+    Name: string { get; }
+    protected legs: int = 4;            // seen by Animal and derived classes
+
+    init(name: string) { Name = name; }
+
+    abstract fn speak(): string;        // no body: every class below overrides it
+    virtual fn describe(): string { return Name + " says " + speak(); }
+}
+
+class Dog : Animal {
+    init(name: string) : base(name) {}  // the base class's init runs first
+    override fn speak(): string { return "woof"; }
+    override fn describe(): string { return base.describe() + "!"; }
+}
+
+fn main() {
+    Animal[] zoo = [Dog("Rex")];
+    for a in zoo { prinb(a.describe()); }   // Rex says woof!
+    var a: Animal = Dog("Ace");
+    prinb(a is Dog);                    // true
+    var d = a as Dog;                   // null if it is not a Dog
+}
+```
+
+As in C#: a class has at most one base class (written first) and any
+number of interfaces; structs and enums can implement interfaces too. A
+method replaces an inherited one only if that one is `virtual` (or
+`abstract`, or an `override` itself) and the new one says `override`, with
+the same parameter and return types; calls go to the method of the
+object's real class, and `base.m()` calls the base class's version. An
+`abstract class` cannot be created. An interface lists methods and
+properties (`Name: T { get; }` or `{ get; set; }`); a type implementing it
+must have all of them, public. Interfaces can extend other interfaces.
+Without `: base(...)`, the base class's `init` is called without arguments
+(an error if it needs some). `x is T` tests the type, and `x as T` gives
+`x` as a `T` or `null`.
+
 ## Using belsk2 from Rust
 
 ```rust

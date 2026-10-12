@@ -161,6 +161,8 @@ fn conversion(from: &Ty, to: &Ty, cnst: Option<&Const>) -> Conv {
             Conv::Keep
         }
         (Ty::Fn(_), Ty::Fn(_)) => Conv::Keep,
+        // A `Dog` is an `Animal`; a class is any interface it implements.
+        (Ty::Named(a), Ty::Named(b)) if a.is_subtype_of(b) => Conv::Keep,
         _ => Conv::No,
     }
 }
@@ -542,7 +544,7 @@ impl Checker {
                     self.type_error("internal error: type is shared before checking", span);
                     continue;
                 };
-                let info = TypeInfo::new(&decl.name, decl.kind, false, span);
+                let info = TypeInfo::new(&decl.name, decl.kind, decl.is_abstract, span);
                 if builtins::is_builtin(&decl.name) || Ty::from_name(&decl.name).is_some() {
                     self.type_error(
                         format!(
@@ -569,6 +571,7 @@ impl Checker {
         }
         for stmt in stmts.iter() {
             if let StmtKind::Type(decl) = &stmt.kind {
+                self.validate_type(decl);
                 if let Some(info) = &decl.info {
                     let t = info.reference();
                     if t.kind == TypeKind::Struct && contains_struct(&t, &t, 0) {
@@ -591,12 +594,59 @@ impl Checker {
             return;
         };
         let mut body = TypeBody::default();
+        let interface = decl.kind == TypeKind::Interface;
+        for (i, b) in decl.bases.iter().enumerate() {
+            let ty = self.resolve(b);
+            let Ty::Named(t) = ty else {
+                if !ty.is_any() {
+                    self.type_error(format!("cannot inherit from {ty}"), b.span);
+                }
+                continue;
+            };
+            match t.kind {
+                TypeKind::Interface => body.interfaces.push(t),
+                TypeKind::Class if decl.kind == TypeKind::Class && i == 0 => body.base = Some(t),
+                TypeKind::Class if decl.kind == TypeKind::Class => self.type_error(
+                    format!(
+                        "the base class {} must come first, before the interfaces",
+                        t.name
+                    ),
+                    b.span,
+                ),
+                TypeKind::Class => self.type_error(
+                    format!(
+                        "a {} cannot inherit from a class; it can only implement interfaces",
+                        decl.kind.keyword()
+                    ),
+                    b.span,
+                ),
+                kind => self.type_error(
+                    format!(
+                        "cannot inherit from {} {}; only from a class or an interface",
+                        kind.keyword(),
+                        t.name
+                    ),
+                    b.span,
+                ),
+            }
+        }
         let mut names: Vec<String> = Vec::new();
         let mut next_value: i128 = 0;
         for m in &mut decl.members {
             let span = m.span;
             let access = m.mods.access();
             let is_static = m.mods.is_static;
+            let virt = if interface {
+                Virt::Abstract
+            } else {
+                m.mods.virt
+            };
+            if interface && (is_static || m.mods.access.is_some() || m.mods.virt != Virt::None) {
+                self.type_error(
+                    "members of an interface are public and have no modifiers",
+                    span,
+                );
+            }
             let name = match &m.kind {
                 MemberKind::Field(f) => f.name.clone(),
                 MemberKind::Prop(p) => p.name.clone(),
@@ -632,6 +682,29 @@ impl Checker {
                         }
                         (None, None) => Ty::Any,
                     };
+                    // `Name: T { get; }` in an interface asks for a property.
+                    if interface {
+                        if !f.property || f.value.is_some() {
+                            self.type_error(
+                                "an interface has no fields; ask for a property: `Name: T { get; }`",
+                                span,
+                            );
+                        }
+                        body.props.push(PropInfo {
+                            name,
+                            ty: f.resolved.clone(),
+                            access: Access::Public,
+                            get: Some(Access::Public),
+                            set: (!f.readonly).then_some(Access::Public),
+                            is_static: false,
+                            virt: Virt::Abstract,
+                            span,
+                        });
+                        continue;
+                    }
+                    if m.mods.virt != Virt::None {
+                        self.type_error("fields cannot be virtual", span);
+                    }
                     let field = FieldInfo {
                         name,
                         ty: f.resolved.clone(),
@@ -657,6 +730,15 @@ impl Checker {
                             }
                         }
                     }
+                    if interface {
+                        self.type_error(
+                            "an interface property has no bodies: `Name: T { get; set; }`",
+                            span,
+                        );
+                    }
+                    if m.mods.virt != Virt::None {
+                        self.type_error("properties with code cannot be virtual yet", span);
+                    }
                     body.props.push(PropInfo {
                         name,
                         ty: p.resolved.clone(),
@@ -677,13 +759,16 @@ impl Checker {
                         sig: Rc::new(sig_of(d)),
                         access,
                         is_static,
-                        virt: Virt::None,
+                        virt,
                         span,
                     });
                 }
                 MemberKind::Init(d) => {
-                    if is_static {
-                        self.type_error("'init' cannot be static", span);
+                    if is_static || m.mods.virt != Virt::None || interface {
+                        self.type_error(
+                            "'init' cannot be static, virtual or in an interface",
+                            span,
+                        );
                     }
                     let Some(d) = Rc::get_mut(d) else {
                         continue;
@@ -730,6 +815,207 @@ impl Checker {
         info.set_body(body);
     }
 
+    /// Checks how a type fits with its base class and interfaces:
+    /// overrides, abstract methods, implemented interfaces, `base(...)`.
+    fn validate_type(&mut self, decl: &TypeDecl) {
+        let Some(info) = &decl.info else {
+            return;
+        };
+        let t = info.reference();
+        let base = t.base();
+        if let Some(b) = &base {
+            if b.chain().contains(&t) {
+                self.type_error(format!("class {} inherits from itself", t.name), decl.span);
+                return;
+            }
+        }
+        for m in &decl.members {
+            let (name, is_method) = match &m.kind {
+                MemberKind::Method(d) => (&d.name, true),
+                MemberKind::Field(f) => (&f.name, false),
+                MemberKind::Prop(p) => (&p.name, false),
+                _ => continue,
+            };
+            let virt = m.mods.virt;
+            if virt != Virt::None && decl.kind != TypeKind::Class {
+                self.type_error(
+                    "'virtual', 'override' and 'abstract' are for members of classes",
+                    m.span,
+                );
+                continue;
+            }
+            if virt != Virt::None && m.mods.is_static {
+                self.type_error("a static method cannot be virtual", m.span);
+            }
+            if virt == Virt::Abstract && !decl.is_abstract {
+                self.type_error(
+                    format!(
+                        "'{name}' is abstract, so class {} must be `abstract class`",
+                        t.name
+                    ),
+                    m.span,
+                );
+            }
+            let inherited = base.as_ref().and_then(|b| b.member(name));
+            match (virt, inherited) {
+                (Virt::Override, Some((owner, MemberInfo::Method(bm))))
+                    if is_method && bm.virt != Virt::None =>
+                {
+                    let own = t.with_body(|b| {
+                        b.methods.iter().find(|x| x.sig.name == *name).cloned()
+                    });
+                    if let Some(Some(own)) = own {
+                        if own.sig.params != bm.sig.params || own.sig.ret != bm.sig.ret {
+                            self.type_error(
+                                format!(
+                                    "'{name}' must take and return the same types as in {}",
+                                    owner.name
+                                ),
+                                m.span,
+                            );
+                        }
+                        if own.access != bm.access {
+                            self.type_error(
+                                format!(
+                                    "'{name}' must be {} as in {}",
+                                    bm.access.keyword(),
+                                    owner.name
+                                ),
+                                m.span,
+                            );
+                        }
+                    }
+                }
+                (Virt::Override, _) => self.type_error(
+                    format!("there is no virtual method '{name}' in a base class to override"),
+                    m.span,
+                ),
+                (_, Some((owner, _))) => self.type_error(
+                    format!(
+                        "'{name}' is already a member of {}; to replace a method, make it virtual there and use override",
+                        owner.name
+                    ),
+                    m.span,
+                ),
+                _ => {}
+            }
+        }
+        if decl.kind == TypeKind::Interface || decl.is_abstract {
+            return;
+        }
+        // Every abstract method needs an override.
+        for (owner, name, m) in t.members() {
+            if let MemberInfo::Method(mi) = &m {
+                if mi.virt == Virt::Abstract && owner.kind == TypeKind::Class {
+                    self.type_error(
+                        format!(
+                            "{} must override the abstract method '{name}' of {}",
+                            t.name, owner.name
+                        ),
+                        decl.span,
+                    );
+                }
+            }
+        }
+        // Every member of every interface needs an implementation.
+        for iface in all_interfaces(&t) {
+            let required = iface
+                .with_body(|b| {
+                    let mut v: Vec<MemberInfo> =
+                        b.methods.iter().cloned().map(MemberInfo::Method).collect();
+                    v.extend(b.props.iter().cloned().map(MemberInfo::Prop));
+                    v
+                })
+                .unwrap_or_default();
+            for req in required {
+                let (name, ok) = match &req {
+                    MemberInfo::Method(want) => {
+                        let found = class_member(&t, &want.sig.name);
+                        let ok = matches!(&found, Some(MemberInfo::Method(have))
+                            if !have.is_static
+                                && have.access == Access::Public
+                                && have.sig.params == want.sig.params
+                                && have.sig.ret == want.sig.ret);
+                        (want.sig.name.clone(), ok)
+                    }
+                    MemberInfo::Prop(want) => {
+                        let found = class_member(&t, &want.name);
+                        let ok = match &found {
+                            Some(MemberInfo::Field(f)) => {
+                                !f.is_static
+                                    && f.ty == want.ty
+                                    && f.access == Access::Public
+                                    && (want.set.is_none() || f.set == Some(Access::Public))
+                            }
+                            Some(MemberInfo::Prop(p)) => {
+                                !p.is_static
+                                    && p.ty == want.ty
+                                    && p.get == Some(Access::Public)
+                                    && (want.set.is_none() || p.set == Some(Access::Public))
+                            }
+                            _ => false,
+                        };
+                        (want.name.clone(), ok)
+                    }
+                    _ => continue,
+                };
+                if !ok {
+                    let shape = match &req {
+                        MemberInfo::Method(want) => format!(
+                            "fn {name}({}){}",
+                            want.sig
+                                .params
+                                .iter()
+                                .map(|p| p.to_string())
+                                .collect::<Vec<_>>()
+                                .join(", "),
+                            if want.sig.ret.is_any() {
+                                String::new()
+                            } else {
+                                format!(": {}", want.sig.ret)
+                            }
+                        ),
+                        MemberInfo::Prop(want) => format!(
+                            "{name}: {} {{ get;{} }}",
+                            want.ty,
+                            if want.set.is_some() { " set;" } else { "" }
+                        ),
+                        _ => name.clone(),
+                    };
+                    self.type_error(
+                        format!(
+                            "{} does not implement `{shape}` of interface {} (it must be public)",
+                            t.name, iface.name
+                        ),
+                        decl.span,
+                    );
+                }
+            }
+        }
+        // The base class's init runs first; it needs its arguments.
+        if let Some(b) = &base {
+            let needs_args = b.with_body(|x| !x.ctor.is_empty()).unwrap_or(false);
+            let init = decl.members.iter().find_map(|m| match &m.kind {
+                MemberKind::Init(d) => Some(d),
+                _ => None,
+            });
+            let calls_base = init.is_some_and(|d| {
+                matches!(d.body.stmts.first().map(|s| &s.kind),
+                    Some(StmtKind::Expr(Expr { kind: ExprKind::Call { callee, .. }, .. }))
+                        if matches!(callee.kind, ExprKind::Base))
+            });
+            if needs_args && !calls_base {
+                self.type_error(
+                    format!(
+                        "the init of {} takes arguments, so {} needs `init(...) : base(...)`",
+                        b.name, t.name
+                    ),
+                    decl.span,
+                );
+            }
+        }
+    }
+
     /// Checks field values, method bodies and property accessors.
     fn check_type(&mut self, decl: &mut TypeDecl) {
         let Some(info) = decl.info.clone() else {
@@ -768,6 +1054,8 @@ impl Checker {
                         }
                     }
                 }
+                MemberKind::Method(_)
+                    if decl.kind == TypeKind::Interface || m.mods.virt == Virt::Abstract => {}
                 MemberKind::Method(d) | MemberKind::Init(d) => match Rc::get_mut(d) {
                     Some(d) => {
                         let c = ctx(self, is_static, in_init);
@@ -1327,6 +1615,40 @@ impl Checker {
                 self.member_type(&obj, &name, span, false)
             }
             ExprKind::This => self.this_type(span).unwrap_or(Ty::Any),
+            ExprKind::Base => {
+                let base = self
+                    .types
+                    .last()
+                    .filter(|c| !c.is_static)
+                    .and_then(|c| c.ty.base());
+                match base {
+                    Some(b) => Ty::Named(b),
+                    None => {
+                        self.type_error(
+                            "'base' can only be used in methods of a class with a base class",
+                            span,
+                        );
+                        Ty::Any
+                    }
+                }
+            }
+            ExprKind::Is { expr, ty, resolved } => {
+                self.expr(expr);
+                *resolved = self.resolve(ty);
+                Ty::Bool
+            }
+            ExprKind::As { expr, ty, resolved } => {
+                self.expr(expr);
+                let to = self.resolve(ty);
+                if !to.nullable() || matches!(to, Ty::Null) {
+                    self.type_error(
+                        format!("'as' needs a type that can be null, like a class or interface; use 'is' to test for {to}"),
+                        span,
+                    );
+                }
+                *resolved = to.clone();
+                to
+            }
             ExprKind::SelfType => match self.types.last() {
                 Some(ctx) => Ty::Type(ctx.ty.clone()),
                 None => Ty::Any,
@@ -1581,11 +1903,54 @@ impl Checker {
             }
         }
 
+        // `base(...)` at the start of `init` runs the base class's init.
+        if matches!(callee.kind, ExprKind::Base) {
+            let ctx = self.types.last().filter(|c| c.in_init);
+            let Some(b) = ctx.and_then(|c| c.ty.base()) else {
+                self.type_error("`: base(...)` needs a class with a base class", span);
+                return Ty::Any;
+            };
+            let access = b.with_body(|x| x.ctor_access).unwrap_or_default();
+            self.check_access(&b, access, &format!("the init of {}", b.name), span);
+            let params = b.with_body(|x| x.ctor.clone()).unwrap_or_default();
+            if params.len() != args.len() {
+                self.type_error(
+                    format!(
+                        "the init of {} expects {} argument(s), got {}",
+                        b.name,
+                        params.len(),
+                        args.len()
+                    ),
+                    span,
+                );
+            }
+            for (i, ((_, ty), arg)) in params.iter().zip(args.iter_mut()).enumerate() {
+                let name = b.name.clone();
+                self.coerce(arg, ty, &|| {
+                    format!("argument {} of the init of {name}", i + 1)
+                });
+            }
+            return Ty::Null;
+        }
         self.qualify(callee);
         let callee_ty = match &mut callee.kind {
             ExprKind::Member { object, name } => {
                 let name = name.clone();
                 let obj = self.expr(object);
+                if matches!(object.kind, ExprKind::Base) {
+                    if let Some((_, MemberInfo::Method(m))) =
+                        obj.named().and_then(|t| t.member(&name))
+                    {
+                        if m.virt == Virt::Abstract {
+                            self.type_error(
+                                format!(
+                                    "'{name}' is abstract in the base class and cannot be called"
+                                ),
+                                callee.span,
+                            );
+                        }
+                    }
+                }
                 let ty = self.member_type(&obj, &name, callee.span, true);
                 callee.ty = ty.clone();
                 ty
@@ -1603,6 +1968,21 @@ impl Checker {
                             .first()
                             .map(|v| v.name.as_str())
                             .unwrap_or("Case")
+                    ),
+                    callee.span,
+                );
+                Ty::Any
+            }
+            Ty::Type(t) if t.kind == TypeKind::Interface || t.is_abstract() => {
+                let what = if t.kind == TypeKind::Interface {
+                    "an interface"
+                } else {
+                    "an abstract class"
+                };
+                self.type_error(
+                    format!(
+                        "{} is {what}; create a class that implements it instead",
+                        t.name
                     ),
                     callee.span,
                 );
@@ -1744,6 +2124,45 @@ fn bind_type_params(params: &[Rc<str>], param: &Ty, arg: &Ty, bound: &mut HashMa
         }
         _ => {}
     }
+}
+
+/// Every interface `t` implements: its own, its base classes', and the
+/// interfaces those extend.
+fn all_interfaces(t: &TypeRef) -> Vec<TypeRef> {
+    let mut out: Vec<TypeRef> = Vec::new();
+    let mut todo: Vec<TypeRef> = t
+        .chain()
+        .iter()
+        .flat_map(|c| c.with_body(|b| b.interfaces.clone()).unwrap_or_default())
+        .collect();
+    while let Some(i) = todo.pop() {
+        if out.contains(&i) || out.len() > 64 {
+            continue;
+        }
+        todo.extend(i.with_body(|b| b.interfaces.clone()).unwrap_or_default());
+        out.push(i);
+    }
+    out
+}
+
+/// A member of `t` or its base classes (not of interfaces), nearest
+/// first, skipping abstract methods.
+fn class_member(t: &TypeRef, name: &str) -> Option<MemberInfo> {
+    t.chain().iter().find_map(|c| {
+        c.with_body(|b| {
+            if let Some(f) = b.fields.iter().find(|f| f.name == name) {
+                return Some(MemberInfo::Field(f.clone()));
+            }
+            if let Some(p) = b.props.iter().find(|p| p.name == name) {
+                return Some(MemberInfo::Prop(p.clone()));
+            }
+            b.methods
+                .iter()
+                .find(|m| m.sig.name == name && m.virt != Virt::Abstract)
+                .map(|m| MemberInfo::Method(m.clone()))
+        })
+        .flatten()
+    })
 }
 
 /// Whether struct `t` holds a `target` by value, directly or through

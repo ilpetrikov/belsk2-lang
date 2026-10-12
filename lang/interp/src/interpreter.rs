@@ -423,6 +423,7 @@ impl Interpreter {
                                     &Value::Type(Rc::clone(&class)),
                                     &f.name,
                                     v,
+                                    None,
                                     m.span,
                                     out,
                                 )?;
@@ -518,8 +519,13 @@ impl Interpreter {
             }
             ExprKind::Member { object, name } => {
                 let obj = self.eval(object, env, out)?;
+                let start = if matches!(object.kind, ExprKind::Base) {
+                    Some(current_base(env)?)
+                } else {
+                    None
+                };
                 let changed = self
-                    .set_member(&obj, name, value, target.span, out)
+                    .set_member(&obj, name, value, start, target.span, out)
                     .map_err(|e| e.or_at(target.span))?;
                 // A struct is a value: the changed copy is stored where the
                 // old one was.
@@ -655,7 +661,35 @@ impl Interpreter {
             }
             ExprKind::Member { object, name } => {
                 let obj = self.eval(object, env, out)?;
-                self.get_member(&obj, name, expr.span, out)
+                let start = if matches!(object.kind, ExprKind::Base) {
+                    Some(current_base(env)?)
+                } else {
+                    None
+                };
+                self.get_member(&obj, name, start, expr.span, out)
+            }
+            ExprKind::Base => {
+                env::lookup(env, "this").ok_or_else(|| Error::runtime("'base' outside of a method"))
+            }
+            ExprKind::Is {
+                expr: inner,
+                resolved,
+                ..
+            } => {
+                let v = self.eval(inner, env, out)?;
+                Ok(Value::Bool(is_a(&v, &self.rt(resolved))))
+            }
+            ExprKind::As {
+                expr: inner,
+                resolved,
+                ..
+            } => {
+                let v = self.eval(inner, env, out)?;
+                Ok(if is_a(&v, &self.rt(resolved)) {
+                    v
+                } else {
+                    Value::Null
+                })
             }
             ExprKind::SelfType => env::lookup(env, "#type")
                 .ok_or_else(|| Error::runtime("no type for a static member")),
@@ -686,8 +720,22 @@ impl Interpreter {
                 return builtins::call(self, name, values, out);
             }
         }
+        // `base(...)` at the start of `init`.
+        if matches!(callee.kind, ExprKind::Base) {
+            let this = env::lookup(env, "this").ok_or_else(|| Error::runtime("no 'this'"))?;
+            let base = current_base(env)?;
+            let values = self.eval_args(args, env, out)?;
+            self.run_init(&base, this, values, span, out)?;
+            return Ok(Value::Null);
+        }
         if let ExprKind::Member { object, name } = &callee.kind {
             let obj = self.eval(object, env, out)?;
+            // `base.m()` runs the base class's `m`, not an override.
+            let start = if matches!(object.kind, ExprKind::Base) {
+                Some(current_base(env)?)
+            } else {
+                None
+            };
             let (class, this) = match &obj {
                 Value::Struct(s) => (Some(Rc::clone(&s.class)), Some(obj.clone())),
                 Value::Object(o) => (Some(Rc::clone(&o.class)), Some(obj.clone())),
@@ -695,15 +743,15 @@ impl Interpreter {
                 Value::Type(c) => (Some(Rc::clone(c)), None),
                 _ => (None, None),
             };
-            if let Some(class) = class {
-                if let Some(decl) = class.method(name).cloned() {
+            if let Some(class) = start.or(class) {
+                if let Some((owner, decl)) = class.find_method(name) {
                     let values = self.eval_args(args, env, out)?;
                     let call = MethodCall {
-                        class: Rc::clone(&class),
+                        class: Rc::clone(&owner),
                         this,
                     };
                     let (result, this) =
-                        self.call_decl(&decl, &class.env, values, inst, span, Some(call), out)?;
+                        self.call_decl(&decl, &owner.env, values, inst, span, Some(call), out)?;
                     // The method may have changed `this`: store the changed
                     // struct back where it came from.
                     if let Some(this) = this.filter(|t| *t != obj) {
@@ -871,6 +919,26 @@ impl Interpreter {
     /// Defines the functions and types of a block: they are visible in the
     /// whole block, before their declaration.
     fn hoist(&mut self, stmts: &[Stmt], env: &EnvRef) {
+        self.hoist_decls(stmts, env);
+        // Base classes may be declared later in the block (or come from
+        // another module, defined already).
+        for stmt in stmts {
+            if let StmtKind::Type(decl) = &stmt.kind {
+                let Some(info) = &decl.info else {
+                    continue;
+                };
+                let base = info.reference().base();
+                let class = self.classes.get(&info.id()).cloned();
+                if let (Some(class), Some(base)) = (class, base) {
+                    if let Some(b) = self.classes.get(&base.id()) {
+                        let _ = class.base.set(Rc::clone(b));
+                    }
+                }
+            }
+        }
+    }
+
+    fn hoist_decls(&mut self, stmts: &[Stmt], env: &EnvRef) {
         for stmt in stmts {
             match &stmt.kind {
                 StmtKind::FnDecl(decl) => {
@@ -903,6 +971,7 @@ impl Interpreter {
                         decl: Rc::clone(decl),
                         static_fields,
                         statics: std::cell::RefCell::new(statics),
+                        base: std::cell::OnceCell::new(),
                         fields: ty
                             .all_fields()
                             .into_iter()
@@ -943,6 +1012,7 @@ impl Interpreter {
         &mut self,
         obj: &Value,
         name: &str,
+        start: Option<Rc<Class>>,
         span: Span,
         out: &mut dyn Write,
     ) -> Result<Value> {
@@ -980,19 +1050,17 @@ impl Interpreter {
             }
             _ => return Err(missing()),
         };
-        let Some(getter) = class
-            .prop(name)
-            .and_then(|p| p.get.as_ref())
-            .map(|g| Rc::clone(&g.decl))
+        let found = start.unwrap_or(class).find_prop(name);
+        let Some((owner, getter)) = found.and_then(|(c, p)| p.get.map(|g| (c, Rc::clone(&g.decl))))
         else {
             return Err(missing());
         };
         let call = MethodCall {
-            class: Rc::clone(&class),
+            class: Rc::clone(&owner),
             this,
         };
         let (value, _) =
-            self.call_decl(&getter, &class.env, Vec::new(), &[], span, Some(call), out)?;
+            self.call_decl(&getter, &owner.env, Vec::new(), &[], span, Some(call), out)?;
         Ok(value)
     }
 
@@ -1003,6 +1071,7 @@ impl Interpreter {
         obj: &Value,
         name: &str,
         value: Value,
+        start: Option<Rc<Class>>,
         span: Span,
         out: &mut dyn Write,
     ) -> Result<Option<Value>> {
@@ -1055,26 +1124,25 @@ impl Interpreter {
             Value::Enum(c, _) => (Rc::clone(c), Some(obj.clone())),
             _ => return Err(missing()),
         };
-        let Some(setter) = class
-            .prop(name)
-            .and_then(|p| p.set.as_ref())
-            .map(|s| Rc::clone(&s.decl))
+        let found = start.unwrap_or(class).find_prop(name);
+        let Some((owner, setter)) = found.and_then(|(c, p)| p.set.map(|s| (c, Rc::clone(&s.decl))))
         else {
             return Err(missing());
         };
         let is_struct = matches!(obj, Value::Struct(_));
         let call = MethodCall {
-            class: Rc::clone(&class),
+            class: Rc::clone(&owner),
             this,
         };
         let (_, this) =
-            self.call_decl(&setter, &class.env, vec![value], &[], span, Some(call), out)?;
+            self.call_decl(&setter, &owner.env, vec![value], &[], span, Some(call), out)?;
         Ok(this.filter(|_| is_struct))
     }
 
-    /// `Point(1, 2)`: fields get their declared values (or defaults), then
-    /// `init` runs, or, without one, the arguments go to the fields that
-    /// have no value, in order.
+    /// `Point(1, 2)`: fields get their declared values (or defaults), base
+    /// classes' first; then `init` runs (after the base class's), or,
+    /// without one, the arguments go to the fields without a value, in
+    /// order.
     fn construct(
         &mut self,
         class: &Rc<Class>,
@@ -1082,51 +1150,51 @@ impl Interpreter {
         span: Span,
         out: &mut dyn Write,
     ) -> Result<Value> {
-        if class.ty.kind == TypeKind::Enum {
+        if class.ty.kind == TypeKind::Enum
+            || class.ty.kind == TypeKind::Interface
+            || class.ty.is_abstract()
+        {
             return Err(
-                Error::runtime(format!("enum {} has no constructor", class.ty.name)).at(span),
+                Error::runtime(format!("{} cannot be created directly", class.ty.name)).at(span),
             );
         }
         let mut fields = Vec::with_capacity(class.fields.len());
         let mut takes_arg = Vec::new();
-        let fenv = self.member_env(class);
-        for m in &class.decl.members {
-            if let (MemberKind::Field(f), false) = (&m.kind, m.mods.is_static) {
-                let ty = self.rt(&f.resolved);
-                let value = match &f.value {
-                    Some(e) => {
-                        let v = self.eval(e, &fenv, out)?;
-                        coerce(&ty, v, &format!("field '{}'", f.name))?
-                    }
-                    None => {
-                        takes_arg.push(fields.len());
-                        self.default_value(&ty, 0)
-                    }
-                };
-                fields.push(value);
+        for c in class.chain().iter().rev() {
+            let fenv = self.member_env(c);
+            let own = Rc::ptr_eq(c, class);
+            for m in &c.decl.members {
+                if let (MemberKind::Field(f), false) = (&m.kind, m.mods.is_static) {
+                    let ty = self.rt(&f.resolved);
+                    let value = match &f.value {
+                        Some(e) => {
+                            let v = self.eval(e, &fenv, out)?;
+                            coerce(&ty, v, &format!("field '{}'", f.name))?
+                        }
+                        None => {
+                            if own {
+                                takes_arg.push(fields.len());
+                            }
+                            self.default_value(&ty, 0)
+                        }
+                    };
+                    fields.push(value);
+                }
             }
         }
-        let is_class = class.ty.kind == TypeKind::Class;
-        let make = |fields: Vec<Value>| {
-            if is_class {
-                Value::Object(Rc::new(Object {
-                    class: Rc::clone(class),
-                    fields: std::cell::RefCell::new(fields),
-                }))
-            } else {
-                Value::Struct(Rc::new(StructValue {
-                    class: Rc::clone(class),
-                    fields,
-                }))
-            }
-        };
-        if let Some(init) = class.init().cloned() {
-            let call = MethodCall {
+        let this = if class.ty.kind == TypeKind::Class {
+            Value::Object(Rc::new(Object {
                 class: Rc::clone(class),
-                this: Some(make(fields)),
-            };
-            let (_, this) = self.call_decl(&init, &class.env, args, &[], span, Some(call), out)?;
-            return this.ok_or_else(|| Error::runtime("init lost 'this'").at(span));
+                fields: std::cell::RefCell::new(fields),
+            }))
+        } else {
+            Value::Struct(Rc::new(StructValue {
+                class: Rc::clone(class),
+                fields,
+            }))
+        };
+        if class.init().is_some() {
+            return self.run_init(class, this, args, span, out);
         }
         if args.len() != takes_arg.len() {
             return Err(Error::runtime(format!(
@@ -1138,17 +1206,53 @@ impl Interpreter {
             ))
             .at(span));
         }
+        let mut this = match class.base.get().cloned() {
+            Some(base) => self.run_init(&base, this, Vec::new(), span, out)?,
+            None => this,
+        };
         for (i, arg) in takes_arg.into_iter().zip(args) {
-            let (name, ty) = class
-                .fields
-                .get(i)
-                .cloned()
-                .unwrap_or_else(|| (String::new(), Ty::Any));
-            if let Some(slot) = fields.get_mut(i) {
-                *slot = coerce(&ty, arg, &format!("field '{name}'")).map_err(|e| e.or_at(span))?;
+            let Some((name, _)) = class.fields.get(i).cloned() else {
+                continue;
+            };
+            if let Some(new) = self.set_member(&this, &name, arg, None, span, out)? {
+                this = new;
             }
         }
-        Ok(make(fields))
+        Ok(this)
+    }
+
+    /// Runs the `init` of `class` (and, before it, the base class's) on
+    /// `this`; returns `this` as it is afterwards.
+    fn run_init(
+        &mut self,
+        class: &Rc<Class>,
+        this: Value,
+        args: Vec<Value>,
+        span: Span,
+        out: &mut dyn Write,
+    ) -> Result<Value> {
+        let base = class.base.get().cloned();
+        let Some(init) = class.init().cloned() else {
+            return match base {
+                Some(base) => self.run_init(&base, this, args, span, out),
+                None => Ok(this),
+            };
+        };
+        // `init(...) : base(...)` starts with that call; otherwise the base
+        // class's init runs first, without arguments.
+        let calls_base = matches!(init.body.stmts.first().map(|s| &s.kind),
+            Some(StmtKind::Expr(Expr { kind: ExprKind::Call { callee, .. }, .. }))
+                if matches!(callee.kind, ExprKind::Base));
+        let this = match base {
+            Some(base) if !calls_base => self.run_init(&base, this, Vec::new(), span, out)?,
+            _ => this,
+        };
+        let call = MethodCall {
+            class: Rc::clone(class),
+            this: Some(this),
+        };
+        let (_, this) = self.call_decl(&init, &class.env, args, &[], span, Some(call), out)?;
+        this.ok_or_else(|| Error::runtime("init lost 'this'").at(span))
     }
 
     /// The value a field has before it is assigned: `0`, `false`, `null`,
@@ -1194,6 +1298,23 @@ fn host_arg(v: Value) -> Value {
             }
         }
         v => v,
+    }
+}
+
+/// Whether `v` is a value of type `ty` (`x is Dog`); `null` is not.
+fn is_a(v: &Value, ty: &Ty) -> bool {
+    !matches!(v, Value::Null) && v.fits(ty)
+}
+
+/// The base class of the class whose method is running (for `base`).
+fn current_base(env: &EnvRef) -> Result<Rc<Class>> {
+    match env::lookup(env, "#type") {
+        Some(Value::Type(c)) => c
+            .base
+            .get()
+            .cloned()
+            .ok_or_else(|| Error::runtime(format!("{} has no base class", c.ty.name))),
+        _ => Err(Error::runtime("'base' outside of a method")),
     }
 }
 
