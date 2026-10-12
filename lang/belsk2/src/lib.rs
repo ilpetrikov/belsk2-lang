@@ -17,7 +17,7 @@ pub mod project;
 
 pub use belsk2_interp::{
     format_float, Array, Error, ErrorKind, FloatKind, Function, Input, IntKind, Interpreter,
-    LineTrace, Result, Span, Trace, Ty, Value, BUILTINS, DEFAULT_MAX_CALL_DEPTH,
+    LineTrace, Native, NativeFn, Result, Span, Trace, Ty, Value, BUILTINS, DEFAULT_MAX_CALL_DEPTH,
 };
 pub use belsk2_syntax as syntax;
 pub use belsk2_syntax::{SourceFile, SourceMap};

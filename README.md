@@ -282,7 +282,8 @@ other export (`--call hooks.update` for one of an exported interface),
 with arguments parsed by their WIT types (lists as `1,2,3`). There is no
 real host, so imports are stubs that print the call
 (`[host] canvas.draw("hi", 3)`) and return a default value. `belsk2 run
---interpreted` uses the interpreter instead, where imports do not exist.
+--interpreted` runs the same way in the interpreter (also with `--call`),
+with the same stub imports.
 
 ## Editor support
 

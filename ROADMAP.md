@@ -67,7 +67,7 @@
 
 ### Rust integration
 - [ ] Calling Belsk2 from Rust (API, macros, wasmtime)
-- [ ] `belsk2 run --interpreted` for components: stub imports in the interpreter too
+- [x] `belsk2 run --interpreted` for components: stub imports in the interpreter too (and `--call`)
 - [ ] Rust dependencies (crates.io / git) in `belsk2.toml`
 
 ### Language

@@ -449,3 +449,47 @@ fn bundled_projects_check() {
         assert!(messages.is_empty(), "{dir}: {messages:?}");
     }
 }
+
+#[test]
+fn interpreted_component_uses_stub_imports() {
+    let dir = temp_dir("interpreted_component");
+    write(
+        &dir,
+        &[
+            (
+                "belsk2.toml",
+                "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[component]\nworld = \"wit\"\n",
+            ),
+            (
+                "wit/world.wit",
+                "package demo:app;\n\ninterface canvas {\n    draw-text: func(text: string, x: s32) -> bool;\n    size: func() -> list<u32>;\n}\n\nworld app {\n    import log: func(msg: string);\n    import canvas;\n    export run: func();\n    export add: func(a: s32, xs: list<s32>) -> s32;\n}\n",
+            ),
+            (
+                "src/main.belsk2",
+                "using canvas;\n\nfn run() {\n    log(\"start\");\n    prinb(draw_text(\"hi\", 3));\n    prinb(len(size()));\n}\n\nfn add(a: int, xs: int[]): int { return a + len(xs); }\n",
+            ),
+        ],
+    );
+    let loaded = project::load(&dir, Mode::All);
+    assert!(loaded.is_ok());
+    let Ok(mut loaded) = loaded else {
+        return;
+    };
+    assert!(project::check(&mut loaded).is_empty());
+    let mut out = Vec::new();
+    let result = project::call(&loaded, &mut Interpreter::new(), None, &[], &mut out);
+    assert!(result.is_ok_and(|v| v == belsk2::Value::Null));
+    assert_eq!(
+        String::from_utf8_lossy(&out),
+        "[host] log(\"start\")\n[host] canvas.draw-text(\"hi\", 3)\nfalse\n[host] canvas.size()\n0\n"
+    );
+    let args = ["5".to_string(), "1,2,3".to_string()];
+    let result = project::call(
+        &loaded,
+        &mut Interpreter::new(),
+        Some("add"),
+        &args,
+        &mut out,
+    );
+    assert!(result.is_ok_and(|v| v == belsk2::Value::int(8)));
+}

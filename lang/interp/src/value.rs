@@ -21,6 +21,20 @@ pub enum Value {
     Array(Array),
     Map(Map),
     Function(Rc<Function>),
+    /// A function implemented in Rust (for example a stub for a function
+    /// the host of a component provides).
+    Native(Rc<Native>),
+}
+
+/// The Rust implementation of a [`Value::Native`].
+pub type NativeFn = dyn Fn(Vec<Value>, &mut dyn std::io::Write) -> belsk2_syntax::Result<Value>;
+
+/// A function implemented in Rust.
+pub struct Native {
+    pub name: String,
+    /// Its static type (`Ty::Fn`).
+    pub ty: Ty,
+    pub func: Box<NativeFn>,
 }
 
 /// A user-defined function together with the environment it closes over.
@@ -62,13 +76,14 @@ impl Value {
             Value::Array(a) => Ty::array(a.elem_ty().clone()),
             Value::Map(m) => Ty::map(m.key_ty().clone(), m.value_ty().clone()),
             Value::Function(f) => belsk2_typeck::fn_type(&f.decl),
+            Value::Native(n) => n.ty.clone(),
         }
     }
 
     /// The name of the runtime type, as reported by `type(x)`.
     pub fn type_name(&self) -> String {
         match self {
-            Value::Function(_) => "fn".to_string(),
+            Value::Function(_) | Value::Native(_) => "fn".to_string(),
             v => v.ty().to_string(),
         }
     }
@@ -83,7 +98,7 @@ impl Value {
             Value::String(s) => !s.is_empty(),
             Value::Array(a) => !a.is_empty(),
             Value::Map(m) => !m.is_empty(),
-            Value::Function(_) => true,
+            Value::Function(_) | Value::Native(_) => true,
         }
     }
 
@@ -133,7 +148,7 @@ impl Value {
             (Ty::Map(k, v), Value::Map(m)) => {
                 (k.is_any() || *m.key_ty() == *k) && (v.is_any() || *m.value_ty() == *v)
             }
-            (Ty::Fn(_), Value::Function(_)) => true,
+            (Ty::Fn(_), Value::Function(_) | Value::Native(_)) => true,
             _ => false,
         }
     }
@@ -147,6 +162,7 @@ impl Value {
             Value::Char(c) => write!(f, "{c}"),
             Value::String(s) => f.write_str(s),
             Value::Function(func) => write!(f, "<fn {}>", func.decl.name),
+            Value::Native(n) => write!(f, "<fn {}>", n.name),
             Value::Map(m) => {
                 if depth >= MAX_NESTING {
                     return f.write_str("{...}");
@@ -229,6 +245,7 @@ fn values_equal(a: &Value, b: &Value, depth: usize) -> bool {
             chars.next() == Some(*c) && chars.next().is_none()
         }
         (Value::Function(x), Value::Function(y)) => Rc::ptr_eq(x, y),
+        (Value::Native(x), Value::Native(y)) => Rc::ptr_eq(x, y),
         (Value::Map(x), Value::Map(y)) => {
             if x.ptr_eq(y) {
                 return true;

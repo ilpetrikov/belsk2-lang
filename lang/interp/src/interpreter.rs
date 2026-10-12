@@ -101,7 +101,7 @@ impl Interpreter {
         let mut globals = Vec::new();
         for env in &self.module_envs {
             for (name, value, _) in env.borrow().entries() {
-                if !matches!(value, Value::Function(_)) {
+                if !matches!(value, Value::Function(_) | Value::Native(_)) {
                     globals.push((name, trace::short(&value)));
                 }
             }
@@ -302,6 +302,29 @@ impl Interpreter {
         self.call_depth = 0;
         let args = args.iter().map(|a| host_arg(a.clone())).collect();
         let result = self.call(&f, args, &[], f.decl.span, out)?;
+        out.flush()?;
+        Ok(result)
+    }
+
+    /// Calls a function value with arguments that already have the
+    /// parameter types.
+    pub fn call_value(
+        &mut self,
+        f: &Value,
+        args: Vec<Value>,
+        out: &mut dyn Write,
+    ) -> Result<Value> {
+        self.call_depth = 0;
+        let result = match f {
+            Value::Function(f) => self.call(f, args, &[], f.decl.span, out)?,
+            Value::Native(n) => (n.func)(args, out)?,
+            other => {
+                return Err(Error::runtime(format!(
+                    "{} is not a function",
+                    other.type_name()
+                )))
+            }
+        };
         out.flush()?;
         Ok(result)
     }
@@ -616,6 +639,10 @@ impl Interpreter {
         }
         let f = match self.eval(callee, env, out)? {
             Value::Function(f) => f,
+            Value::Native(n) => {
+                let values = self.eval_args(args, env, out)?;
+                return (n.func)(values, out).map_err(|e| e.or_at(span));
+            }
             other => {
                 return Err(
                     Error::type_error(format!("{} is not a function", other.type_name()))

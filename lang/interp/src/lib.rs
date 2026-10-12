@@ -26,4 +26,4 @@ pub use belsk2_typeck::BUILTINS;
 pub use collections::{Array, Map};
 pub use interpreter::{Input, Interpreter, DEFAULT_MAX_CALL_DEPTH};
 pub use trace::{LineTrace, Trace};
-pub use value::{format_float, Function, Value};
+pub use value::{format_float, Function, Native, NativeFn, Value};

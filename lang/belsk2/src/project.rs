@@ -13,6 +13,7 @@
 
 use std::collections::HashMap;
 use std::io::Write;
+use std::rc::Rc;
 
 pub use belsk2_project::wit;
 pub use belsk2_project::{
@@ -24,7 +25,7 @@ pub use belsk2_project::{
 use belsk2_syntax::Ty;
 use belsk2_typeck::Checker;
 
-use crate::{Error, Interpreter, Result, Value};
+use crate::{Array, Error, Interpreter, Native, Result, Value};
 
 /// Type-checks every loaded module, each after the modules it uses, and
 /// returns all errors.
@@ -109,32 +110,227 @@ pub fn run(
     args: &[String],
     out: &mut dyn Write,
 ) -> Result<Option<i64>> {
-    let mut main = None;
+    let modules = run_modules(loaded, interp, out)?;
+    let main = loaded
+        .entry
+        .and_then(|e| modules.get(e))
+        .and_then(|m| m.as_ref())
+        .and_then(|items| items.iter().find(|(name, ..)| name == "main"))
+        .map(|(_, v, _)| v.clone());
+    match main {
+        Some(main) => interp.call_main(&main, args, out),
+        None => Err(Error::runtime("the program has no `fn main()`")),
+    }
+}
+
+/// Runs a checked component project in the interpreter, as `belsk2 run`
+/// runs it in wasmtime: calls `name` (default: `run`, else `main`) with
+/// `args` parsed by the parameter types and returns its result. A
+/// function of another module is named `module.function`. Functions the
+/// WIT world imports are stubs (see [`run`]).
+pub fn call(
+    loaded: &Loaded,
+    interp: &mut Interpreter,
+    name: Option<&str>,
+    args: &[String],
+    out: &mut dyn Write,
+) -> Result<Value> {
+    let modules = run_modules(loaded, interp, out)?;
+    let exports_of = |id: Option<ModuleId>| {
+        id.and_then(|id| modules.get(id))
+            .and_then(|m| m.clone())
+            .unwrap_or_default()
+    };
+    let functions = |items: &[(String, Value, Ty)]| -> Vec<(String, Value, Ty)> {
+        items
+            .iter()
+            .filter(|(_, v, _)| matches!(v, Value::Function(_) | Value::Native(_)))
+            .cloned()
+            .collect()
+    };
+    let entry = functions(&exports_of(loaded.entry));
+    let found = match name {
+        Some(name) => match name.rsplit_once('.') {
+            Some((module, f)) => {
+                let id = loaded.modules.iter().position(|m| m.name == module);
+                functions(&exports_of(id))
+                    .into_iter()
+                    .find(|(n, ..)| n == f)
+            }
+            None => entry.iter().find(|(n, ..)| n == name).cloned(),
+        },
+        None => ["run", "main"]
+            .iter()
+            .find_map(|w| entry.iter().find(|(n, ..)| n == w).cloned()),
+    };
+    let Some((fname, f, ty)) = found else {
+        let names: Vec<&str> = entry.iter().map(|(n, ..)| n.as_str()).collect();
+        let what = match name {
+            Some(n) => format!("there is no function '{n}'"),
+            None => "the program has neither `fn run()` nor `fn main()`".to_string(),
+        };
+        return Err(Error::runtime(format!(
+            "{what}; call one of [{}] with `belsk2 run --interpreted --call <name> -- <args>`",
+            names.join(", ")
+        )));
+    };
+    let params = match &ty {
+        Ty::Fn(Some(sig)) => sig.params.clone(),
+        _ => vec![Ty::Any; args.len()],
+    };
+    if params.len() != args.len() {
+        return Err(Error::runtime(format!(
+            "'{fname}' takes {} argument(s), got {}; pass them after `--`",
+            params.len(),
+            args.len()
+        )));
+    }
+    let values = params
+        .iter()
+        .zip(args)
+        .enumerate()
+        .map(|(i, (t, a))| {
+            parse_arg(a, t).map_err(|e| Error::runtime(format!("argument {}: {e}", i + 1)))
+        })
+        .collect::<Result<Vec<Value>>>()?;
+    interp.call_value(&f, values, out)
+}
+
+/// Parses a command-line argument as a value of type `t` (lists as
+/// `1,2,3`).
+fn parse_arg(text: &str, t: &Ty) -> std::result::Result<Value, String> {
+    let bad = || format!("\"{text}\" is not a valid {t}");
+    Ok(match t.canonical() {
+        Ty::Any | Ty::String => Value::String(text.to_string()),
+        Ty::Bool => Value::Bool(text.parse().map_err(|_| bad())?),
+        Ty::Int(k) => {
+            let v: i128 = text.trim().parse().map_err(|_| bad())?;
+            if !k.fits(v) {
+                return Err(bad());
+            }
+            Value::Int(v, k)
+        }
+        Ty::Float(k) => Value::Float(k.round(text.trim().parse().map_err(|_| bad())?), k),
+        Ty::Char => {
+            let mut chars = text.chars();
+            match (chars.next(), chars.next()) {
+                (Some(c), None) => Value::Char(c),
+                _ => return Err(bad()),
+            }
+        }
+        Ty::Array(elem) => {
+            let items = if text.is_empty() {
+                Vec::new()
+            } else {
+                text.split(',')
+                    .map(|item| parse_arg(item.trim(), &elem))
+                    .collect::<std::result::Result<_, _>>()?
+            };
+            Value::Array(Array::typed((*elem).clone(), items))
+        }
+        other => return Err(format!("{other} arguments are not supported")),
+    })
+}
+
+/// The top-level declarations of a module: name, value and type.
+type Exports = Vec<(String, Value, Ty)>;
+
+/// Runs every module the entry point needs, in order; returns the
+/// declarations of each.
+fn run_modules(
+    loaded: &Loaded,
+    interp: &mut Interpreter,
+    out: &mut dyn Write,
+) -> Result<Vec<Option<Exports>>> {
     let mut values: Vec<Option<Vec<(String, Value, Ty)>>> = vec![None; loaded.modules.len()];
+    // There is no host in the interpreter: functions the WIT world imports
+    // are stubs that print the call and return a default value.
+    let world_imports: Vec<(String, Value, Ty)> = loaded
+        .world
+        .iter()
+        .flat_map(|w| w.root_imports())
+        .map(|f| (f.name.clone(), stub(f, f.wit_name.clone()), f.ty()))
+        .collect();
     for id in loaded.run_order() {
         let Some(module) = loaded.modules.get(id) else {
             continue;
         };
+        if let (Some(world), Some(iface)) = (&loaded.world, &module.interface) {
+            let short = short_name(&iface.key);
+            let stubs = world
+                .interface_imports(&iface.module)
+                .map(|f| {
+                    let shown = format!("{short}.{}", f.wit_name);
+                    (f.name.clone(), stub(f, shown), f.ty())
+                })
+                .collect();
+            if let Some(slot) = values.get_mut(id) {
+                *slot = Some(stubs);
+            }
+            continue;
+        }
         let mut imports = Vec::new();
+        if module.package == 0 {
+            imports.extend(world_imports.iter().cloned());
+        }
         for &(used, _) in &module.uses {
             if let Some(Some(items)) = values.get(used) {
                 imports.extend(items.iter().cloned());
             }
         }
         let exports = interp.run_module(&module.program, &imports, out)?;
-        if Some(id) == loaded.entry {
-            main = exports
-                .iter()
-                .find(|(name, ..)| name == "main")
-                .map(|(_, v, _)| v.clone());
-        }
         if let Some(slot) = values.get_mut(id) {
             *slot = Some(exports);
         }
     }
-    match main {
-        Some(main) => interp.call_main(&main, args, out),
-        None => Err(Error::runtime("the program has no `fn main()`")),
+    Ok(values)
+}
+
+/// `demo:host/canvas@0.1.0` is shown as `canvas`.
+fn short_name(key: &str) -> &str {
+    let name = key.rsplit('/').next().unwrap_or(key);
+    name.split('@').next().unwrap_or(name)
+}
+
+/// A stand-in for a function the host provides: prints
+/// `[host] name(args)` and returns the default value of its result type.
+fn stub(f: &WitFunc, shown: String) -> Value {
+    let result = f.result.clone();
+    Value::Native(Rc::new(Native {
+        name: f.name.clone(),
+        ty: f.ty(),
+        func: Box::new(move |args, out| {
+            let args: Vec<String> = args.iter().map(show).collect();
+            writeln!(out, "[host] {shown}({})", args.join(", "))?;
+            Ok(result.as_ref().map(default).unwrap_or(Value::Null))
+        }),
+    }))
+}
+
+fn default(t: &WitTy) -> Value {
+    match t {
+        WitTy::Bool => Value::Bool(false),
+        WitTy::Int(k) => Value::Int(0, *k),
+        WitTy::Float(k) => Value::Float(0.0, *k),
+        WitTy::Char => Value::Char(' '),
+        WitTy::String => Value::String(String::new()),
+        WitTy::List(elem) => Value::Array(Array::typed(elem.ty(), Vec::new())),
+    }
+}
+
+/// An argument as the wasmtime runner prints it: strings and chars quoted.
+fn show(v: &Value) -> String {
+    match v {
+        Value::String(s) => format!("{s:?}"),
+        Value::Char(c) => format!("{c:?}"),
+        Value::Array(a) => {
+            let items: Vec<String> = a
+                .borrow()
+                .map(|items| items.iter().map(show).collect())
+                .unwrap_or_default();
+            format!("[{}]", items.join(", "))
+        }
+        other => other.to_string(),
     }
 }
 

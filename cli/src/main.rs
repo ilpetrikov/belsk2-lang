@@ -370,11 +370,39 @@ fn run_project(
             .map_err(|errors| report(&errors, &loaded.sources))?;
         return run_wasm(&wasm, mode.call.as_deref(), args);
     }
+    if manifest.component.is_some() {
+        return call_interpreted(root, mode.call.as_deref(), args, options);
+    }
     if mode.call.is_some() {
         eprintln!("error: --call needs a component (a [component] project or --target wasi0.2)");
         return Err(());
     }
     check_and_run(project::load_with(root, Mode::Run, options), args)
+}
+
+/// `belsk2 run --interpreted` for a component: calls an exported function
+/// in the interpreter, with stubs for the host's functions.
+fn call_interpreted(
+    root: &Path,
+    call: Option<&str>,
+    args: &[String],
+    options: &project::Options,
+) -> Result<(), ()> {
+    let mut loaded = project::load_with(root, Mode::All, options)
+        .map_err(|(errors, sources)| report(&errors, &sources))?;
+    let errors = project::check(&mut loaded);
+    if !errors.is_empty() {
+        report(&errors, &loaded.sources);
+        return Err(());
+    }
+    let mut interp = Interpreter::new();
+    let mut out = io::stdout();
+    let result = project::call(&loaded, &mut interp, call, args, &mut out)
+        .map_err(|e| report(&[e], &loaded.sources))?;
+    if !matches!(result, belsk2::Value::Null) {
+        println!("{result}");
+    }
+    Ok(())
 }
 
 #[cfg(feature = "wasmtime")]
