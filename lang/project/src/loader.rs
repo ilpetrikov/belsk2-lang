@@ -206,7 +206,7 @@ pub fn load_lenient(root: &Path, mode: Mode, options: &Options) -> (Loaded, Vec<
 fn start_project(root: &Path, mode: Mode, options: &Options) -> (Loader, Option<ModuleId>) {
     let mut loader = Loader::new(options);
     match Lockfile::load(root) {
-        Ok(lock) => loader.old_lock = lock,
+        Ok(lock) => loader.old_lock = lock.resolved(root),
         Err(e) => loader.errors.push(e),
     }
     let pkg = loader.load_package(root);
@@ -222,7 +222,7 @@ fn start_project(root: &Path, mode: Mode, options: &Options) -> (Loader, Option<
                     root.join(crate::lockfile::LOCKFILE).display()
                 )));
             } else if !loader.write_lock {
-            } else if let Err(e) = new_lock.save(root) {
+            } else if let Err(e) = new_lock.portable(root).save(root) {
                 loader.errors.push(e);
             }
         }
@@ -499,7 +499,7 @@ impl Loader {
             },
         };
         if let Some((other_url, other_commit)) = self.git_sources.get(name) {
-            if *other_url != url || *other_commit != commit {
+            if !git::same_source(other_url, &url) || *other_commit != commit {
                 self.errors.push(Error::project(format!(
                     "package \"{name}\" is used from two different sources: {other_url} at {} and {url} at {}",
                     short(other_commit),

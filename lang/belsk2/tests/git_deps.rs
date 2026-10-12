@@ -141,6 +141,8 @@ fn tag_dependency_and_lockfile() {
         && p.version == "1.0.0"
         && p.reference == "tag=v1.0"
         && p.commit.len() == 40));
+    // A local repository is written relative to the project.
+    assert_eq!(entry.map(|p| p.git.as_str()), Some("../greeter"));
 }
 
 #[test]

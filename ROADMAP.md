@@ -118,10 +118,10 @@
 
 - [x] `for e in dict` yields `KeyValuePair<K, V>` with read-only `.Key` and `.Value`, as in C#.
 - [ ] Function types (`fn(int): bool`) instead of the untyped `fn`; comes with lambdas.
-- [ ] `belsk2.lock` stores a relative git URL (a local path) as an absolute path, so such a
-      lock file is machine-specific. Fine for remote URLs.
-- [ ] Two git URLs that are spelled differently but mean the same repository count as
-      different sources.
+- [x] `belsk2.lock` writes a local git path relative to the project, so the file works on
+      every machine.
+- [x] Git URLs spelled differently (`.git`, trailing `/`, host case, `git@host:path`) count as
+      the same repository.
 - [ ] Analysis: a file that does not parse only gets keyword/builtin/word completions (except
       for an unfinished `p.`, which is repaired to complete the members of `p`).
 - [ ] Publish the VS Code extension to the Marketplace / Open VSX.

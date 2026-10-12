@@ -83,7 +83,10 @@ Dependencies come from a local `path` or from `git` (with an optional
 `branch`, `tag` or `rev`; the default branch otherwise). Git dependencies are
 downloaded with the `git` command into `~/.belsk2/git` (set `BELSK2_HOME` to
 change that), and the exact commit of each is recorded in `belsk2.lock`.
-Commit that file: the project then builds the same way everywhere until
+A dependency on a local repository is written there relative to the
+project, and URLs that differ only in spelling (`.git` at the end, `/`,
+`git@github.com:a/b` for `https://github.com/a/b`) mean the same
+repository. Commit that file: the project then builds the same way everywhere until
 `belsk2 update` moves the dependencies forward. `--locked` makes any command
 fail instead of changing `belsk2.lock` (useful in CI), and `--offline` uses
 only what is already downloaded.

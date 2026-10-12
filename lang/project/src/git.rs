@@ -107,7 +107,85 @@ fn cache_name(url: &str) -> String {
         })
         .collect();
     let clean: String = clean.chars().take(24).collect();
-    format!("{clean}-{:08x}", stable_hash(url) >> 32)
+    format!("{clean}-{:08x}", stable_hash(&source_key(url)) >> 32)
+}
+
+/// What identifies a repository, whichever way its URL is written:
+/// `https://GitHub.com/a/b.git/`, `https://github.com/a/b` and
+/// `git@github.com:a/b` are the same. Local paths are compared as they
+/// are (they are absolute and canonical already).
+pub fn source_key(url: &str) -> String {
+    let url = url.trim().trim_end_matches('/');
+    let url = url
+        .strip_suffix(".git")
+        .unwrap_or(url)
+        .trim_end_matches('/');
+    let (host, path) = if let Some((_, rest)) = url.split_once("://") {
+        match rest.split_once('/') {
+            Some((host, path)) => (host, path),
+            None => (rest, ""),
+        }
+    } else if let Some((user_host, path)) = url
+        .split_once(':')
+        .filter(|(h, _)| h.contains('@') && !h.contains('/'))
+    {
+        // `git@github.com:a/b`
+        (user_host, path)
+    } else {
+        return url.to_string();
+    };
+    // Users and ports do not change the repository.
+    let host = host.rsplit('@').next().unwrap_or(host);
+    let host = host.split(':').next().unwrap_or(host);
+    format!(
+        "{}/{}",
+        host.to_ascii_lowercase(),
+        path.trim_start_matches('/')
+    )
+}
+
+/// Whether two git URLs name the same repository.
+pub fn same_source(a: &str, b: &str) -> bool {
+    source_key(a) == source_key(b)
+}
+
+/// How `belsk2.lock` (in `project_root`) writes a URL: a local path
+/// relative to the project, so the file works on every machine; other URLs
+/// as they are.
+pub fn lock_url(url: &str, project_root: &Path) -> String {
+    let path = Path::new(url);
+    if url.contains("://") || url.starts_with("git@") || !path.is_absolute() {
+        return url.to_string();
+    }
+    let root = std::fs::canonicalize(project_root).unwrap_or_else(|_| project_root.to_path_buf());
+    let root = strip_verbatim(&root);
+    let target = strip_verbatim(path);
+    let (root_parts, target_parts): (Vec<_>, Vec<_>) =
+        (root.components().collect(), target.components().collect());
+    let common = root_parts
+        .iter()
+        .zip(&target_parts)
+        .take_while(|(a, b)| a == b)
+        .count();
+    if common == 0 {
+        // Another drive: only an absolute path works.
+        return url.to_string();
+    }
+    let mut parts: Vec<String> = vec!["..".to_string(); root_parts.len() - common];
+    parts.extend(
+        target_parts
+            .iter()
+            .skip(common)
+            .map(|c| c.as_os_str().to_string_lossy().into_owned()),
+    );
+    if parts.is_empty() {
+        return ".".to_string();
+    }
+    parts.join("/")
+}
+
+fn strip_verbatim(p: &Path) -> PathBuf {
+    PathBuf::from(p.to_string_lossy().trim_start_matches(r"\\?\").to_string())
 }
 
 fn git(args: &[&str], dir: Option<&Path>) -> Result<String, String> {
@@ -270,4 +348,46 @@ pub(crate) fn error(manifest: &Path, dep: &str, msg: String) -> Error {
         "{}: dependency \"{dep}\": {msg}",
         manifest.display()
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn spellings_of_one_repository_are_the_same_source() {
+        let same = [
+            "https://github.com/someone/json.belsk2",
+            "https://github.com/someone/json.belsk2/",
+            "https://github.com/someone/json.belsk2.git",
+            "https://GitHub.com/someone/json.belsk2",
+            "git@github.com:someone/json.belsk2.git",
+            "ssh://git@github.com:22/someone/json.belsk2",
+        ];
+        for url in same {
+            assert!(
+                same_source(url, "https://github.com/someone/json.belsk2"),
+                "{url}"
+            );
+        }
+        assert!(!same_source(
+            "https://github.com/someone/json.belsk2",
+            "https://github.com/other/json.belsk2"
+        ));
+        assert!(!same_source("/repos/a", "/repos/b"));
+    }
+
+    #[test]
+    fn local_paths_are_written_relative_to_the_project() {
+        let base = std::env::temp_dir().join("belsk2-lock-url");
+        let app = base.join("app");
+        let lib = base.join("libs").join("greeter");
+        let _ = std::fs::create_dir_all(&app);
+        let _ = std::fs::create_dir_all(&lib);
+        let url = normalize_url("../libs/greeter", &app);
+        assert_eq!(lock_url(&url, &app), "../libs/greeter");
+        assert_eq!(normalize_url(&lock_url(&url, &app), &app), url);
+        let remote = "https://example.com/a/b";
+        assert_eq!(lock_url(remote, &app), remote);
+    }
 }

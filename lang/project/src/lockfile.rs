@@ -73,15 +73,45 @@ impl Lockfile {
     pub fn find(&self, git: &str, reference: &str) -> Option<&LockedPackage> {
         self.packages
             .iter()
-            .find(|p| p.git == git && p.reference == reference)
+            .find(|p| crate::git::same_source(&p.git, git) && p.reference == reference)
     }
 
-    /// Same entries regardless of order.
+    /// The lock with local paths made absolute (from `root`, where the
+    /// file is), as the loader compares them.
+    pub fn resolved(mut self, root: &Path) -> Lockfile {
+        for p in &mut self.packages {
+            p.git = crate::git::normalize_url(&p.git, root);
+        }
+        self
+    }
+
+    /// The lock with local paths relative to `root`, as it is written.
+    pub fn portable(mut self, root: &Path) -> Lockfile {
+        for p in &mut self.packages {
+            p.git = crate::git::lock_url(&p.git, root);
+        }
+        self
+    }
+
+    /// Same entries regardless of order (and of how URLs are written).
     pub fn same_as(&self, other: &Lockfile) -> bool {
-        let mut a = self.packages.clone();
-        let mut b = other.packages.clone();
-        a.sort();
-        b.sort();
-        a == b
+        let key = |l: &Lockfile| {
+            let mut v: Vec<(String, String, String, String, String)> = l
+                .packages
+                .iter()
+                .map(|p| {
+                    (
+                        p.name.clone(),
+                        p.version.clone(),
+                        crate::git::source_key(&p.git),
+                        p.reference.clone(),
+                        p.commit.clone(),
+                    )
+                })
+                .collect();
+            v.sort();
+            v
+        };
+        key(self) == key(other)
     }
 }
