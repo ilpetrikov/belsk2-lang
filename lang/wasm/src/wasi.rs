@@ -1,6 +1,9 @@
 //! The `wasi0.2` target: a component for WASI 0.2 hosts (`wasmtime run`,
 //! ...). `prinb` and `input` use `wasi:cli/stdout` and `wasi:cli/stdin`,
-//! and `main` is exported as `wasi:cli/run`.
+//! and `main` is exported as `wasi:cli/run`: it gets the command-line
+//! arguments from `wasi:cli/environment`, and an exit code other than 0
+//! goes to `wasi:cli/exit`. The id bank (`idb`, `reab`) is a small Belsk2
+//! module compiled into the program ([`BANK`]).
 
 use std::rc::Rc;
 
@@ -22,6 +25,8 @@ package belsk2:wasi;
 world imports {
     import wasi:cli/stdout@0.2.0;
     import wasi:cli/stdin@0.2.0;
+    import wasi:cli/environment@0.2.0;
+    import wasi:cli/exit@0.2.0;
 }
 
 world command {
@@ -62,6 +67,15 @@ package wasi:cli@0.2.0 {
         get-stdin: func() -> input-stream;
     }
 
+    interface environment {
+        get-arguments: func() -> list<string>;
+    }
+
+    interface exit {
+        exit: func(status: result);
+        exit-with-code: func(status-code: u8);
+    }
+
     interface run {
         run: func() -> result;
     }
@@ -72,6 +86,44 @@ package wasi:cli@0.2.0 {
 const STREAMS: &str = "wasi:io/streams@0.2.0";
 /// Most bytes `blocking-write-and-flush` accepts at once.
 const MAX_WRITE: i32 = 4096;
+/// Where read input waits to be used, in linear memory (after the
+/// return area), and how big that buffer is.
+const INPUT: i32 = 16;
+const INPUT_SIZE: i32 = 4096;
+/// Where the allocator starts for this target: after the input buffer.
+pub const HEAP_BASE: i32 = INPUT + INPUT_SIZE;
+
+/// The id bank, compiled into every wasi0.2 program: `idb 5 = x` stores
+/// `str(x)` under 5, `reab(5)` stores the line it reads, and `prinb(5)`
+/// prints what is stored under 5 (if anything).
+pub const BANK: &str = r#"
+var bankKeys: long[] = [];
+var bankValues: string[] = [];
+
+fn bankSet(k: long, v: string) {
+    var i = 0;
+    while i < len(bankKeys) {
+        if bankKeys[i] == k {
+            bankValues[i] = v;
+            return;
+        }
+        i += 1;
+    }
+    push(bankKeys, k);
+    push(bankValues, v);
+}
+
+fn bankGet(k: long): string {
+    var i = 0;
+    while i < len(bankKeys) {
+        if bankKeys[i] == k {
+            return bankValues[i];
+        }
+        i += 1;
+    }
+    return null;
+}
+"#;
 
 /// Function indices of the WASI imports and the globals caching the
 /// stream handles.
@@ -81,14 +133,28 @@ pub struct Wasi {
     get_stdin: u32,
     write: u32,
     read: u32,
+    get_arguments: u32,
+    exit_with_code: u32,
     stdout: u32,
     stdin: u32,
+    /// Read but unused input: `INPUT[pos..len]`; `eof` once stdin ended.
+    in_pos: u32,
+    in_len: u32,
+    in_eof: u32,
 }
 
 fn mem(offset: u64) -> MemArg {
     MemArg {
         offset,
         align: 0,
+        memory_index: 0,
+    }
+}
+
+fn mem4(offset: u64) -> MemArg {
+    MemArg {
+        offset,
+        align: 2,
         memory_index: 0,
     }
 }
@@ -107,35 +173,98 @@ pub fn imports(ctx: &mut Ctx) {
     );
     let ty = ctx.types.func(vec![I32, I64, I32], Vec::new());
     let read = ctx.import(STREAMS, "[method]input-stream.blocking-read", ty);
+    let ty = ctx.types.func(vec![I32], Vec::new());
+    let get_arguments = ctx.import("wasi:cli/environment@0.2.0", "get-arguments", ty);
+    let exit_with_code = ctx.import("wasi:cli/exit@0.2.0", "exit-with-code", ty);
     let stdout = ctx.add_global(I32);
     let stdin = ctx.add_global(I32);
+    let (in_pos, in_len, in_eof) = (
+        ctx.add_global(I32),
+        ctx.add_global(I32),
+        ctx.add_global(I32),
+    );
+    ctx.heap_base = HEAP_BASE;
     ctx.wasi = Some(Wasi {
         get_stdout,
         get_stdin,
         write,
         read,
+        get_arguments,
+        exit_with_code,
         stdout,
         stdin,
+        in_pos,
+        in_len,
+        in_eof,
     });
 }
 
-/// Exports `main` as `wasi:cli/run`: a non-zero `int` returned by `main`
-/// makes the run fail.
+/// Exports `main` as `wasi:cli/run`. `main(args)` gets the command-line
+/// arguments (without the program name); an exit code other than 0
+/// returned by `main` ends the program with that code.
 pub fn run_export(ctx: &mut Ctx, main: &Rc<FnDecl>, unit: usize) -> R<()> {
-    if !main.params.is_empty() {
-        return Err(Error::compile(
-            "`main(args: string[])` is not supported for the wasi0.2 target yet; use `fn main()`",
-        )
-        .at(main.span));
-    }
+    let Some(w) = ctx.wasi else {
+        return Err(Error::compile("internal compiler error: no WASI imports"));
+    };
     let f = ctx.user_fn(unit, main, &[])?;
     let mut a = Asm::new(Vec::new(), vec![ValType::I32]);
+    if !main.params.is_empty() {
+        // get-arguments writes (address, count) of a list of strings.
+        let realloc = ctx.realloc.unwrap_or(0);
+        let (rp, ptr, n) = (
+            a.local(ValType::I32),
+            a.local(ValType::I32),
+            a.local(ValType::I32),
+        );
+        a.ops([
+            I::I32Const(0),
+            I::I32Const(0),
+            I::I32Const(4),
+            I::I32Const(8),
+            I::Call(realloc),
+            I::LocalTee(rp),
+            I::Call(w.get_arguments),
+            I::LocalGet(rp),
+            I::I32Load(mem4(0)),
+            I::LocalSet(ptr),
+            I::LocalGet(rp),
+            I::I32Load(mem4(4)),
+            I::LocalSet(n),
+            // Skip the program name (a string is 8 bytes: address, length).
+            I::LocalGet(n),
+            I::If(BlockType::Empty),
+            I::LocalGet(ptr),
+            I::I32Const(8),
+            I::I32Add,
+            I::LocalSet(ptr),
+            I::LocalGet(n),
+            I::I32Const(1),
+            I::I32Sub,
+            I::LocalSet(n),
+            I::End,
+            I::LocalGet(ptr),
+            I::LocalGet(n),
+        ]);
+        let lift = ctx.helper(Helper::LiftList(belsk2_project::WitTy::String));
+        a.op(I::Call(lift));
+    }
     a.op(I::Call(f.index));
+    let code = a.local(ValType::I32);
     match &f.ret {
-        Some(Ty::Int(k)) if k.bits() == 64 => a.ops([I::I64Const(0), I::I64Ne]),
-        Some(Ty::Int(_)) => a.ops([I::I32Const(0), I::I32Ne]),
+        Some(Ty::Int(k)) if k.bits() == 64 => a.op(I::I32WrapI64),
+        Some(Ty::Int(_)) => {}
         _ => a.op(I::I32Const(0)),
     }
+    a.ops([
+        I::LocalTee(code),
+        I::If(BlockType::Empty),
+        I::LocalGet(code),
+        I::I32Const(0xFF),
+        I::I32And,
+        I::Call(w.exit_with_code),
+        I::End,
+        I::I32Const(0),
+    ]);
     let index = ctx.define(a);
     ctx.export(index, "wasi:cli/run@0.2.0#run");
     Ok(())
@@ -272,7 +401,7 @@ pub fn helper(ctx: &mut Ctx, h: &Helper) -> R<Asm> {
         }
         Helper::WasiReadLine => {
             a = Asm::new(Vec::new(), vec![sref]);
-            let (saved, h, buf, cap, len, rp, b, out) = (
+            let (saved, h, buf, cap, len, rp, b, out, n) = (
                 a.local(I32),
                 a.local(I32),
                 a.local(I32),
@@ -281,6 +410,7 @@ pub fn helper(ctx: &mut Ctx, h: &Helper) -> R<Asm> {
                 a.local(I32),
                 a.local(I32),
                 a.local(sref),
+                a.local(I32),
             );
             a.ops([I::GlobalGet(heap), I::LocalSet(saved)]);
             handle(&mut a, w.stdin, w.get_stdin);
@@ -291,22 +421,55 @@ pub fn helper(ctx: &mut Ctx, h: &Helper) -> R<Asm> {
             a.ops([
                 I::Block(BlockType::Empty),
                 I::Loop(BlockType::Empty),
+                // Out of buffered input: read the next block (up to
+                // INPUT_SIZE bytes) into the buffer.
+                I::GlobalGet(w.in_pos),
+                I::GlobalGet(w.in_len),
+                I::I32GeU,
+                I::If(BlockType::Empty),
+                I::GlobalGet(w.in_eof),
+                I::BrIf(2),
                 I::LocalGet(h),
-                I::I64Const(1),
+                I::I64Const(i64::from(INPUT_SIZE)),
                 I::LocalGet(rp),
                 I::Call(w.read),
-                // An error (or the end of input) ends the line.
+                // An error (or the end of input) ends the input.
                 I::LocalGet(rp),
                 I::I32Load8U(mem(0)),
-                I::BrIf(1),
                 I::LocalGet(rp),
                 I::I32Load(mem(8)),
+                I::LocalTee(n),
                 I::I32Eqz,
-                I::BrIf(1),
+                I::I32Or,
+                I::If(BlockType::Empty),
+                I::I32Const(1),
+                I::GlobalSet(w.in_eof),
+                I::Br(3),
+                I::End,
+                I::I32Const(INPUT),
                 I::LocalGet(rp),
                 I::I32Load(mem(4)),
+                I::LocalGet(n),
+                I::MemoryCopy {
+                    src_mem: 0,
+                    dst_mem: 0,
+                },
+                I::I32Const(0),
+                I::GlobalSet(w.in_pos),
+                I::LocalGet(n),
+                I::GlobalSet(w.in_len),
+                I::End,
+                // The next byte; a newline ends the line.
+                I::I32Const(INPUT),
+                I::GlobalGet(w.in_pos),
+                I::I32Add,
                 I::I32Load8U(mem(0)),
-                I::LocalTee(b),
+                I::LocalSet(b),
+                I::GlobalGet(w.in_pos),
+                I::I32Const(1),
+                I::I32Add,
+                I::GlobalSet(w.in_pos),
+                I::LocalGet(b),
                 I::I32Const(10),
                 I::I32Eq,
                 I::BrIf(1),

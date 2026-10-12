@@ -407,7 +407,8 @@ fn call_interpreted(
 
 #[cfg(feature = "wasmtime")]
 fn run_wasm(wasm: &[u8], call: Option<&str>, args: &[String]) -> Result<(), ()> {
-    host::run(wasm, call, args).map_err(|e| eprintln!("error: {e}"))
+    let code = host::run(wasm, call, args).map_err(|e| eprintln!("error: {e}"))?;
+    exit_code(Some(i64::from(code)))
 }
 
 #[cfg(not(feature = "wasmtime"))]

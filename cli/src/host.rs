@@ -29,7 +29,8 @@ const WASI_RUN: &str = "wasi:cli/run@0.2.0";
 
 /// Runs export `call` (default: the WASI `run`, or `run` or `main`) with
 /// `args` parsed by its parameter types, and prints what it returns.
-pub fn run(wasm: &[u8], call: Option<&str>, args: &[String]) -> Result<(), String> {
+/// Returns the exit code the program asked for (0 normally).
+pub fn run(wasm: &[u8], call: Option<&str>, args: &[String]) -> Result<i32, String> {
     let err = |e: wasmtime::Error| format!("{e:#}");
     let mut config = Config::new();
     config.wasm_gc(true);
@@ -151,18 +152,23 @@ pub fn run(wasm: &[u8], call: Option<&str>, args: &[String]) -> Result<(), Strin
         .map(|((name, t), a)| parse(a, t).map_err(|e| format!("argument '{name}': {e}")))
         .collect::<Result<Vec<Val>, String>>()?;
     let mut results: Vec<Val> = fty.results().map(|_| Val::Bool(false)).collect();
-    func.call(&mut store, &values, &mut results)
-        .map_err(|e| format!("runtime error in '{shown}': {e}"))?;
+    if let Err(e) = func.call(&mut store, &values, &mut results) {
+        // `wasi:cli/exit` ends the program with an exit code.
+        if let Some(exit) = e.downcast_ref::<wasmtime_wasi::I32Exit>() {
+            return Ok(exit.0);
+        }
+        return Err(format!("runtime error in '{shown}': {e}"));
+    }
     if wasi_run {
-        return match results.first() {
-            Some(Val::Result(Err(_))) => Err("`main` returned a non-zero exit code".to_string()),
-            _ => Ok(()),
-        };
+        return Ok(match results.first() {
+            Some(Val::Result(Err(_))) => 1,
+            _ => 0,
+        });
     }
     for r in &results {
         println!("{}", show(r, true));
     }
-    Ok(())
+    Ok(0)
 }
 
 /// `demo:host/canvas@0.1.0` is shown as `canvas`.

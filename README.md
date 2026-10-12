@@ -484,7 +484,12 @@ target = "wasi0.2"   # or "wasm32" (the default)
   use stdout and stdin, and `fn main()` is exported as `wasi:cli/run`, so
   the result runs with `wasmtime run app.wasm`. `belsk2 run --target
   wasi0.2` (or a project whose `[build] target` is `wasi0.2`) builds the
-  program and runs it in wasmtime. `reab` and `idb` are not supported yet. Parameters and returned values need declared types. Strings,
+  program and runs it in wasmtime. `fn main(args: string[])` gets the
+  command-line arguments, the `int` `main` returns is the exit code (as a
+  byte, 0 to 255), and `idb`/`reab` work as in the interpreter. Input is
+  read in blocks of 4 KiB.
+
+Parameters and returned values need declared types. Strings,
 arrays, generics and all statements are supported; dictionaries, `any` and
 `str()` of floating-point numbers are not yet (see ROADMAP.md).
 

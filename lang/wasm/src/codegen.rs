@@ -102,7 +102,15 @@ enum Job {
         subst: HashMap<String, Ty>,
         ret: Option<Ty>,
     },
-    Init(Vec<(usize, VarDecl, u32)>),
+    Init(Vec<Init>),
+}
+
+/// What the start function does, in order.
+enum Init {
+    /// Gives a global variable its value.
+    Var(usize, VarDecl, u32),
+    /// `idb 5 = x` at the top level of a unit.
+    Idb(usize, i64, Expr),
 }
 
 struct FuncDef {
@@ -141,6 +149,10 @@ pub struct Ctx {
     pub extra_exports: Vec<(String, ExportKind, u32)>,
     /// Set for the wasi0.2 target.
     pub wasi: Option<crate::wasi::Wasi>,
+    /// Where the allocator starts in linear memory.
+    pub heap_base: i32,
+    /// The id bank's unit and its `bankSet` and `bankGet` (wasi0.2).
+    pub bank: Option<(usize, Rc<FnDecl>, Rc<FnDecl>)>,
 }
 
 impl Ctx {
@@ -336,13 +348,16 @@ pub fn declare(ctx: &mut Ctx, units: &[Unit]) {
                     Some(t) => {
                         let g = ctx.add_global(t);
                         scope.insert(v.name.clone(), Item::Global(g, v.resolved.clone()));
-                        inits.push((u, v.clone(), g));
+                        inits.push(Init::Var(u, v.clone(), g));
                     }
                     None => ctx.errors.push(unsupported(
                         format!("a global variable of type {} is", v.resolved),
                         span,
                     )),
                 },
+                StmtKind::Idb { id, value } if ctx.wasi.is_some() => {
+                    inits.push(Init::Idb(u, *id, value.clone()));
+                }
                 StmtKind::Idb { .. } => ctx.errors.push(no_io("idb", span)),
                 StmtKind::Type(d) => ctx
                     .errors
@@ -433,12 +448,20 @@ fn generate(ctx: &mut Ctx, job: Job) -> R<Asm> {
             }
             Ok(g.a)
         }
-        Job::Init(globals) => {
+        Job::Init(inits) => {
             let mut g = FnGen::new(ctx, 0, HashMap::new(), None, Vec::new(), Vec::new());
-            for (unit, v, index) in globals {
-                g.unit = unit;
-                g.value(&v.value, &v.resolved)?;
-                g.emit(I::GlobalSet(index));
+            for init in inits {
+                match init {
+                    Init::Var(unit, v, index) => {
+                        g.unit = unit;
+                        g.value(&v.value, &v.resolved)?;
+                        g.emit(I::GlobalSet(index));
+                    }
+                    Init::Idb(unit, id, value) => {
+                        g.unit = unit;
+                        g.idb(id, &value)?;
+                    }
+                }
             }
             Ok(g.a)
         }
@@ -747,9 +770,28 @@ impl<'c> FnGen<'c> {
             } => self.for_loop(var, var_ty, iter, body, span)?,
             StmtKind::Block(b) => self.block(b)?,
             StmtKind::FnDecl(_) => return Err(unsupported("nested functions are", span)),
+            StmtKind::Idb { id, value } if self.ctx.bank.is_some() => self.idb(*id, value)?,
             StmtKind::Idb { .. } => return Err(no_io("idb", span)),
             StmtKind::Using(_) => return Err(unsupported("'using' here is", span)),
         }
+        Ok(())
+    }
+
+    /// The id bank's `bankSet` or `bankGet`.
+    fn bank_fn(&mut self, get: bool, span: Span) -> R<u32> {
+        let Some((unit, set_fn, get_fn)) = self.ctx.bank.clone() else {
+            return Err(no_io("idb", span));
+        };
+        let decl = if get { get_fn } else { set_fn };
+        Ok(self.ctx.user_fn(unit, &decl, &[])?.index)
+    }
+
+    /// `idb id = value`: stores `str(value)` in the id bank.
+    fn idb(&mut self, id: i64, value: &Expr) -> R<()> {
+        let set = self.bank_fn(false, value.span)?;
+        self.emit(I::I64Const(id));
+        self.emit_str(value)?;
+        self.emit(I::Call(set));
         Ok(())
     }
 
@@ -1164,9 +1206,50 @@ impl<'c> FnGen<'c> {
                 .ok_or_else(|| Error::compile(format!("{name}() needs more arguments")).at(span))
         };
         match name {
+            // `reab(slot)` reads a line, stores it in the id bank and
+            // returns it.
+            "reab" if self.ctx.wasi.is_some() => {
+                let a = arg(0)?;
+                let Some(NumTy::Int(k)) = arith(&self.t(&a.ty)) else {
+                    return Err(unsupported(format!("reab() of {} is", a.ty), span));
+                };
+                let set = self.bank_fn(false, span)?;
+                self.expr(a)?;
+                self.emit_to_i64(NumTy::Int(k));
+                self.helper(Helper::WasiReadLine);
+                let line = self.a.local(sref);
+                self.emit(I::LocalTee(line));
+                self.emit(I::Call(set));
+                self.emit(I::LocalGet(line));
+                return Ok(Some(sref));
+            }
             "prinb" | "input" if self.ctx.wasi.is_some() => {
                 // `input(prompt)` writes the prompt without a newline.
+                let int = args.first().and_then(|a| match arith(&self.t(&a.ty)) {
+                    Some(NumTy::Int(k)) => Some(k),
+                    _ => None,
+                });
                 match args.first() {
+                    // `prinb(n)` prints what the id bank holds under `n`, if
+                    // anything.
+                    Some(a) if name == "prinb" && int.is_some() && self.ctx.bank.is_some() => {
+                        let get = self.bank_fn(true, span)?;
+                        self.expr(a)?;
+                        self.emit_to_i64(NumTy::Int(int.unwrap_or(IntKind::I32)));
+                        let (k, banked) = (self.a.local(ValType::I64), self.a.local(sref));
+                        self.emit(I::LocalTee(k));
+                        self.emit(I::Call(get));
+                        self.emit(I::LocalTee(banked));
+                        self.emit(I::RefIsNull);
+                        self.emit(I::If(BlockType::Result(sref)));
+                        self.emit(I::LocalGet(k));
+                        self.helper(Helper::IntToStr {
+                            unsigned: int == Some(IntKind::U64),
+                        });
+                        self.emit(I::Else);
+                        self.emit(I::LocalGet(banked));
+                        self.emit(I::End);
+                    }
                     Some(a) => self.emit_str(a)?,
                     None => {
                         let ops = self.ctx.string_lit("");

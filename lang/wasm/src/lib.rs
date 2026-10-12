@@ -100,11 +100,36 @@ pub fn compile_units(
     target: Target,
 ) -> Result<Vec<u8>, Vec<Error>> {
     let wasi = target == Target::Wasi02;
+    // The id bank comes first: its globals are set before any `idb`.
+    let bank_program = if wasi { Some(bank()?) } else { None };
+    let mut all: Vec<Unit> = Vec::with_capacity(units.len() + 1);
+    let shift = usize::from(bank_program.is_some());
+    if let Some(program) = &bank_program {
+        all.push(Unit {
+            name: "#bank".to_string(),
+            interface: false,
+            program,
+            uses: Vec::new(),
+        });
+    }
+    all.extend(units.iter().map(|u| Unit {
+        name: u.name.clone(),
+        interface: u.interface,
+        program: u.program,
+        uses: u.uses.iter().map(|&i| i + shift).collect(),
+    }));
+    let units = all.as_slice();
+    let exported = exported.map(|e| e + shift);
     let mut ctx = codegen::Ctx::default();
     if world.is_some() || wasi {
         component::imports(&mut ctx, world, wasi);
     }
     codegen::declare(&mut ctx, units);
+    if bank_program.is_some() {
+        if let (Some(set), Some(get)) = (ctx.unit_fn(0, "bankSet"), ctx.unit_fn(0, "bankGet")) {
+            ctx.bank = Some((0, set, get));
+        }
+    }
     if let Some(world) = world {
         component::exports(&mut ctx, world, units, exported);
     }
@@ -176,6 +201,17 @@ pub fn compile_project(loaded: &Loaded, target: Target) -> Result<Vec<u8>, Vec<E
         })
         .collect();
     compile_units(&units, exported, loaded.world.as_deref(), target)
+}
+
+/// The checked id bank of the wasi0.2 target.
+fn bank() -> Result<Program, Vec<Error>> {
+    let mut program = belsk2_syntax::parse(wasi::BANK).map_err(|e| vec![e])?;
+    let errors = belsk2_typeck::check(&mut program);
+    if errors.is_empty() {
+        Ok(program)
+    } else {
+        Err(errors)
+    }
 }
 
 fn validate(bytes: Vec<u8>) -> Result<Vec<u8>, Vec<Error>> {

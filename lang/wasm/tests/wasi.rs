@@ -42,6 +42,13 @@ fn compile(source: &str) -> Result<Vec<u8>, String> {
 /// Runs a program with `input` on stdin; returns stdout and whether
 /// `main` succeeded.
 fn run(source: &str, input: &str) -> (String, bool) {
+    let (out, code) = run_with(source, input, &[]);
+    (out, code == 0)
+}
+
+/// Runs a program with command-line `args`; returns stdout and the exit
+/// code.
+fn run_with(source: &str, input: &str, args: &[&str]) -> (String, i32) {
     let wasm = compile(source).unwrap();
     let mut config = Config::new();
     config.wasm_gc(true);
@@ -51,9 +58,12 @@ fn run(source: &str, input: &str) -> (String, bool) {
     let mut linker: Linker<Host> = Linker::new(&engine);
     wasmtime_wasi::p2::add_to_linker_sync(&mut linker).unwrap();
     let stdout = MemoryOutputPipe::new(1 << 20);
+    let mut argv = vec!["main"];
+    argv.extend(args);
     let wasi = WasiCtx::builder()
         .stdin(MemoryInputPipe::new(input.as_bytes().to_vec()))
         .stdout(stdout.clone())
+        .args(&argv)
         .build();
     let mut store = Store::new(
         &engine,
@@ -63,9 +73,16 @@ fn run(source: &str, input: &str) -> (String, bool) {
         },
     );
     let command = Command::instantiate(&mut store, &component, &linker).unwrap();
-    let ok = command.wasi_cli_run().call_run(&mut store).unwrap().is_ok();
+    let code = match command.wasi_cli_run().call_run(&mut store) {
+        Ok(Ok(())) => 0,
+        Ok(Err(())) => 1,
+        Err(e) => match e.downcast_ref::<wasmtime_wasi::I32Exit>() {
+            Some(exit) => exit.0,
+            None => panic!("{e:#}"),
+        },
+    };
     let out = String::from_utf8(stdout.contents().to_vec()).unwrap();
-    (out, ok)
+    (out, code)
 }
 
 #[test]
@@ -116,4 +133,54 @@ fn wasm32_has_no_io_and_wasi_needs_main() {
     assert!(message.contains("--target wasi0.2"), "{message}");
     let err = compile("fn helper(): int { return 1; }").unwrap_err();
     assert!(err.contains("runs `fn main()`"), "{err}");
+}
+
+#[test]
+fn arguments_id_bank_and_exit_codes() {
+    let src = r#"
+idb 1 = "top";
+
+fn main(args: string[]): int {
+    prinb(len(args));
+    for a in args { prinb(a); }
+    idb 7 = 42;
+    prinb(7);
+    prinb(1);
+    prinb(8);
+    var name = reab(3);
+    prinb(3);
+    return 300;
+}
+"#;
+    let (out, code) = run_with(src, "Ann\nrest", &["one", "two words"]);
+    assert_eq!(out, "2\none\ntwo words\n42\ntop\n8\nAnn\n");
+    // Exit codes are bytes, as on Unix.
+    assert_eq!(code, 300 % 256);
+    let (_, code) = run_with("fn main(): long { return 0L; }", "", &[]);
+    assert_eq!(code, 0);
+}
+
+#[test]
+fn long_input_is_read_in_blocks() {
+    let src = r#"
+fn main() {
+    var total = 0;
+    var lines = 0;
+    var line = input();
+    while line != "" {
+        total += len(line);
+        lines += 1;
+        line = input();
+    }
+    prinb(str(lines) + " " + str(total));
+}
+"#;
+    let mut input = String::new();
+    for i in 0..3000 {
+        input.push_str(&"x".repeat(i % 50 + 1));
+        input.push_str(if i % 2 == 0 { "\n" } else { "\r\n" });
+    }
+    let total: usize = (0..3000).map(|i| i % 50 + 1).sum();
+    let (out, _) = run_with(src, &input, &[]);
+    assert_eq!(out, format!("3000 {total}\n"));
 }

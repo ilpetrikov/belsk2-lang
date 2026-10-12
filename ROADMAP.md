@@ -61,8 +61,9 @@
       component where `prinb`/`input` use `wasi:cli/stdout`/`stdin` and `main` is exported
       as `wasi:cli/run` (merged with the project's own world, if any); `belsk2 run`
       runs it in wasmtime with wasmtime-wasi.
-- [ ] wasi0.2: `main(args: string[])` (via `wasi:cli/environment`), `reab`/`idb`,
-      exit codes other than 0/1, reading stdin in bigger chunks.
+- [x] wasi0.2: `main(args: string[])` (via `wasi:cli/environment`), `reab`/`idb` (an id
+      bank written in Belsk2 and compiled in), exit codes (`wasi:cli/exit` `exit-with-code`),
+      reading stdin in blocks of 4 KiB.
 - [ ] WASI 0.3: later (barely supported yet)
 
 ### Rust integration

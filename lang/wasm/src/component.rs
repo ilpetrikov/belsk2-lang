@@ -105,10 +105,11 @@ pub fn imports(ctx: &mut Ctx, world: Option<&World>, wasi: bool) {
         core.push((f, ctx.import(&module, &f.wit_name, ty)));
     }
 
+    ctx.heap_base = HEAP_BASE;
     if wasi {
         crate::wasi::imports(ctx);
     }
-    let heap = ctx.add_global_init(ValType::I32, HEAP_BASE);
+    let heap = ctx.add_global_init(ValType::I32, ctx.heap_base);
     let realloc = ctx.define(realloc(heap));
     ctx.realloc = Some(realloc);
     ctx.heap = Some(heap);
@@ -233,7 +234,7 @@ fn export(ctx: &mut Ctx, f: &WitFunc, units: &[Unit], exported: Option<usize>) -
     }
     a.op(I::Call(target.index));
     let heap = ctx.heap.unwrap_or(0);
-    let reset = [I::I32Const(HEAP_BASE), I::GlobalSet(heap)];
+    let reset = [I::I32Const(ctx.heap_base), I::GlobalSet(heap)];
     match &f.result {
         Some(t) if in_memory(t) => {
             lower(ctx, &mut a, t);
