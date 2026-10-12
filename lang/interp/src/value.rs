@@ -30,6 +30,17 @@ pub enum Value {
     /// the fields are never changed in place (a field assignment builds a
     /// new value).
     Struct(Rc<StructValue>),
+    /// An object of a class. Classes are reference types: copies share
+    /// the object.
+    Object(Rc<Object>),
+    /// A case of an enum (its index in [`Class::cases`]).
+    Enum(Rc<Class>, usize),
+}
+
+/// The fields of a class object.
+pub struct Object {
+    pub class: Rc<Class>,
+    pub fields: std::cell::RefCell<Vec<Value>>,
 }
 
 /// A user-defined type at run time.
@@ -40,6 +51,8 @@ pub struct Class {
     pub env: EnvRef,
     /// The instance fields, in order.
     pub fields: Vec<(String, Ty)>,
+    /// The cases of an enum and the numbers they stand for.
+    pub cases: Vec<(String, i128)>,
 }
 
 impl Class {
@@ -89,6 +102,8 @@ pub struct Function {
 /// Values nested deeper than this are not printed or compared further.
 /// It also stops runaway recursion on arrays that contain themselves.
 const MAX_NESTING: usize = 64;
+/// Objects nested deeper than this are printed as `Name {...}`.
+const MAX_OBJECT_NESTING: usize = 8;
 
 impl Value {
     pub fn array(items: Vec<Value>) -> Value {
@@ -122,6 +137,8 @@ impl Value {
             Value::Native(n) => n.ty.clone(),
             Value::Type(c) => Ty::Type(c.ty.clone()),
             Value::Struct(s) => Ty::Named(s.class.ty.clone()),
+            Value::Object(o) => Ty::Named(o.class.ty.clone()),
+            Value::Enum(c, _) => Ty::Named(c.ty.clone()),
         }
     }
 
@@ -143,7 +160,12 @@ impl Value {
             Value::String(s) => !s.is_empty(),
             Value::Array(a) => !a.is_empty(),
             Value::Map(m) => !m.is_empty(),
-            Value::Function(_) | Value::Native(_) | Value::Type(_) | Value::Struct(_) => true,
+            Value::Function(_)
+            | Value::Native(_)
+            | Value::Type(_)
+            | Value::Struct(_)
+            | Value::Object(_)
+            | Value::Enum(..) => true,
         }
     }
 
@@ -195,6 +217,8 @@ impl Value {
             }
             (Ty::Fn(_), Value::Function(_) | Value::Native(_)) => true,
             (Ty::Named(t), Value::Struct(s)) => s.class.ty == t,
+            (Ty::Named(t), Value::Object(o)) => o.class.ty == t,
+            (Ty::Named(t), Value::Enum(c, _)) => c.ty == t,
             (Ty::Type(t), Value::Type(c)) => c.ty == t,
             _ => false,
         }
@@ -211,17 +235,17 @@ impl Value {
             Value::Function(func) => write!(f, "<fn {}>", func.decl.name),
             Value::Native(n) => write!(f, "<fn {}>", n.name),
             Value::Type(c) => write!(f, "<type {}>", c.ty.name),
-            Value::Struct(s) => {
-                if depth >= MAX_NESTING {
-                    return write!(f, "{} {{...}}", s.class.ty.name);
-                }
-                write!(f, "{} {{", s.class.ty.name)?;
-                for (i, ((name, _), v)) in s.class.fields.iter().zip(&s.fields).enumerate() {
-                    f.write_str(if i > 0 { ", " } else { " " })?;
-                    write!(f, "{name}: ")?;
-                    v.fmt_nested(f, depth + 1)?;
-                }
-                f.write_str(if s.fields.is_empty() { "}" } else { " }" })
+            Value::Struct(s) => fmt_fields(f, &s.class, &s.fields, depth),
+            // Objects may refer to each other in cycles: show a few levels.
+            Value::Object(o) if depth >= MAX_OBJECT_NESTING => {
+                write!(f, "{} {{...}}", o.class.ty.name)
+            }
+            Value::Object(o) => match o.fields.try_borrow() {
+                Ok(fields) => fmt_fields(f, &o.class, &fields, depth),
+                Err(_) => write!(f, "{} {{...}}", o.class.ty.name),
+            },
+            Value::Enum(c, i) => {
+                f.write_str(c.cases.get(*i).map(|(n, _)| n.as_str()).unwrap_or("?"))
             }
             Value::Map(m) => {
                 if depth >= MAX_NESTING {
@@ -259,6 +283,25 @@ impl Value {
             }
         }
     }
+}
+
+/// `Point { x: 1, y: 2 }`
+fn fmt_fields(
+    f: &mut fmt::Formatter<'_>,
+    class: &Class,
+    fields: &[Value],
+    depth: usize,
+) -> fmt::Result {
+    if depth >= MAX_NESTING {
+        return write!(f, "{} {{...}}", class.ty.name);
+    }
+    write!(f, "{} {{", class.ty.name)?;
+    for (i, ((name, _), v)) in class.fields.iter().zip(fields).enumerate() {
+        f.write_str(if i > 0 { ", " } else { " " })?;
+        write!(f, "{name}: ")?;
+        v.fmt_nested(f, depth + 1)?;
+    }
+    f.write_str(if fields.is_empty() { "}" } else { " }" })
 }
 
 impl fmt::Display for Value {
@@ -307,6 +350,8 @@ fn values_equal(a: &Value, b: &Value, depth: usize) -> bool {
         (Value::Function(x), Value::Function(y)) => Rc::ptr_eq(x, y),
         (Value::Native(x), Value::Native(y)) => Rc::ptr_eq(x, y),
         (Value::Type(x), Value::Type(y)) => x.ty == y.ty,
+        (Value::Object(x), Value::Object(y)) => Rc::ptr_eq(x, y),
+        (Value::Enum(x, i), Value::Enum(y, j)) => x.ty == y.ty && i == j,
         (Value::Struct(x), Value::Struct(y)) => {
             if Rc::ptr_eq(x, y) {
                 return true;

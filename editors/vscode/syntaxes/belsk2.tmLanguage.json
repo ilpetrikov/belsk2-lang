@@ -61,7 +61,7 @@
     "keywords": {
       "patterns": [
         { "name": "keyword.control.belsk2", "match": "\\b(if|else|while|for|in|return|break|continue|this)\\b" },
-        { "name": "storage.type.belsk2", "match": "\\b(var|fn|idb|struct|init)\\b" },
+        { "name": "storage.type.belsk2", "match": "\\b(var|fn|idb|struct|enum|class|init)\\b" },
         { "name": "constant.language.belsk2", "match": "\\b(true|false|null)\\b" }
       ]
     },

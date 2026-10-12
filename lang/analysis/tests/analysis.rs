@@ -265,3 +265,29 @@ fn main() {
     assert!(items.iter().any(|c| c.kind == CompletionKind::Method
         && c.detail.as_deref() == Some("fn Point.len2(): double")));
 }
+
+#[test]
+fn enum_cases_and_class_members_complete() {
+    let src = "enum Mode { Low = 1, High }
+class Player { hp: int = 1; fn hit() { hp -= 1; } }
+
+fn main() {
+    var p = Player();
+    var m = Mode.High;
+    Mode.
+}
+";
+    let a = analyze_source("e.belsk2", src);
+    let f = a.files.first().map(|f| f.id).unwrap_or_default();
+    let labels = |line, col| -> Vec<String> {
+        a.completions(f, Pos::new(line, col))
+            .into_iter()
+            .map(|c| c.label)
+            .collect()
+    };
+    assert_eq!(labels(7, 10), ["Low", "High"]);
+    let hover = a.hover(f, Pos::new(6, 18)).map(|h| h.1).unwrap_or_default();
+    assert!(hover.contains("Mode.High = 2"), "{hover}");
+    let hover = a.hover(f, Pos::new(1, 6)).map(|h| h.1).unwrap_or_default();
+    assert!(hover.contains("enum Mode"), "{hover}");
+}

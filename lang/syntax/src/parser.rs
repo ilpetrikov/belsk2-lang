@@ -15,7 +15,7 @@ pub const MAX_NESTING: usize = 256;
 /// Words that cannot be used as names.
 pub const KEYWORDS: &[&str] = &[
     "using", "var", "fn", "if", "else", "while", "for", "in", "return", "break", "continue", "idb",
-    "true", "false", "null", "struct", "this",
+    "true", "false", "null", "struct", "enum", "class", "this",
 ];
 
 /// Parses a whole program.
@@ -197,7 +197,7 @@ impl Parser {
             match t.text.as_str() {
                 "var" => return self.parse_var_decl(),
                 "fn" => return self.parse_fn_decl(),
-                "struct" => return self.parse_type_decl(),
+                "struct" | "enum" | "class" => return self.parse_type_decl(),
                 "if" => return self.parse_if(),
                 "while" => return self.parse_while(),
                 "for" => return self.parse_for(),
@@ -543,24 +543,37 @@ impl Parser {
         body
     }
 
-    /// `struct Point { x: double; y: double; fn len(): double { ... } }`
+    /// `struct Point { x: double; fn len(): double { ... } }`,
+    /// `enum Mode { Low, High = 10 }`, `class Player { ... }`
     fn parse_type_decl(&mut self) -> Result<Stmt> {
-        let span = self.bump().span;
+        let kw = self.bump();
+        let span = kw.span;
+        let kind = match kw.text.as_str() {
+            "enum" => TypeKind::Enum,
+            "class" => TypeKind::Class,
+            _ => TypeKind::Struct,
+        };
         if self.nesting != 1 || self.fn_depth > 0 {
             return Err(Error::syntax(
-                "a struct must be declared at the top level of a file",
+                format!(
+                    "a {} must be declared at the top level of a file",
+                    kind.keyword()
+                ),
                 span,
             ));
         }
         let name = self.expect_name("a type name")?;
         if self.kind() == TokenKind::Lt {
             return Err(Error::syntax(
-                "generic structs are not supported yet",
+                format!("generic {}s are not supported yet", kind.keyword()),
                 self.span(),
             ));
         }
         self.expect(TokenKind::LBrace)?;
         let mut members = Vec::new();
+        if kind == TypeKind::Enum {
+            self.parse_cases(&mut members)?;
+        }
         while !self.eat(TokenKind::RBrace) {
             if self.kind() == TokenKind::Eof {
                 return Err(self.unexpected("'}'"));
@@ -568,18 +581,55 @@ impl Parser {
             if self.eat(TokenKind::Semicolon) {
                 continue;
             }
-            members.push(self.parse_member()?);
+            let member = self.parse_member()?;
+            if kind == TypeKind::Enum && !matches!(member.kind, MemberKind::Method(_)) {
+                return Err(Error::syntax(
+                    "an enum has only cases and methods (`fn`)",
+                    member.span,
+                ));
+            }
+            members.push(member);
         }
         Ok(Stmt {
             kind: StmtKind::Type(Rc::new(TypeDecl {
                 name,
-                kind: TypeKind::Struct,
+                kind,
                 members,
                 span,
                 info: None,
             })),
             span,
         })
+    }
+
+    /// The cases at the start of an enum: `Low, Normal = 5, High`.
+    fn parse_cases(&mut self, members: &mut Vec<Member>) -> Result<()> {
+        loop {
+            let t = self.peek().clone();
+            if t.kind != TokenKind::Ident || t.text == "fn" {
+                return Ok(());
+            }
+            let name = self.expect_name("a case name")?;
+            if self.kind() == TokenKind::Colon {
+                return Err(Error::syntax(
+                    "an enum has only cases and methods (`fn`)",
+                    t.span,
+                ));
+            }
+            let value = if self.eat(TokenKind::Eq) {
+                Some(self.parse_expr()?)
+            } else {
+                None
+            };
+            members.push(Member {
+                kind: MemberKind::Case { name, value },
+                span: t.span,
+            });
+            if !self.eat(TokenKind::Comma) {
+                self.eat(TokenKind::Semicolon);
+                return Ok(());
+            }
+        }
     }
 
     /// A field, `fn` or `init` in a type body.
@@ -606,7 +656,9 @@ impl Parser {
                     span,
                 }))
             }
-            "struct" => return Err(Error::syntax("nested types are not supported", span)),
+            "struct" | "enum" | "class" => {
+                return Err(Error::syntax("nested types are not supported", span))
+            }
             "var" => {
                 self.bump();
                 let name = self.expect_name("a field name")?;

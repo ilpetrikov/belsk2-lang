@@ -4,7 +4,7 @@ use std::rc::Rc;
 use belsk2_syntax::ast::*;
 use belsk2_syntax::{
     Access, Error, FieldInfo, IntKind, MemberInfo, MethodInfo, NumTy, Sig, Span, Ty, TypeBody,
-    TypeExpr, TypeExprKind, TypeInfo, TypeKind, TypeRef, Virt,
+    TypeExpr, TypeExprKind, TypeInfo, TypeKind, TypeRef, VariantInfo, Virt,
 };
 
 use crate::builtins;
@@ -573,12 +573,14 @@ impl Checker {
         };
         let mut body = TypeBody::default();
         let mut names: Vec<String> = Vec::new();
+        let mut next_value: i128 = 0;
         for m in &mut decl.members {
             let span = m.span;
             let name = match &m.kind {
                 MemberKind::Field(f) => f.name.clone(),
                 MemberKind::Method(d) => d.name.clone(),
                 MemberKind::Init(_) => "init".to_string(),
+                MemberKind::Case { name, .. } => name.clone(),
             };
             if names.contains(&name) {
                 let what = if name == "init" {
@@ -644,6 +646,25 @@ impl Checker {
                         .collect();
                     body.explicit_ctor = true;
                 }
+                MemberKind::Case { value, .. } => {
+                    if let Some(e) = value {
+                        self.expr(e);
+                        match const_of(e) {
+                            Some(Const::Int(v)) if is_integer(&e.ty) => next_value = v,
+                            _ => self.type_error(
+                                "the value of an enum case must be a whole number, like `High = 10`",
+                                e.span,
+                            ),
+                        }
+                    }
+                    body.variants.push(VariantInfo {
+                        name,
+                        fields: Vec::new(),
+                        value: next_value,
+                        span,
+                    });
+                    next_value = next_value.saturating_add(1);
+                }
             }
         }
         if !body.explicit_ctor {
@@ -673,6 +694,7 @@ impl Checker {
                         self.coerce(value, &f.resolved, &|| format!("field '{name}'"));
                     }
                 }
+                MemberKind::Case { .. } => {}
                 MemberKind::Method(d) | MemberKind::Init(d) => match Rc::get_mut(d) {
                     Some(d) => {
                         self.types.push(TypeCtx {
@@ -722,9 +744,30 @@ impl Checker {
     fn member_type(&mut self, obj: &Ty, name: &str, span: Span, call: bool) -> Ty {
         match obj {
             Ty::Any => Ty::Any,
+            Ty::Type(t) => match t.member(name) {
+                Some((_, MemberInfo::Variant(_))) => Ty::Named(t.clone()),
+                Some(_) => {
+                    self.type_error(
+                        format!("'{name}' belongs to a value of {}, not to the type", t.name),
+                        span,
+                    );
+                    Ty::Any
+                }
+                None => {
+                    self.type_error(format!("{} has no member '{name}'", t.name), span);
+                    Ty::Any
+                }
+            },
             Ty::Named(t) => match t.member(name) {
                 Some((_, MemberInfo::Field(f))) => f.ty,
                 Some((_, MemberInfo::Method(m))) if call => Ty::Fn(Some(m.sig)),
+                Some((_, MemberInfo::Variant(_))) => {
+                    self.type_error(
+                        format!("a case is used through the type: {}.{name}", t.name),
+                        span,
+                    );
+                    Ty::Any
+                }
                 Some((_, MemberInfo::Method(_))) => {
                     self.type_error(
                         format!("method '{name}' can only be called: {name}(...)"),
@@ -1011,7 +1054,14 @@ impl Checker {
                 }
             }
             ExprKind::This => match self.types.last() {
-                Some(ctx) => Some(Ty::Named(ctx.ty.clone())),
+                Some(ctx) if ctx.ty.kind == TypeKind::Struct => Some(Ty::Named(ctx.ty.clone())),
+                Some(ctx) => {
+                    self.type_error(
+                        format!("'this' cannot be replaced in a {}", ctx.ty.kind.keyword()),
+                        span,
+                    );
+                    None
+                }
                 None => {
                     self.type_error("'this' can only be used in methods and init", span);
                     None
@@ -1383,6 +1433,20 @@ impl Checker {
         };
         // `Point(1, 2)` calls the constructor.
         let callee_ty = match callee_ty {
+            Ty::Type(t) if t.kind == TypeKind::Enum => {
+                self.type_error(
+                    format!(
+                        "an enum has no constructor; use one of its cases, like {}.{}",
+                        t.name,
+                        t.variants()
+                            .first()
+                            .map(|v| v.name.as_str())
+                            .unwrap_or("Case")
+                    ),
+                    callee.span,
+                );
+                Ty::Any
+            }
             Ty::Type(t) => {
                 let params = t.with_body(|b| b.ctor.clone()).unwrap_or_default();
                 Ty::Fn(Some(Rc::new(Sig {

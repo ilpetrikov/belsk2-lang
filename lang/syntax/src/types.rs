@@ -281,10 +281,11 @@ impl Ty {
 
     /// Whether values of this type can be dictionary keys.
     pub fn is_key(&self) -> bool {
-        matches!(
-            self.canonical(),
-            Ty::Any | Ty::Bool | Ty::Int(_) | Ty::Char | Ty::String | Ty::Param(_)
-        )
+        match self.canonical() {
+            Ty::Any | Ty::Bool | Ty::Int(_) | Ty::Char | Ty::String | Ty::Param(_) => true,
+            Ty::Named(t) => t.kind == TypeKind::Enum,
+            _ => false,
+        }
     }
 
     /// Whether this type mentions a type parameter.
@@ -539,6 +540,8 @@ pub struct MethodInfo {
 pub struct VariantInfo {
     pub name: String,
     pub fields: Vec<(String, Ty)>,
+    /// The number it stands for (`int(Mode.High)`).
+    pub value: i128,
     pub span: Span,
 }
 

@@ -96,6 +96,8 @@ pub enum Key {
     Int(i128),
     Char(char),
     Str(String),
+    /// A case of an enum: type id and index.
+    Enum(usize, usize),
 }
 
 impl Key {
@@ -105,6 +107,7 @@ impl Key {
             Value::Int(i, _) => Key::Int(*i),
             Value::Char(c) => Key::Char(*c),
             Value::String(s) => Key::Str(s.clone()),
+            Value::Enum(c, i) => Key::Enum(c.ty.id(), *i),
             other => {
                 return Err(Error::type_error(format!(
                     "{} cannot be a dictionary key",

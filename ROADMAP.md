@@ -73,9 +73,10 @@
 ### Language
 - [x] `struct`: fields (with values), methods, `init`, `this`, value semantics (copies;
       methods may change the variable they are called on), `==` by fields; interpreter only
-- [ ] WASM: structs (and later enums/classes) in the WASM backend
-- [ ] `enum` (including enums with data)
-- [ ] `class`: fields, methods, constructors, `this`
+- [ ] WASM: structs, enums and classes in the WASM backend
+- [x] `enum`: typed cases (`Mode.High`) with numbers (`Low = 1`), methods, `int(m)`, dictionary keys
+- [ ] Enums with data (`Circle(radius: double)`) together with `match`
+- [x] `class`: fields, methods, `init`, `this`; reference semantics, `null`
 - [ ] Inheritance, `virtual`/`override`, `base`
 - [ ] `interface`
 - [ ] Properties `get`/`set`, access modifiers, `static`

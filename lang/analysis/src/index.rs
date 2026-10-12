@@ -362,6 +362,21 @@ impl Indexer<'_> {
                     )
                 }
                 MemberKind::Init(_) => continue,
+                MemberKind::Case { name, .. } => {
+                    let value = info
+                        .reference()
+                        .variants()
+                        .into_iter()
+                        .find(|v| v.name == *name)
+                        .map(|v| v.value)
+                        .unwrap_or(0);
+                    (
+                        name.clone(),
+                        SymbolKind::Field,
+                        Ty::Named(info.reference()),
+                        format!("{}.{name} = {value}", decl.name),
+                    )
+                }
             };
             let range = self.name_range(m.span, &name);
             let mut sym = self.symbol(&name, kind, ty, signature, range);
@@ -486,6 +501,11 @@ impl Indexer<'_> {
                             self.walk_fn(d, symbol, this.clone());
                         }
                         MemberKind::Init(d) => self.walk_fn(d, None, this.clone()),
+                        MemberKind::Case { value, .. } => {
+                            if let Some(v) = value {
+                                self.expr(v);
+                            }
+                        }
                     }
                 }
             }
@@ -629,7 +649,7 @@ impl Indexer<'_> {
                 if !implicit {
                     self.expr(object);
                 }
-                if let Ty::Named(t) = &object.ty {
+                if let Ty::Named(t) | Ty::Type(t) = &object.ty {
                     let symbol = t.member(name).and_then(|(owner, _)| {
                         self.analysis
                             .members

@@ -81,11 +81,11 @@ pub enum SymbolKind {
     Variable,
     Parameter,
     Builtin,
-    /// A `struct`.
+    /// A `struct`, `enum` or `class`.
     Type,
-    /// A field of a struct.
+    /// A field of a struct or class, or a case of an enum.
     Field,
-    /// A method of a struct.
+    /// A method.
     Method,
 }
 
@@ -685,11 +685,15 @@ impl Analysis {
                 .find(|s| s.name == name)
                 .map(|s| s.ty.clone())
         });
-        let Some(Ty::Named(t)) = ty else {
-            return Vec::new();
+        // `Mode.` lists the cases, `p.` the fields and methods.
+        let (t, of_type) = match ty {
+            Some(Ty::Named(t)) => (t, false),
+            Some(Ty::Type(t)) => (t, true),
+            _ => return Vec::new(),
         };
         t.members()
             .into_iter()
+            .filter(|(_, _, m)| matches!(m, belsk2::syntax::MemberInfo::Variant(_)) == of_type)
             .map(|(owner, name, _)| {
                 let symbol = self
                     .members

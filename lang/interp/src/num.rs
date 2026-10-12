@@ -74,6 +74,7 @@ pub fn convert(v: Value, to: &Ty) -> Result<Value> {
     if let Some(ty) = target.num() {
         let n = match &v {
             Value::Bool(b) => N::I(i128::from(*b)),
+            Value::Enum(c, i) => N::I(c.cases.get(*i).map(|(_, v)| *v).unwrap_or(0)),
             Value::String(s) => {
                 let n = parse_str(s, to)?;
                 if let (N::I(i), NumTy::Int(k)) = (n, ty) {

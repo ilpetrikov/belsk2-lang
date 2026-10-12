@@ -203,6 +203,54 @@ Structs are values, as in C#: assigning or passing one copies it, and
 (`make().x = 1`) cannot be assigned. A struct cannot contain itself.
 Structs are not yet supported by the WASM backend.
 
+## Enums
+
+```belsk2
+enum PerformanceMode {
+    Low = 1,          // a case may stand for a number of your choice
+    Balanced = 5,
+    High,             // the previous one plus 1: 6
+
+    fn fast(): bool { return this == PerformanceMode.High; }
+}
+
+var m = PerformanceMode.High;   // of type PerformanceMode, not int
+prinb(m);                       // High
+prinb(int(m));                  // 6
+prinb(m.fast());                // true
+```
+
+Without numbers the cases count from 0, as in C#. Enum values can be
+compared with `==`, used as dictionary keys and converted to numbers with
+`int(...)`, `long(...)` and so on, but a number is not an enum value. A
+field of an enum type starts as its first case. An enum may have methods.
+
+## Classes
+
+```belsk2
+class Player {
+    name: string;
+    hp: int = 100;
+    friend: Player = null;
+
+    fn hit(n: int) { hp -= n; }
+}
+
+fn damage(p: Player) { p.hit(30); }
+
+fn main() {
+    var a = Player("Ann");
+    var b = a;          // the same player: classes are references
+    damage(b);
+    prinb(a.hp);        // 70
+}
+```
+
+A class has fields, methods, `this` and `init` like a struct, but it is a
+reference type, as in C#: copies share one object, changes through any of
+them are seen by all, a variable of a class type may be `null`, and `==`
+asks whether two values are the same object.
+
 ## Using belsk2 from Rust
 
 ```rust

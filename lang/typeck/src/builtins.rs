@@ -135,8 +135,12 @@ pub fn check(name: &str, args: &[Expr]) -> Result<Ty> {
 /// chars, bools and strings (which are parsed).
 fn conversion(name: &str, args: &[Expr], target: Ty) -> Result<Ty> {
     arity(name, args.len(), 1, 1)?;
+    let is_enum = |t: &Ty| matches!(t, Ty::Named(n) if n.kind == belsk2_syntax::TypeKind::Enum);
     expect(name, args, 0, "a number, char, bool or string", |t| {
-        t.num().is_some() || matches!(t, Ty::Char | Ty::Bool) || is_string(t)
+        t.num().is_some()
+            || matches!(t, Ty::Char | Ty::Bool)
+            || is_string(t)
+            || (is_enum(t) && target != Ty::Char)
     })?;
     let Some(arg) = args.first() else {
         return Ok(target);

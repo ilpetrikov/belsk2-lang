@@ -269,7 +269,7 @@ pub fn analyze(doc: Doc) -> Report {
                 .iter()
                 .map(|s| match s.kind {
                     SymbolKind::Function => format!("fn {}", s.name),
-                    SymbolKind::Type => format!("struct {}", s.name),
+                    SymbolKind::Type => s.signature.clone(),
                     _ => format!("var {}", s.name),
                 })
                 .collect(),

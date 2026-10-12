@@ -4,7 +4,7 @@ use std::io::{BufRead, Write};
 use std::rc::Rc;
 
 use belsk2_syntax::ast::*;
-use belsk2_syntax::{Error, Result, Span, Ty};
+use belsk2_syntax::{Error, Result, Span, Ty, TypeKind};
 use belsk2_typeck::Checker;
 
 use crate::builtins;
@@ -12,7 +12,7 @@ use crate::collections::{Array, Map};
 use crate::env::{self, Env, EnvRef};
 use crate::num::{self, coerce, convert};
 use crate::trace::{self, Trace};
-use crate::value::{Class, Function, StructValue, Value};
+use crate::value::{Class, Function, Object, StructValue, Value};
 
 /// Default limit for nested function calls.
 pub const DEFAULT_MAX_CALL_DEPTH: usize = 10_000;
@@ -485,6 +485,18 @@ impl Interpreter {
             }
             ExprKind::Member { object, name } => {
                 let obj = self.eval(object, env, out)?;
+                if let Value::Object(o) = &obj {
+                    let (i, ty) = field_of(&o.class, name).map_err(|e| e.or_at(target.span))?;
+                    let value = coerce(&ty, value, &format!("field '{name}'"))?;
+                    let mut fields = o
+                        .fields
+                        .try_borrow_mut()
+                        .map_err(|_| Error::runtime("object is being modified"))?;
+                    if let Some(slot) = fields.get_mut(i) {
+                        *slot = value;
+                    }
+                    return Ok(());
+                }
                 let Value::Struct(s) = &obj else {
                     return Err(Error::runtime(format!(
                         "{} has no field '{name}'",
@@ -629,14 +641,34 @@ impl Interpreter {
             }
             ExprKind::Member { object, name } => {
                 let obj = self.eval(object, env, out)?;
-                if let Value::Struct(s) = &obj {
-                    if let Some(i) = s.class.field_index(name) {
-                        return s
-                            .fields
-                            .get(i)
-                            .cloned()
-                            .ok_or_else(|| Error::runtime("missing field"));
+                match &obj {
+                    Value::Struct(s) => {
+                        if let Some(i) = s.class.field_index(name) {
+                            return s
+                                .fields
+                                .get(i)
+                                .cloned()
+                                .ok_or_else(|| Error::runtime("missing field"));
+                        }
                     }
+                    Value::Object(o) => {
+                        if let Some(i) = o.class.field_index(name) {
+                            let fields = o
+                                .fields
+                                .try_borrow()
+                                .map_err(|_| Error::runtime("object is being modified"))?;
+                            return fields
+                                .get(i)
+                                .cloned()
+                                .ok_or_else(|| Error::runtime("missing field"));
+                        }
+                    }
+                    Value::Type(c) => {
+                        if let Some(i) = c.cases.iter().position(|(n, _)| n == name) {
+                            return Ok(Value::Enum(Rc::clone(c), i));
+                        }
+                    }
+                    _ => {}
                 }
                 Err(Error::runtime(format!(
                     "{} has no member '{name}'",
@@ -672,9 +704,14 @@ impl Interpreter {
         }
         if let ExprKind::Member { object, name } = &callee.kind {
             let obj = self.eval(object, env, out)?;
-            if let Value::Struct(s) = &obj {
-                if let Some(decl) = s.class.method(name).cloned() {
-                    let class = Rc::clone(&s.class);
+            let class = match &obj {
+                Value::Struct(s) => Some(Rc::clone(&s.class)),
+                Value::Object(o) => Some(Rc::clone(&o.class)),
+                Value::Enum(c, _) => Some(Rc::clone(c)),
+                _ => None,
+            };
+            if let Some(class) = class {
+                if let Some(decl) = class.method(name).cloned() {
                     let values = self.eval_args(args, env, out)?;
                     let this = Some((obj.clone(), Ty::Named(class.ty.clone())));
                     let (result, this) =
@@ -860,6 +897,11 @@ impl Interpreter {
                             .into_iter()
                             .map(|f| (f.name, f.ty))
                             .collect(),
+                        cases: ty
+                            .variants()
+                            .into_iter()
+                            .map(|v| (v.name, v.value))
+                            .collect(),
                         ty: ty.clone(),
                         env: Rc::clone(env),
                     });
@@ -882,6 +924,11 @@ impl Interpreter {
         span: Span,
         out: &mut dyn Write,
     ) -> Result<Value> {
+        if class.ty.kind == TypeKind::Enum {
+            return Err(
+                Error::runtime(format!("enum {} has no constructor", class.ty.name)).at(span),
+            );
+        }
         let mut fields = Vec::with_capacity(class.fields.len());
         let mut takes_arg = Vec::new();
         for m in &class.decl.members {
@@ -900,12 +947,22 @@ impl Interpreter {
                 fields.push(value);
             }
         }
-        let mut value = StructValue {
-            class: Rc::clone(class),
-            fields,
+        let is_class = class.ty.kind == TypeKind::Class;
+        let make = |fields: Vec<Value>| {
+            if is_class {
+                Value::Object(Rc::new(Object {
+                    class: Rc::clone(class),
+                    fields: std::cell::RefCell::new(fields),
+                }))
+            } else {
+                Value::Struct(Rc::new(StructValue {
+                    class: Rc::clone(class),
+                    fields,
+                }))
+            }
         };
         if let Some(init) = class.init().cloned() {
-            let this = Some((Value::Struct(Rc::new(value)), Ty::Named(class.ty.clone())));
+            let this = Some((make(fields), Ty::Named(class.ty.clone())));
             let (_, this) = self.call_decl(&init, &class.env, args, &[], span, this, out)?;
             return this.ok_or_else(|| Error::runtime("init lost 'this'").at(span));
         }
@@ -925,11 +982,11 @@ impl Interpreter {
                 .get(i)
                 .cloned()
                 .unwrap_or_else(|| (String::new(), Ty::Any));
-            if let Some(slot) = value.fields.get_mut(i) {
+            if let Some(slot) = fields.get_mut(i) {
                 *slot = coerce(&ty, arg, &format!("field '{name}'")).map_err(|e| e.or_at(span))?;
             }
         }
-        Ok(Value::Struct(Rc::new(value)))
+        Ok(make(fields))
     }
 
     /// The value a field has before it is assigned: `0`, `false`, `null`,
@@ -940,17 +997,23 @@ impl Interpreter {
             Ty::Int(k) => Value::Int(0, k),
             Ty::Float(k) => Value::Float(0.0, k),
             Ty::Char => Value::Char('\0'),
-            Ty::Named(t) if depth < 32 => match self.classes.get(&t.id()) {
-                Some(class) => Value::Struct(Rc::new(StructValue {
-                    class: Rc::clone(class),
-                    fields: class
-                        .fields
-                        .iter()
-                        .map(|(_, ty)| self.default_value(ty, depth + 1))
-                        .collect(),
-                })),
+            Ty::Named(t) if t.kind == TypeKind::Enum => match self.classes.get(&t.id()) {
+                Some(class) => Value::Enum(Rc::clone(class), 0),
                 None => Value::Null,
             },
+            Ty::Named(t) if t.kind == TypeKind::Struct && depth < 32 => {
+                match self.classes.get(&t.id()) {
+                    Some(class) => Value::Struct(Rc::new(StructValue {
+                        class: Rc::clone(class),
+                        fields: class
+                            .fields
+                            .iter()
+                            .map(|(_, ty)| self.default_value(ty, depth + 1))
+                            .collect(),
+                    })),
+                    None => Value::Null,
+                }
+            }
             _ => Value::Null,
         }
     }

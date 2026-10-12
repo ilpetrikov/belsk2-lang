@@ -47,7 +47,7 @@ pub enum StmtKind {
         cast: Ty,
     },
     FnDecl(Rc<FnDecl>),
-    /// `struct Point { ... }`
+    /// `struct Point { ... }`, `enum Mode { ... }`, `class Player { ... }`
     Type(Rc<TypeDecl>),
     Return(Option<Expr>),
     Break,
@@ -97,6 +97,8 @@ pub enum MemberKind {
     Method(Rc<FnDecl>),
     /// `init(...) { ... }`, the constructor.
     Init(Rc<FnDecl>),
+    /// A case of an enum: `High` or `High = 10`.
+    Case { name: String, value: Option<Expr> },
 }
 
 #[derive(Debug, Clone, PartialEq)]

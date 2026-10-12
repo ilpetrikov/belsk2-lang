@@ -344,7 +344,9 @@ pub fn declare(ctx: &mut Ctx, units: &[Unit]) {
                     )),
                 },
                 StmtKind::Idb { .. } => ctx.errors.push(no_io("idb", span)),
-                StmtKind::Type(_) => ctx.errors.push(unsupported("structs are", span)),
+                StmtKind::Type(d) => ctx
+                    .errors
+                    .push(unsupported(format!("{}s are", d.kind.keyword()), span)),
                 StmtKind::Using(_) => {}
                 _ => ctx.errors.push(
                     Error::compile("only declarations may appear outside functions").at(span),
@@ -650,7 +652,9 @@ impl<'c> FnGen<'c> {
     fn stmt(&mut self, stmt: &Stmt) -> R<()> {
         let span = stmt.span;
         match &stmt.kind {
-            StmtKind::Type(_) => return Err(unsupported("structs are", span)),
+            StmtKind::Type(d) => {
+                return Err(unsupported(format!("{}s are", d.kind.keyword()), span))
+            }
             StmtKind::Expr(e) => {
                 if self.expr(e)?.is_some() {
                     self.emit(I::Drop);
@@ -1039,7 +1043,7 @@ impl<'c> FnGen<'c> {
             ExprKind::Null => return Err(unsupported("null without a known type is", span)),
             ExprKind::Map(_) => return Err(unsupported("dictionaries are", span)),
             ExprKind::Member { .. } => return Err(unsupported("members are", span)),
-            ExprKind::This => return Err(unsupported("structs are", span)),
+            ExprKind::This => return Err(unsupported("user-defined types are", span)),
         }
         self.vt(&e.ty, span).map(Some)
     }
