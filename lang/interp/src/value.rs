@@ -1,7 +1,7 @@
 use std::fmt;
 use std::rc::Rc;
 
-use belsk2_syntax::ast::{FnDecl, MemberKind, TypeDecl};
+use belsk2_syntax::ast::{FnDecl, MemberKind, PropDecl, TypeDecl};
 use belsk2_syntax::{FloatKind, IntKind, Ty, TypeRef};
 
 pub use crate::collections::{Array, Map};
@@ -53,11 +53,25 @@ pub struct Class {
     pub fields: Vec<(String, Ty)>,
     /// The cases of an enum and the numbers they stand for.
     pub cases: Vec<(String, i128)>,
+    /// The static fields and their values.
+    pub static_fields: Vec<(String, Ty)>,
+    pub statics: std::cell::RefCell<Vec<Value>>,
 }
 
 impl Class {
     pub fn field_index(&self, name: &str) -> Option<usize> {
         self.fields.iter().position(|(n, _)| n == name)
+    }
+
+    pub fn static_index(&self, name: &str) -> Option<usize> {
+        self.static_fields.iter().position(|(n, _)| n == name)
+    }
+
+    pub fn prop(&self, name: &str) -> Option<&PropDecl> {
+        self.decl.members.iter().find_map(|m| match &m.kind {
+            MemberKind::Prop(p) if p.name == name => Some(&**p),
+            _ => None,
+        })
     }
 
     pub fn method(&self, name: &str) -> Option<&Rc<FnDecl>> {

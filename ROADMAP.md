@@ -79,7 +79,8 @@
 - [x] `class`: fields, methods, `init`, `this`; reference semantics, `null`
 - [ ] Inheritance, `virtual`/`override`, `base`
 - [ ] `interface`
-- [ ] Properties `get`/`set`, access modifiers, `static`
+- [x] Properties (auto `{ get; private set; }` and with `get`/`set` code), `static` fields,
+      properties and methods, `public`/`private`/`protected` (also for top-level declarations)
 - [ ] `switch`/`case`
 - [ ] `match` with patterns
 - [ ] Lambdas and closures, function types like `fn(int): bool`
@@ -107,8 +108,6 @@
       with `.Key` and `.Value`. Switch to that once `struct` exists
       (and update `examples/collections.belsk2` and the tests).
 - [ ] Function types (`fn(int): bool`) instead of the untyped `fn`; comes with lambdas.
-- [ ] Access modifiers for modules: today every top-level function and variable is exported.
-      Add `public`/`private` together with the class access modifiers.
 - [ ] `belsk2.lock` stores a relative git URL (a local path) as an absolute path, so such a
       lock file is machine-specific. Fine for remote URLs.
 - [ ] Two git URLs that are spelled differently but mean the same repository count as

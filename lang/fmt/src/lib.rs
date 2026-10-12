@@ -19,8 +19,25 @@ use belsk2_syntax::token::TokenKind as K;
 use belsk2_syntax::{tokenize_raw, Error, RawKind, RawToken};
 
 const KEYWORDS: &[&str] = &[
-    "using", "var", "fn", "if", "else", "while", "for", "in", "return", "break", "continue", "idb",
-    "struct", "enum", "class",
+    "using",
+    "var",
+    "fn",
+    "if",
+    "else",
+    "while",
+    "for",
+    "in",
+    "return",
+    "break",
+    "continue",
+    "idb",
+    "struct",
+    "enum",
+    "class",
+    "public",
+    "private",
+    "protected",
+    "static",
 ];
 
 /// Keywords after which an expression starts.
@@ -222,6 +239,34 @@ fn tokens(source: &str) -> Result<Vec<Tok>, Error> {
         }
     }
     Ok(toks)
+}
+
+/// The accessors of an auto-property starting at `toks[start]` (just
+/// after its `{`): `{ get; private set; }` and the index of the `}`.
+fn accessors(toks: &[Tok], start: usize) -> Option<(String, usize)> {
+    let mut text = String::from("{");
+    let mut has_get = false;
+    for (i, t) in toks.iter().enumerate().skip(start) {
+        if t.is(K::RBrace) {
+            return has_get.then(|| (text + " }", i));
+        }
+        if t.is(K::Semicolon) {
+            text.push(';');
+            continue;
+        }
+        let word = t.is(K::Ident)
+            && matches!(
+                t.text.as_str(),
+                "get" | "set" | "public" | "private" | "protected"
+            );
+        if !word {
+            return None;
+        }
+        has_get |= t.text == "get";
+        text.push(' ');
+        text.push_str(&t.text);
+    }
+    None
 }
 
 /// Whether to write a space between `p` and `t` on the same line.
@@ -448,6 +493,14 @@ pub fn format(source: &str, config: &Config) -> Result<String, Error> {
                 {
                     pending = false;
                 }
+                continue;
+            }
+            // An auto-property keeps `{ get; private set; }` on one line.
+            if let Some((text, end)) = accessors(&toks, i) {
+                w.push(&text, false);
+                i = end + 1;
+                prev = toks.get(end);
+                pending = !toks.get(i).is_some_and(|n| n.is(K::Eq));
                 continue;
             }
             w.push("{", false);

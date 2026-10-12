@@ -5,7 +5,7 @@ use crate::error::{Error, Result};
 use crate::lexer::{tokenize, tokenize_file};
 use crate::span::{FileId, Span};
 use crate::token::{Token, TokenKind};
-use crate::types::{FloatKind, IntKind, Ty, TypeExpr, TypeExprKind, TypeKind};
+use crate::types::{Access, FloatKind, IntKind, Ty, TypeExpr, TypeExprKind, TypeKind};
 
 /// Maximum height of a single expression tree.
 pub const MAX_EXPR_DEPTH: u32 = 512;
@@ -14,8 +14,29 @@ pub const MAX_NESTING: usize = 256;
 
 /// Words that cannot be used as names.
 pub const KEYWORDS: &[&str] = &[
-    "using", "var", "fn", "if", "else", "while", "for", "in", "return", "break", "continue", "idb",
-    "true", "false", "null", "struct", "enum", "class", "this",
+    "using",
+    "var",
+    "fn",
+    "if",
+    "else",
+    "while",
+    "for",
+    "in",
+    "return",
+    "break",
+    "continue",
+    "idb",
+    "true",
+    "false",
+    "null",
+    "struct",
+    "enum",
+    "class",
+    "this",
+    "public",
+    "private",
+    "protected",
+    "static",
 ];
 
 /// Parses a whole program.
@@ -197,7 +218,10 @@ impl Parser {
             match t.text.as_str() {
                 "var" => return self.parse_var_decl(),
                 "fn" => return self.parse_fn_decl(),
-                "struct" | "enum" | "class" => return self.parse_type_decl(),
+                "struct" | "enum" | "class" => return self.parse_type_decl(Access::Public),
+                "public" | "private" | "protected" | "static" => {
+                    return self.parse_declaration(span)
+                }
                 "if" => return self.parse_if(),
                 "while" => return self.parse_while(),
                 "for" => return self.parse_for(),
@@ -390,6 +414,7 @@ impl Parser {
                 ty,
                 resolved: Ty::Any,
                 value,
+                access: Access::Public,
             }),
             span,
         })
@@ -406,9 +431,86 @@ impl Parser {
                 ty: Some(ty),
                 resolved: Ty::Any,
                 value,
+                access: Access::Public,
             }),
             span,
         })
+    }
+
+    /// `public`, `private`, `protected`, `static`, in any order.
+    fn parse_modifiers(&mut self) -> Result<Modifiers> {
+        let mut mods = Modifiers::default();
+        loop {
+            let t = self.peek().clone();
+            let access = match t.text.as_str() {
+                _ if t.kind != TokenKind::Ident => return Ok(mods),
+                "public" => Access::Public,
+                "private" => Access::Private,
+                "protected" => Access::Protected,
+                "static" => {
+                    if mods.is_static {
+                        return Err(Error::syntax("duplicate 'static'", t.span));
+                    }
+                    self.bump();
+                    mods.is_static = true;
+                    continue;
+                }
+                _ => return Ok(mods),
+            };
+            if mods.access.is_some() {
+                return Err(Error::syntax("only one access modifier is allowed", t.span));
+            }
+            self.bump();
+            mods.access = Some(access);
+        }
+    }
+
+    /// A top-level declaration with modifiers: `private fn helper()`,
+    /// `public struct Point`, `private var cache = ...`.
+    fn parse_declaration(&mut self, span: Span) -> Result<Stmt> {
+        if self.nesting != 1 || self.fn_depth > 0 {
+            return Err(Error::syntax(
+                "access modifiers are for top-level declarations and members of types",
+                span,
+            ));
+        }
+        let mods = self.parse_modifiers()?;
+        if mods.is_static {
+            return Err(Error::syntax(
+                "'static' is for members of a type; top-level declarations are static already",
+                span,
+            ));
+        }
+        let access = mods.access();
+        if access == Access::Protected {
+            return Err(Error::syntax("'protected' is for members of a type", span));
+        }
+        let t = self.peek().clone();
+        let word = if t.kind == TokenKind::Ident {
+            t.text.as_str()
+        } else {
+            ""
+        };
+        let mut stmt = match word {
+            "struct" | "enum" | "class" => return self.parse_type_decl(access),
+            "fn" => self.parse_fn_decl()?,
+            "var" => self.parse_var_decl()?,
+            _ => match self.try_decl_type() {
+                Some(ty) => self.parse_typed_decl(ty, span)?,
+                None => return Err(self.unexpected("a declaration after the modifier")),
+            },
+        };
+        stmt.span = span;
+        match &mut stmt.kind {
+            StmtKind::FnDecl(decl) => {
+                if let Some(decl) = Rc::get_mut(decl) {
+                    decl.access = access;
+                }
+            }
+            StmtKind::VarDecl(decl) => decl.access = access,
+            _ => {}
+        }
+        Ok(stmt)
     }
 
     /// `using utils;`, `using net.http;`
@@ -497,6 +599,7 @@ impl Parser {
             ret_resolved: Ty::Any,
             body,
             span,
+            access: Access::Public,
         }))
     }
 
@@ -545,7 +648,7 @@ impl Parser {
 
     /// `struct Point { x: double; fn len(): double { ... } }`,
     /// `enum Mode { Low, High = 10 }`, `class Player { ... }`
-    fn parse_type_decl(&mut self) -> Result<Stmt> {
+    fn parse_type_decl(&mut self, access: Access) -> Result<Stmt> {
         let kw = self.bump();
         let span = kw.span;
         let kind = match kw.text.as_str() {
@@ -582,9 +685,12 @@ impl Parser {
                 continue;
             }
             let member = self.parse_member()?;
-            if kind == TypeKind::Enum && !matches!(member.kind, MemberKind::Method(_)) {
+            if kind == TypeKind::Enum
+                && !matches!(member.kind, MemberKind::Method(_) | MemberKind::Prop(_))
+                && !(member.mods.is_static && matches!(member.kind, MemberKind::Field(_)))
+            {
                 return Err(Error::syntax(
-                    "an enum has only cases and methods (`fn`)",
+                    "an enum has only cases, methods, properties and static fields",
                     member.span,
                 ));
             }
@@ -594,6 +700,7 @@ impl Parser {
             kind: StmtKind::Type(Rc::new(TypeDecl {
                 name,
                 kind,
+                access,
                 members,
                 span,
                 info: None,
@@ -623,6 +730,7 @@ impl Parser {
             };
             members.push(Member {
                 kind: MemberKind::Case { name, value },
+                mods: Modifiers::default(),
                 span: t.span,
             });
             if !self.eat(TokenKind::Comma) {
@@ -634,8 +742,9 @@ impl Parser {
 
     /// A field, `fn` or `init` in a type body.
     fn parse_member(&mut self) -> Result<Member> {
+        let span = self.span();
+        let mods = self.parse_modifiers()?;
         let t = self.peek().clone();
-        let span = t.span;
         if t.kind != TokenKind::Ident {
             return Err(self.unexpected("a field, `fn` or `init`"));
         }
@@ -654,6 +763,7 @@ impl Parser {
                     ret_resolved: Ty::Any,
                     body,
                     span,
+                    access: Access::Public,
                 }))
             }
             "struct" | "enum" | "class" => {
@@ -673,19 +783,19 @@ impl Parser {
                 } else {
                     None
                 };
-                MemberKind::Field(Box::new(FieldDecl {
-                    name,
-                    ty,
-                    value,
-                    resolved: Ty::Any,
-                }))
+                MemberKind::Field(Box::new(field(name, ty, value)))
             }
             _ => {
                 // `x: int`, or `int x` as in C#.
                 let (name, ty) = if self.peek_at(1).kind == TokenKind::Colon {
                     let name = self.expect_name("a field name")?;
                     self.bump();
-                    (name, self.parse_type()?)
+                    let ty = self.parse_type()?;
+                    if self.kind() == TokenKind::LBrace {
+                        let kind = self.parse_property(name, ty)?;
+                        return Ok(Member { kind, mods, span });
+                    }
+                    (name, ty)
                 } else {
                     let ty = self.parse_type()?;
                     (self.expect_name("a field name")?, ty)
@@ -695,18 +805,112 @@ impl Parser {
                 } else {
                     None
                 };
-                MemberKind::Field(Box::new(FieldDecl {
-                    name,
-                    ty: Some(ty),
-                    value,
-                    resolved: Ty::Any,
-                }))
+                MemberKind::Field(Box::new(field(name, Some(ty), value)))
             }
         };
         if matches!(kind, MemberKind::Field(_)) {
             self.end_stmt();
         }
-        Ok(Member { kind, span })
+        Ok(Member { kind, mods, span })
+    }
+
+    /// After `Name: T`: `{ get; set; }` (an auto-property, stored like a
+    /// field, optionally followed by `= value`) or
+    /// `{ get { ... } set { ... } }`.
+    fn parse_property(&mut self, name: String, ty: TypeExpr) -> Result<MemberKind> {
+        self.expect(TokenKind::LBrace)?;
+        let mut get: Option<(Accessor, bool)> = None;
+        let mut set: Option<(Accessor, bool)> = None;
+        while !self.eat(TokenKind::RBrace) {
+            let mods = self.parse_modifiers()?;
+            let t = self.peek().clone();
+            let is_get = match (t.kind, t.text.as_str()) {
+                (TokenKind::Ident, "get") => true,
+                (TokenKind::Ident, "set") => false,
+                _ => return Err(self.unexpected("'get' or 'set'")),
+            };
+            if mods.is_static {
+                return Err(Error::syntax("put 'static' on the property", t.span));
+            }
+            self.bump();
+            let (body, has_body) = if self.kind() == TokenKind::LBrace {
+                (self.parse_body()?, true)
+            } else {
+                self.expect(TokenKind::Semicolon)?;
+                let body = Block {
+                    stmts: Vec::new(),
+                    span: t.span,
+                };
+                (body, false)
+            };
+            let decl = FnDecl {
+                name: name.clone(),
+                type_params: Vec::new(),
+                params: if is_get {
+                    Vec::new()
+                } else {
+                    vec![Param {
+                        name: "value".to_string(),
+                        ty: Some(ty.clone()),
+                        resolved: Ty::Any,
+                        span: t.span,
+                    }]
+                },
+                ret: is_get.then(|| ty.clone()),
+                ret_resolved: Ty::Any,
+                body,
+                span: t.span,
+                access: Access::Public,
+            };
+            let accessor = Accessor {
+                access: mods.access,
+                decl: Rc::new(decl),
+            };
+            let slot = if is_get { &mut get } else { &mut set };
+            if slot.is_some() {
+                return Err(Error::syntax(format!("duplicate '{}'", t.text), t.span));
+            }
+            *slot = Some((accessor, has_body));
+        }
+        let Some((getter, get_body)) = get else {
+            return Err(Error::syntax(
+                format!("property '{name}' needs a 'get'"),
+                ty.span,
+            ));
+        };
+        if getter.access.is_some() {
+            return Err(Error::syntax(
+                "put the access modifier of 'get' on the property itself",
+                ty.span,
+            ));
+        }
+        let set_body = set.as_ref().map(|(_, b)| *b);
+        if !get_body && set_body != Some(true) {
+            let value = if self.eat(TokenKind::Eq) {
+                Some(self.parse_expr()?)
+            } else {
+                None
+            };
+            self.end_stmt();
+            let mut f = field(name, Some(ty), value);
+            f.property = true;
+            f.readonly = set.is_none();
+            f.set_access = set.and_then(|(s, _)| s.access);
+            return Ok(MemberKind::Field(Box::new(f)));
+        }
+        if !get_body || set_body == Some(false) {
+            return Err(Error::syntax(
+                "give both 'get' and 'set' bodies, or neither (an auto-property)",
+                ty.span,
+            ));
+        }
+        Ok(MemberKind::Prop(Box::new(PropDecl {
+            name,
+            ty,
+            resolved: Ty::Any,
+            get: Some(getter),
+            set: set.map(|(s, _)| s),
+        })))
     }
 
     fn parse_if(&mut self) -> Result<Stmt> {
@@ -1068,6 +1272,18 @@ impl Parser {
             }
             _ => Err(self.unexpected("an expression")),
         }
+    }
+}
+
+fn field(name: String, ty: Option<TypeExpr>, value: Option<Expr>) -> FieldDecl {
+    FieldDecl {
+        name,
+        ty,
+        value,
+        resolved: Ty::Any,
+        property: false,
+        readonly: false,
+        set_access: None,
     }
 }
 

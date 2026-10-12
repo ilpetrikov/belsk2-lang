@@ -379,7 +379,7 @@ pub fn export_unit(ctx: &mut Ctx, units: &[Unit], unit: usize) {
     };
     for stmt in &u.program.stmts {
         if let StmtKind::FnDecl(d) = &stmt.kind {
-            if d.type_params.is_empty() {
+            if d.type_params.is_empty() && d.access == belsk2_syntax::Access::Public {
                 match ctx.user_fn(unit, d, &[]) {
                     Ok(f) => ctx.export(f.index, &d.name),
                     Err(e) => ctx.errors.push(e),
@@ -1043,7 +1043,9 @@ impl<'c> FnGen<'c> {
             ExprKind::Null => return Err(unsupported("null without a known type is", span)),
             ExprKind::Map(_) => return Err(unsupported("dictionaries are", span)),
             ExprKind::Member { .. } => return Err(unsupported("members are", span)),
-            ExprKind::This => return Err(unsupported("user-defined types are", span)),
+            ExprKind::This | ExprKind::SelfType => {
+                return Err(unsupported("user-defined types are", span))
+            }
         }
         self.vt(&e.ty, span).map(Some)
     }

@@ -3,8 +3,8 @@ use std::rc::Rc;
 
 use belsk2_syntax::ast::*;
 use belsk2_syntax::{
-    Access, Error, FieldInfo, IntKind, MemberInfo, MethodInfo, NumTy, Sig, Span, Ty, TypeBody,
-    TypeExpr, TypeExprKind, TypeInfo, TypeKind, TypeRef, VariantInfo, Virt,
+    Access, Error, FieldInfo, IntKind, MemberInfo, MethodInfo, NumTy, PropInfo, Sig, Span, Ty,
+    TypeBody, TypeExpr, TypeExprKind, TypeInfo, TypeKind, TypeRef, VariantInfo, Virt,
 };
 
 use crate::builtins;
@@ -21,6 +21,10 @@ struct TypeCtx {
     /// The index in `scopes` of the method's parameters: names declared
     /// from there on are locals and hide the members.
     depth: usize,
+    /// A static method or field value: there is no `this`.
+    is_static: bool,
+    /// `init`: read-only fields may be assigned.
+    in_init: bool,
 }
 
 /// Walks a program, infers and records types, inserts implicit conversions
@@ -289,10 +293,25 @@ impl Checker {
             }
         }
         self.errors.sort_by_key(|e| e.span);
+        // `private` declarations stay in their module.
+        let private: Vec<&str> = program
+            .stmts
+            .iter()
+            .filter_map(|s| match &s.kind {
+                StmtKind::FnDecl(d) if d.access == Access::Private => Some(d.name.as_str()),
+                StmtKind::VarDecl(d) if d.access == Access::Private => Some(d.name.as_str()),
+                StmtKind::Type(d) if d.access == Access::Private => Some(d.name.as_str()),
+                _ => None,
+            })
+            .collect();
         let exports = self
             .scopes
             .pop()
-            .map(|s| s.into_iter().collect())
+            .map(|s| {
+                s.into_iter()
+                    .filter(|(name, _)| !private.contains(&name.as_str()))
+                    .collect()
+            })
             .unwrap_or_default();
         (self.errors, exports)
     }
@@ -576,8 +595,11 @@ impl Checker {
         let mut next_value: i128 = 0;
         for m in &mut decl.members {
             let span = m.span;
+            let access = m.mods.access();
+            let is_static = m.mods.is_static;
             let name = match &m.kind {
                 MemberKind::Field(f) => f.name.clone(),
+                MemberKind::Prop(p) => p.name.clone(),
                 MemberKind::Method(d) => d.name.clone(),
                 MemberKind::Init(_) => "init".to_string(),
                 MemberKind::Case { name, .. } => name.clone(),
@@ -610,13 +632,39 @@ impl Checker {
                         }
                         (None, None) => Ty::Any,
                     };
-                    body.fields.push(FieldInfo {
+                    let field = FieldInfo {
                         name,
                         ty: f.resolved.clone(),
-                        access: Access::Public,
-                        set: Some(Access::Public),
-                        is_static: false,
+                        access,
+                        set: (!f.readonly).then(|| f.set_access.unwrap_or(access)),
+                        is_static,
                         has_value: f.value.is_some(),
+                        span,
+                    };
+                    if is_static {
+                        body.statics.push(field);
+                    } else {
+                        body.fields.push(field);
+                    }
+                }
+                MemberKind::Prop(p) => {
+                    p.resolved = self.resolve(&p.ty);
+                    for accessor in p.get.iter_mut().chain(p.set.iter_mut()) {
+                        if let Some(d) = Rc::get_mut(&mut accessor.decl) {
+                            self.resolve_signature(d);
+                            if d.ret.is_none() {
+                                d.ret_resolved = Ty::Null;
+                            }
+                        }
+                    }
+                    body.props.push(PropInfo {
+                        name,
+                        ty: p.resolved.clone(),
+                        access,
+                        get: p.get.as_ref().map(|a| a.access.unwrap_or(access)),
+                        set: p.set.as_ref().map(|a| a.access.unwrap_or(access)),
+                        is_static,
+                        virt: Virt::None,
                         span,
                     });
                 }
@@ -627,13 +675,16 @@ impl Checker {
                     self.resolve_signature(d);
                     body.methods.push(MethodInfo {
                         sig: Rc::new(sig_of(d)),
-                        access: Access::Public,
-                        is_static: false,
+                        access,
+                        is_static,
                         virt: Virt::None,
                         span,
                     });
                 }
                 MemberKind::Init(d) => {
+                    if is_static {
+                        self.type_error("'init' cannot be static", span);
+                    }
                     let Some(d) = Rc::get_mut(d) else {
                         continue;
                     };
@@ -645,6 +696,7 @@ impl Checker {
                         .map(|p| (p.name.clone(), p.resolved.clone()))
                         .collect();
                     body.explicit_ctor = true;
+                    body.ctor_access = access;
                 }
                 MemberKind::Case { value, .. } => {
                     if let Some(e) = value {
@@ -678,7 +730,7 @@ impl Checker {
         info.set_body(body);
     }
 
-    /// Checks field values and method bodies.
+    /// Checks field values, method bodies and property accessors.
     fn check_type(&mut self, decl: &mut TypeDecl) {
         let Some(info) = decl.info.clone() else {
             return;
@@ -686,21 +738,40 @@ impl Checker {
         let ty = info.reference();
         for m in &mut decl.members {
             let span = m.span;
+            let is_static = m.mods.is_static;
+            let in_init = matches!(m.kind, MemberKind::Init(_));
+            let ctx = |c: &Self, is_static: bool, in_init: bool| TypeCtx {
+                ty: ty.clone(),
+                depth: c.scopes.len(),
+                is_static,
+                in_init,
+            };
             match &mut m.kind {
                 MemberKind::Field(f) => {
                     if let (Some(_), Some(value)) = (&f.ty, &mut f.value) {
+                        let c = ctx(self, true, false);
+                        self.types.push(c);
                         self.expr(value);
                         let name = f.name.clone();
                         self.coerce(value, &f.resolved, &|| format!("field '{name}'"));
+                        self.types.pop();
                     }
                 }
                 MemberKind::Case { .. } => {}
+                MemberKind::Prop(p) => {
+                    for accessor in p.get.iter_mut().chain(p.set.iter_mut()) {
+                        if let Some(d) = Rc::get_mut(&mut accessor.decl) {
+                            let c = ctx(self, is_static, false);
+                            self.types.push(c);
+                            self.check_fn(d);
+                            self.types.pop();
+                        }
+                    }
+                }
                 MemberKind::Method(d) | MemberKind::Init(d) => match Rc::get_mut(d) {
                     Some(d) => {
-                        self.types.push(TypeCtx {
-                            ty: ty.clone(),
-                            depth: self.scopes.len(),
-                        });
+                        let c = ctx(self, is_static, in_init);
+                        self.types.push(c);
                         self.check_fn(d);
                         self.types.pop();
                     }
@@ -712,7 +783,67 @@ impl Checker {
         }
     }
 
-    /// Whether `name`, used inside a method, means a member of `this`:
+    /// Whether code here may use a member that `owner` declares with
+    /// `access`.
+    fn can_access(&self, owner: &TypeRef, access: Access) -> bool {
+        match access {
+            Access::Public => true,
+            Access::Private => self.types.iter().any(|c| c.ty == *owner),
+            Access::Protected => self.types.iter().any(|c| c.ty.is_subtype_of(owner)),
+        }
+    }
+
+    fn check_access(&mut self, owner: &TypeRef, access: Access, what: &str, span: Span) {
+        if !self.can_access(owner, access) {
+            self.type_error(
+                format!("{what} is {} in {}", access.keyword(), owner.name),
+                span,
+            );
+        }
+    }
+
+    /// Finds `name` on a value (`Ty::Named`) or a type (`Ty::Type`) and
+    /// checks that it is used the right way (static or not) and may be
+    /// used here.
+    fn find_member(
+        &mut self,
+        obj: &Ty,
+        name: &str,
+        span: Span,
+    ) -> Option<(TypeRef, TypeRef, MemberInfo)> {
+        let (t, of_type) = match obj {
+            Ty::Type(t) => (t, true),
+            Ty::Named(t) => (t, false),
+            other => {
+                self.type_error(format!("{other} has no member '{name}'"), span);
+                return None;
+            }
+        };
+        let Some((owner, m)) = t.member(name) else {
+            self.type_error(format!("{} has no member '{name}'", t.name), span);
+            return None;
+        };
+        if m.is_static() != of_type {
+            let msg = match &m {
+                _ if of_type => {
+                    format!("'{name}' belongs to a value of {}, not to the type", t.name)
+                }
+                MemberInfo::Variant(_) => {
+                    format!("a case is used through the type: {}.{name}", t.name)
+                }
+                _ => format!(
+                    "'{name}' is static; use it through the type: {}.{name}",
+                    t.name
+                ),
+            };
+            self.type_error(msg, span);
+            return None;
+        }
+        self.check_access(&owner, m.access(), &format!("'{name}'"), span);
+        Some((t.clone(), owner, m))
+    }
+
+    /// Whether `name`, used inside a method    /// Whether `name`, used inside a method, means a member of `this`:
     /// it is not a local variable and the type has such a member.
     fn is_member_of_this(&self, name: &str) -> bool {
         let Some(ctx) = self.types.last() else {
@@ -726,14 +857,24 @@ impl Checker {
         !local && ctx.ty.member(name).is_some()
     }
 
-    /// Turns `x` into `this.x` when `x` is a member of `this`.
+    /// Turns `x` into `this.x` when `x` is a member of `this` (or into
+    /// `Type.x` for a static member).
     fn qualify(&self, e: &mut Expr) {
         if let ExprKind::Ident(name) = &e.kind {
             if self.is_member_of_this(name) {
                 let name = name.clone();
-                let this = Expr::new(ExprKind::This, e.span);
+                let is_static = self
+                    .types
+                    .last()
+                    .and_then(|c| c.ty.member(&name))
+                    .is_some_and(|(_, m)| m.is_static());
+                let object = if is_static {
+                    ExprKind::SelfType
+                } else {
+                    ExprKind::This
+                };
                 e.kind = ExprKind::Member {
-                    object: Box::new(this),
+                    object: Box::new(Expr::new(object, e.span)),
                     name,
                 };
             }
@@ -742,51 +883,49 @@ impl Checker {
 
     /// The type of `object.name`; `call` allows methods.
     fn member_type(&mut self, obj: &Ty, name: &str, span: Span, call: bool) -> Ty {
-        match obj {
-            Ty::Any => Ty::Any,
-            Ty::Type(t) => match t.member(name) {
-                Some((_, MemberInfo::Variant(_))) => Ty::Named(t.clone()),
-                Some(_) => {
-                    self.type_error(
-                        format!("'{name}' belongs to a value of {}, not to the type", t.name),
-                        span,
-                    );
-                    Ty::Any
+        if obj.is_any() {
+            return Ty::Any;
+        }
+        let Some((t, owner, m)) = self.find_member(obj, name, span) else {
+            return Ty::Any;
+        };
+        match m {
+            MemberInfo::Variant(_) => Ty::Named(t),
+            MemberInfo::Field(f) => f.ty,
+            MemberInfo::Prop(p) => {
+                match p.get {
+                    Some(access) => {
+                        self.check_access(&owner, access, &format!("the get of '{name}'"), span)
+                    }
+                    None => self.type_error(format!("property '{name}' has no get"), span),
                 }
-                None => {
-                    self.type_error(format!("{} has no member '{name}'", t.name), span);
-                    Ty::Any
-                }
-            },
-            Ty::Named(t) => match t.member(name) {
-                Some((_, MemberInfo::Field(f))) => f.ty,
-                Some((_, MemberInfo::Method(m))) if call => Ty::Fn(Some(m.sig)),
-                Some((_, MemberInfo::Variant(_))) => {
-                    self.type_error(
-                        format!("a case is used through the type: {}.{name}", t.name),
-                        span,
-                    );
-                    Ty::Any
-                }
-                Some((_, MemberInfo::Method(_))) => {
-                    self.type_error(
-                        format!("method '{name}' can only be called: {name}(...)"),
-                        span,
-                    );
-                    Ty::Any
-                }
-                Some(_) => {
-                    self.type_error(format!("'{name}' of {} is not supported yet", t.name), span);
-                    Ty::Any
-                }
-                None => {
-                    self.type_error(format!("{obj} has no member '{name}'"), span);
-                    Ty::Any
-                }
-            },
-            other => {
-                self.type_error(format!("{other} has no member '{name}'"), span);
+                p.ty
+            }
+            MemberInfo::Method(m) if call => Ty::Fn(Some(m.sig)),
+            MemberInfo::Method(_) => {
+                self.type_error(
+                    format!("method '{name}' can only be called: {name}(...)"),
+                    span,
+                );
                 Ty::Any
+            }
+        }
+    }
+
+    /// The `this` of the method being checked.
+    fn this_type(&mut self, span: Span) -> Option<Ty> {
+        match self.types.last() {
+            Some(ctx) if ctx.is_static => {
+                self.type_error(
+                    "'this' (or an instance member) cannot be used in a static member",
+                    span,
+                );
+                None
+            }
+            Some(ctx) => Some(Ty::Named(ctx.ty.clone())),
+            None => {
+                self.type_error("'this' can only be used in methods and init", span);
+                None
             }
         }
     }
@@ -1022,48 +1161,72 @@ impl Checker {
             ExprKind::Member { object, name } => {
                 let name = name.clone();
                 let obj = self.expr(object);
-                match &obj {
-                    Ty::Named(t) => match t.member(&name) {
-                        Some((_, MemberInfo::Field(f))) => {
-                            let variable = object.is_place();
-                            if t.kind == TypeKind::Struct && !variable {
+                if obj.is_any() {
+                    return Some(Ty::Any);
+                }
+                let temporary = !object.is_place()
+                    && !matches!(object.kind, ExprKind::SelfType)
+                    && matches!(&obj, Ty::Named(t) if t.kind == TypeKind::Struct);
+                let in_init = self
+                    .types
+                    .last()
+                    .filter(|c| c.in_init)
+                    .map(|c| c.ty.clone());
+                match self.find_member(&obj, &name, span) {
+                    None => None,
+                    Some((t, owner, m)) => {
+                        let (ty, set) = match m {
+                            MemberInfo::Field(f) => {
+                                if f.set.is_none() && in_init.as_ref() != Some(&owner) {
+                                    self.type_error(
+                                        format!("'{name}' is read-only; it is set only by its value and by init"),
+                                        span,
+                                    );
+                                }
+                                (f.ty, f.set)
+                            }
+                            MemberInfo::Prop(p) => {
+                                if p.set.is_none() {
+                                    self.type_error(format!("property '{name}' has no set"), span);
+                                }
+                                (p.ty, p.set)
+                            }
+                            _ => {
                                 self.type_error(
-                                    format!("cannot change a field of a temporary {} value; store it in a variable first", t.name),
+                                    format!(
+                                        "cannot assign to '{name}': it is not a field or property"
+                                    ),
                                     span,
                                 );
+                                return None;
                             }
-                            Some(f.ty)
+                        };
+                        if let Some(access) = set {
+                            self.check_access(&owner, access, &format!("setting '{name}'"), span);
                         }
-                        Some(_) => {
+                        if temporary {
                             self.type_error(
-                                format!("cannot assign to '{name}': it is not a field"),
+                                format!("cannot change a field of a temporary {} value; store it in a variable first", t.name),
                                 span,
                             );
-                            None
                         }
-                        None => {
-                            self.type_error(format!("{obj} has no member '{name}'"), span);
-                            None
-                        }
-                    },
-                    Ty::Any => Some(Ty::Any),
-                    other => {
-                        self.type_error(format!("{other} has no member '{name}'"), span);
-                        None
+                        Some(ty)
                     }
                 }
             }
             ExprKind::This => match self.types.last() {
-                Some(ctx) if ctx.ty.kind == TypeKind::Struct => Some(Ty::Named(ctx.ty.clone())),
-                Some(ctx) => {
+                Some(ctx) if ctx.ty.kind == TypeKind::Struct && !ctx.is_static => {
+                    Some(Ty::Named(ctx.ty.clone()))
+                }
+                Some(ctx) if !ctx.is_static => {
                     self.type_error(
                         format!("'this' cannot be replaced in a {}", ctx.ty.kind.keyword()),
                         span,
                     );
                     None
                 }
-                None => {
-                    self.type_error("'this' can only be used in methods and init", span);
+                _ => {
+                    self.this_type(span);
                     None
                 }
             },
@@ -1163,12 +1326,10 @@ impl Checker {
                 let obj = self.expr(object);
                 self.member_type(&obj, &name, span, false)
             }
-            ExprKind::This => match self.types.last() {
-                Some(ctx) => Ty::Named(ctx.ty.clone()),
-                None => {
-                    self.type_error("'this' can only be used in methods and init", span);
-                    Ty::Any
-                }
+            ExprKind::This => self.this_type(span).unwrap_or(Ty::Any),
+            ExprKind::SelfType => match self.types.last() {
+                Some(ctx) => Ty::Type(ctx.ty.clone()),
+                None => Ty::Any,
             },
             ExprKind::Index { object, index } => {
                 let obj = self.expr(object);
@@ -1448,6 +1609,8 @@ impl Checker {
                 Ty::Any
             }
             Ty::Type(t) => {
+                let access = t.with_body(|b| b.ctor_access).unwrap_or_default();
+                self.check_access(&t, access, &format!("the init of {}", t.name), callee.span);
                 let params = t.with_body(|b| b.ctor.clone()).unwrap_or_default();
                 Ty::Fn(Some(Rc::new(Sig {
                     name: t.name.to_string(),

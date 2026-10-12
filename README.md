@@ -251,6 +251,44 @@ reference type, as in C#: copies share one object, changes through any of
 them are seen by all, a variable of a class type may be `null`, and `==`
 asks whether two values are the same object.
 
+## Properties, static members and access
+
+```belsk2
+class Player {
+    static count: int = 0;              // one for the whole type: Player.count
+
+    Name: string { get; private set; }  // an auto-property: stored like a field
+    Id: int { get; }                    // read-only: set by its value or in init
+    private hp: int = 100;
+
+    Hp: int {                           // a property with code
+        get { return hp; }
+        set { if value < 0 { hp = 0; } else { hp = value; } }
+    }
+
+    init(name: string) { Name = name; count += 1; Id = count; }
+
+    static fn create(name: string): Player { return Player(name); }
+}
+
+var p = Player.create("Ann");
+p.Hp -= 30;                             // runs get, then set
+prinb(Player.count);
+```
+
+Members are `public` unless marked `private` (only the type itself may use
+them) or `protected` (the type and, once inheritance exists, the types
+derived from it); a property's `set` (or `get` for a whole property) can
+have its own modifier, and `private init` keeps others from creating
+values. `static` fields, properties and methods belong to the type and are
+used through it (`Player.count`); inside the type they can be used by
+name, but there is no `this` in them. Static fields get their values when
+the declaration of the type is reached.
+
+At the top level, `private fn`, `private var` and `private struct` (or
+`enum`, `class`) are visible only in their own module; everything else is
+`public`, as before. A WASM module exports only public functions.
+
 ## Using belsk2 from Rust
 
 ```rust

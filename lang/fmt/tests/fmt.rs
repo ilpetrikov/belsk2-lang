@@ -97,3 +97,11 @@ fn collect(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
         }
     }
 }
+
+#[test]
+fn types_and_properties() {
+    assert_eq!(
+        fmt("class P{\nprivate static count:int=0;\nName:string{get;private set;}\nId : int { get; } = 5;\nArea:double{get{return 1;}}\n}\n"),
+        "class P {\n    private static count: int = 0;\n    Name: string { get; private set; }\n    Id: int { get; } = 5;\n    Area: double {\n        get {\n            return 1;\n        }\n    }\n}\n"
+    );
+}

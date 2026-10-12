@@ -516,3 +516,28 @@ fn structs_are_shared_between_modules() {
         Ok("6\nPoint { x: 3, y: 3 }\n")
     );
 }
+
+#[test]
+fn private_declarations_stay_in_their_module() {
+    let dir = temp_dir("private_decls");
+    write(
+        &dir,
+        &[
+            ("belsk2.toml", MANIFEST),
+            (
+                "src/util.belsk2",
+                "private fn helper(): int { return 41; }\nprivate var secret = 1;\nfn answer(): int { return helper() + secret; }\n",
+            ),
+            ("src/main.belsk2", "using util;\n\nfn main() {\n    prinb(answer());\n}\n"),
+        ],
+    );
+    assert_eq!(run_project(&dir).as_deref(), Ok("42\n"));
+    write(
+        &dir,
+        &[(
+            "src/main.belsk2",
+            "using util;\n\nfn main() {\n    prinb(helper());\n}\n",
+        )],
+    );
+    assert_err(run_project(&dir), "undefined variable 'helper'");
+}

@@ -1,7 +1,7 @@
 use std::rc::Rc;
 
 use crate::span::Span;
-use crate::types::{FloatKind, IntKind, Ty, TypeExpr, TypeInfo, TypeKind};
+use crate::types::{Access, FloatKind, IntKind, Ty, TypeExpr, TypeInfo, TypeKind};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Program {
@@ -77,6 +77,8 @@ pub enum StmtKind {
 pub struct TypeDecl {
     pub name: String,
     pub kind: TypeKind,
+    /// `private struct ...` is visible only in its module.
+    pub access: Access,
     pub members: Vec<Member>,
     pub span: Span,
     /// The type, created by the checker. The declaration owns it.
@@ -86,7 +88,22 @@ pub struct TypeDecl {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Member {
     pub kind: MemberKind,
+    pub mods: Modifiers,
     pub span: Span,
+}
+
+/// `public`, `private`, `protected`, `static`.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Modifiers {
+    /// `None` when not written: public.
+    pub access: Option<Access>,
+    pub is_static: bool,
+}
+
+impl Modifiers {
+    pub fn access(&self) -> Access {
+        self.access.unwrap_or_default()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -97,6 +114,8 @@ pub enum MemberKind {
     Method(Rc<FnDecl>),
     /// `init(...) { ... }`, the constructor.
     Init(Rc<FnDecl>),
+    /// A property with `get`/`set` bodies.
+    Prop(Box<PropDecl>),
     /// A case of an enum: `High` or `High = 10`.
     Case { name: String, value: Option<Expr> },
 }
@@ -108,6 +127,31 @@ pub struct FieldDecl {
     pub value: Option<Expr>,
     /// Filled in by the checker.
     pub resolved: Ty,
+    /// Declared as an auto-property: `Name: string { get; set; }`.
+    pub property: bool,
+    /// `{ get; }`: assigned only by its value and `init`.
+    pub readonly: bool,
+    /// `{ get; private set; }`
+    pub set_access: Option<Access>,
+}
+
+/// `Area: double { get { ... } set { ... } }`
+#[derive(Debug, Clone, PartialEq)]
+pub struct PropDecl {
+    pub name: String,
+    pub ty: TypeExpr,
+    /// Filled in by the checker.
+    pub resolved: Ty,
+    pub get: Option<Accessor>,
+    pub set: Option<Accessor>,
+}
+
+/// `get { ... }` (a function returning the property's type) or
+/// `set { ... }` (a function taking `value`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Accessor {
+    pub access: Option<Access>,
+    pub decl: Rc<FnDecl>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -117,6 +161,8 @@ pub struct VarDecl {
     /// The variable's type, filled in by the checker (inferred for `var`).
     pub resolved: Ty,
     pub value: Expr,
+    /// `private var x` (at the top level) is visible only in its module.
+    pub access: Access,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -139,6 +185,8 @@ pub struct FnDecl {
     pub ret_resolved: Ty,
     pub body: Block,
     pub span: Span,
+    /// `private fn f` (at the top level) is visible only in its module.
+    pub access: Access,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -200,6 +248,10 @@ pub enum ExprKind {
     },
     /// `this`, the value a method runs on.
     This,
+    /// The type whose method is running, inserted by the checker for a
+    /// static member used without its type name (`count` for
+    /// `Counter.count`).
+    SelfType,
 }
 
 impl Expr {
@@ -211,7 +263,8 @@ impl Expr {
             | ExprKind::Bool(_)
             | ExprKind::Null
             | ExprKind::Ident(_)
-            | ExprKind::This => 0,
+            | ExprKind::This
+            | ExprKind::SelfType => 0,
             ExprKind::Array(items) => max_depth(items.iter()),
             ExprKind::Map(entries) => max_depth(entries.iter().flat_map(|(k, v)| [k, v])),
             ExprKind::Unary { expr, .. } => expr.depth,

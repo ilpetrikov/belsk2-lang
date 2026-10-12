@@ -1,0 +1,56 @@
+class Player {
+    static count: int = 0;
+    static maxHp: int = 100;
+
+    Name: string { get; private set; }
+    Id: int { get; }
+    private hp: int = maxHp;
+
+    Hp: int {
+        get { return hp; }
+        set {
+            if value < 0 { hp = 0; } else { hp = value; }
+        }
+    }
+    Alive: bool { get { return hp > 0; } }
+
+    init(name: string) {
+        Name = name;
+        count += 1;
+        Id = count;
+    }
+
+    fn rename(n: string) { Name = n; }
+    static fn create(name: string): Player { return Player(name); }
+}
+
+struct Box {
+    w: double;
+    h: double;
+    Area: double {
+        get { return w * h; }
+        set { w = value / h; }
+    }
+}
+
+private fn helper(): int { return 1; }
+
+fn main() {
+    var a = Player.create("Ann");
+    var b = Player("Bob");
+    prinb(Player.count);
+    prinb(b.Id);
+    a.Hp = -5;
+    prinb(a.Hp);
+    prinb(a.Alive);
+    b.Hp -= 30;
+    prinb(b.Hp);
+    a.rename("Anna");
+    prinb(a.Name);
+    Player.count = 10;
+    prinb(Player.count);
+    var box = Box(2, 3);
+    box.Area = 12;
+    prinb(box);
+    prinb(helper());
+}

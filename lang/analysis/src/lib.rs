@@ -693,7 +693,7 @@ impl Analysis {
         };
         t.members()
             .into_iter()
-            .filter(|(_, _, m)| matches!(m, belsk2::syntax::MemberInfo::Variant(_)) == of_type)
+            .filter(|(_, _, m)| m.is_static() == of_type)
             .map(|(owner, name, _)| {
                 let symbol = self
                     .members

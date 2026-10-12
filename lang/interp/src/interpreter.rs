@@ -40,6 +40,13 @@ impl Input {
     }
 }
 
+/// The type a method belongs to and, unless it is static, the value it
+/// runs on.
+struct MethodCall {
+    class: Rc<Class>,
+    this: Option<Value>,
+}
+
 /// How a statement finished.
 enum Flow {
     Normal,
@@ -397,7 +404,33 @@ impl Interpreter {
                 }
             }
             // Defined by `hoist` when the block was entered.
-            StmtKind::FnDecl(_) | StmtKind::Type(_) => {}
+            StmtKind::FnDecl(_) => {}
+            // Static fields get their values when the declaration is
+            // reached (the type itself was defined by `hoist`).
+            StmtKind::Type(decl) => {
+                let class = decl
+                    .info
+                    .as_ref()
+                    .and_then(|i| self.classes.get(&i.id()))
+                    .cloned();
+                if let Some(class) = class {
+                    let fenv = self.member_env(&class);
+                    for m in &decl.members {
+                        if let (MemberKind::Field(f), true) = (&m.kind, m.mods.is_static) {
+                            if let Some(e) = &f.value {
+                                let v = self.eval(e, &fenv, out)?;
+                                self.set_member(
+                                    &Value::Type(Rc::clone(&class)),
+                                    &f.name,
+                                    v,
+                                    m.span,
+                                    out,
+                                )?;
+                            }
+                        }
+                    }
+                }
+            }
             StmtKind::Return(value) => {
                 let v = match value {
                     Some(e) => self.eval(e, env, out)?,
@@ -485,34 +518,15 @@ impl Interpreter {
             }
             ExprKind::Member { object, name } => {
                 let obj = self.eval(object, env, out)?;
-                if let Value::Object(o) = &obj {
-                    let (i, ty) = field_of(&o.class, name).map_err(|e| e.or_at(target.span))?;
-                    let value = coerce(&ty, value, &format!("field '{name}'"))?;
-                    let mut fields = o
-                        .fields
-                        .try_borrow_mut()
-                        .map_err(|_| Error::runtime("object is being modified"))?;
-                    if let Some(slot) = fields.get_mut(i) {
-                        *slot = value;
-                    }
-                    return Ok(());
+                let changed = self
+                    .set_member(&obj, name, value, target.span, out)
+                    .map_err(|e| e.or_at(target.span))?;
+                // A struct is a value: the changed copy is stored where the
+                // old one was.
+                match changed {
+                    Some(new) => self.assign(object, new, env, out),
+                    None => Ok(()),
                 }
-                let Value::Struct(s) = &obj else {
-                    return Err(Error::runtime(format!(
-                        "{} has no field '{name}'",
-                        obj.type_name()
-                    ))
-                    .at(target.span));
-                };
-                let (i, ty) = field_of(&s.class, name).map_err(|e| e.or_at(target.span))?;
-                let value = coerce(&ty, value, &format!("field '{name}'"))?;
-                // A struct is a value: build the changed copy and store it
-                // where the old one was.
-                let mut new = (**s).clone();
-                if let Some(slot) = new.fields.get_mut(i) {
-                    *slot = value;
-                }
-                self.assign(object, Value::Struct(Rc::new(new)), env, out)
             }
             ExprKind::This => env::assign(env, "this", value).map_err(|e| e.or_at(target.span)),
             _ => Err(Error::runtime("invalid assignment target").at(target.span)),
@@ -641,40 +655,10 @@ impl Interpreter {
             }
             ExprKind::Member { object, name } => {
                 let obj = self.eval(object, env, out)?;
-                match &obj {
-                    Value::Struct(s) => {
-                        if let Some(i) = s.class.field_index(name) {
-                            return s
-                                .fields
-                                .get(i)
-                                .cloned()
-                                .ok_or_else(|| Error::runtime("missing field"));
-                        }
-                    }
-                    Value::Object(o) => {
-                        if let Some(i) = o.class.field_index(name) {
-                            let fields = o
-                                .fields
-                                .try_borrow()
-                                .map_err(|_| Error::runtime("object is being modified"))?;
-                            return fields
-                                .get(i)
-                                .cloned()
-                                .ok_or_else(|| Error::runtime("missing field"));
-                        }
-                    }
-                    Value::Type(c) => {
-                        if let Some(i) = c.cases.iter().position(|(n, _)| n == name) {
-                            return Ok(Value::Enum(Rc::clone(c), i));
-                        }
-                    }
-                    _ => {}
-                }
-                Err(Error::runtime(format!(
-                    "{} has no member '{name}'",
-                    obj.type_name()
-                )))
+                self.get_member(&obj, name, expr.span, out)
             }
+            ExprKind::SelfType => env::lookup(env, "#type")
+                .ok_or_else(|| Error::runtime("no type for a static member")),
             ExprKind::This => {
                 env::lookup(env, "this").ok_or_else(|| Error::runtime("'this' outside of a method"))
             }
@@ -704,18 +688,22 @@ impl Interpreter {
         }
         if let ExprKind::Member { object, name } = &callee.kind {
             let obj = self.eval(object, env, out)?;
-            let class = match &obj {
-                Value::Struct(s) => Some(Rc::clone(&s.class)),
-                Value::Object(o) => Some(Rc::clone(&o.class)),
-                Value::Enum(c, _) => Some(Rc::clone(c)),
-                _ => None,
+            let (class, this) = match &obj {
+                Value::Struct(s) => (Some(Rc::clone(&s.class)), Some(obj.clone())),
+                Value::Object(o) => (Some(Rc::clone(&o.class)), Some(obj.clone())),
+                Value::Enum(c, _) => (Some(Rc::clone(c)), Some(obj.clone())),
+                Value::Type(c) => (Some(Rc::clone(c)), None),
+                _ => (None, None),
             };
             if let Some(class) = class {
                 if let Some(decl) = class.method(name).cloned() {
                     let values = self.eval_args(args, env, out)?;
-                    let this = Some((obj.clone(), Ty::Named(class.ty.clone())));
+                    let call = MethodCall {
+                        class: Rc::clone(&class),
+                        this,
+                    };
                     let (result, this) =
-                        self.call_decl(&decl, &class.env, values, inst, span, this, out)?;
+                        self.call_decl(&decl, &class.env, values, inst, span, Some(call), out)?;
                     // The method may have changed `this`: store the changed
                     // struct back where it came from.
                     if let Some(this) = this.filter(|t| *t != obj) {
@@ -783,8 +771,9 @@ impl Interpreter {
             .map(|(v, _)| v)
     }
 
-    /// Calls a function declared in `env`; for a method, `this` is the
-    /// value it runs on, and its value at the end is returned too.
+    /// Calls a function declared in `env`. For a method, `method` gives
+    /// its type and `this`, and the value of `this` at the end is returned
+    /// too.
     #[allow(clippy::too_many_arguments)]
     fn call_decl(
         &mut self,
@@ -793,7 +782,7 @@ impl Interpreter {
         args: Vec<Value>,
         inst: &[Ty],
         span: Span,
-        this: Option<(Value, Ty)>,
+        method: Option<MethodCall>,
         out: &mut dyn Write,
     ) -> Result<(Value, Option<Value>)> {
         let frame = decl
@@ -808,7 +797,7 @@ impl Interpreter {
             })
             .collect();
         self.type_env.push(frame);
-        let result = self.call_in_frame(decl, env, args, span, this, out);
+        let result = self.call_in_frame(decl, env, args, span, method, out);
         self.type_env.pop();
         result
     }
@@ -819,7 +808,7 @@ impl Interpreter {
         env: &EnvRef,
         args: Vec<Value>,
         span: Span,
-        this: Option<(Value, Ty)>,
+        method: Option<MethodCall>,
         out: &mut dyn Write,
     ) -> Result<(Value, Option<Value>)> {
         if args.len() != decl.params.len() {
@@ -841,9 +830,17 @@ impl Interpreter {
         }
 
         let scope = Env::child(env);
-        let has_this = this.is_some();
-        if let Some((value, ty)) = this {
-            scope.borrow_mut().define("this", value, ty);
+        let mut has_this = false;
+        if let Some(m) = method {
+            let ty = Ty::Named(m.class.ty.clone());
+            if let Some(this) = m.this {
+                scope.borrow_mut().define("this", this, ty);
+                has_this = true;
+            }
+            let tty = Ty::Type(m.class.ty.clone());
+            scope
+                .borrow_mut()
+                .define("#type", Value::Type(m.class), tty);
         }
         for (param, arg) in decl.params.iter().zip(args) {
             let what = format!("argument '{}' of '{}'", param.name, decl.name);
@@ -890,8 +887,22 @@ impl Interpreter {
                         continue;
                     };
                     let ty = info.reference();
+                    let static_fields: Vec<(String, Ty)> = ty
+                        .with_body(|b| {
+                            b.statics
+                                .iter()
+                                .map(|f| (f.name.clone(), f.ty.clone()))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    let statics = static_fields
+                        .iter()
+                        .map(|(_, t)| self.default_value(t, 0))
+                        .collect();
                     let class = Rc::new(Class {
                         decl: Rc::clone(decl),
+                        static_fields,
+                        statics: std::cell::RefCell::new(statics),
                         fields: ty
                             .all_fields()
                             .into_iter()
@@ -914,6 +925,153 @@ impl Interpreter {
         }
     }
 
+    /// Where the values of a type's fields are evaluated: its static
+    /// members can be used by name.
+    fn member_env(&self, class: &Rc<Class>) -> EnvRef {
+        let fenv = Env::child(&class.env);
+        fenv.borrow_mut().define(
+            "#type",
+            Value::Type(Rc::clone(class)),
+            Ty::Type(class.ty.clone()),
+        );
+        fenv
+    }
+
+    /// `obj.name`: a field, a property (its `get` runs), a static member of
+    /// a type or a case of an enum.
+    fn get_member(
+        &mut self,
+        obj: &Value,
+        name: &str,
+        span: Span,
+        out: &mut dyn Write,
+    ) -> Result<Value> {
+        let missing = || Error::runtime(format!("{} has no member '{name}'", obj.type_name()));
+        let (class, this) = match obj {
+            Value::Struct(s) => {
+                if let Some(i) = s.class.field_index(name) {
+                    return s.fields.get(i).cloned().ok_or_else(missing);
+                }
+                (Rc::clone(&s.class), Some(obj.clone()))
+            }
+            Value::Object(o) => {
+                if let Some(i) = o.class.field_index(name) {
+                    let fields = o
+                        .fields
+                        .try_borrow()
+                        .map_err(|_| Error::runtime("object is being modified"))?;
+                    return fields.get(i).cloned().ok_or_else(missing);
+                }
+                (Rc::clone(&o.class), Some(obj.clone()))
+            }
+            Value::Enum(c, _) => (Rc::clone(c), Some(obj.clone())),
+            Value::Type(c) => {
+                if let Some(i) = c.cases.iter().position(|(n, _)| n == name) {
+                    return Ok(Value::Enum(Rc::clone(c), i));
+                }
+                if let Some(i) = c.static_index(name) {
+                    let statics = c
+                        .statics
+                        .try_borrow()
+                        .map_err(|_| Error::runtime("static field is being modified"))?;
+                    return statics.get(i).cloned().ok_or_else(missing);
+                }
+                (Rc::clone(c), None)
+            }
+            _ => return Err(missing()),
+        };
+        let Some(getter) = class
+            .prop(name)
+            .and_then(|p| p.get.as_ref())
+            .map(|g| Rc::clone(&g.decl))
+        else {
+            return Err(missing());
+        };
+        let call = MethodCall {
+            class: Rc::clone(&class),
+            this,
+        };
+        let (value, _) =
+            self.call_decl(&getter, &class.env, Vec::new(), &[], span, Some(call), out)?;
+        Ok(value)
+    }
+
+    /// `obj.name = value`. Returns the changed copy when `obj` is a struct
+    /// (to be stored where `obj` came from).
+    fn set_member(
+        &mut self,
+        obj: &Value,
+        name: &str,
+        value: Value,
+        span: Span,
+        out: &mut dyn Write,
+    ) -> Result<Option<Value>> {
+        let missing = || Error::runtime(format!("{} has no field '{name}'", obj.type_name()));
+        let (class, this) = match obj {
+            Value::Object(o) => {
+                if let Ok((i, ty)) = field_of(&o.class, name) {
+                    let value = coerce(&ty, value, &format!("field '{name}'"))?;
+                    let mut fields = o
+                        .fields
+                        .try_borrow_mut()
+                        .map_err(|_| Error::runtime("object is being modified"))?;
+                    if let Some(slot) = fields.get_mut(i) {
+                        *slot = value;
+                    }
+                    return Ok(None);
+                }
+                (Rc::clone(&o.class), Some(obj.clone()))
+            }
+            Value::Struct(s) => {
+                if let Ok((i, ty)) = field_of(&s.class, name) {
+                    let value = coerce(&ty, value, &format!("field '{name}'"))?;
+                    let mut new = (**s).clone();
+                    if let Some(slot) = new.fields.get_mut(i) {
+                        *slot = value;
+                    }
+                    return Ok(Some(Value::Struct(Rc::new(new))));
+                }
+                (Rc::clone(&s.class), Some(obj.clone()))
+            }
+            Value::Type(c) => {
+                if let Some(i) = c.static_index(name) {
+                    let ty = c
+                        .static_fields
+                        .get(i)
+                        .map(|(_, t)| t.clone())
+                        .unwrap_or(Ty::Any);
+                    let value = coerce(&ty, value, &format!("field '{name}'"))?;
+                    let mut statics = c
+                        .statics
+                        .try_borrow_mut()
+                        .map_err(|_| Error::runtime("static field is being modified"))?;
+                    if let Some(slot) = statics.get_mut(i) {
+                        *slot = value;
+                    }
+                    return Ok(None);
+                }
+                (Rc::clone(c), None)
+            }
+            Value::Enum(c, _) => (Rc::clone(c), Some(obj.clone())),
+            _ => return Err(missing()),
+        };
+        let Some(setter) = class
+            .prop(name)
+            .and_then(|p| p.set.as_ref())
+            .map(|s| Rc::clone(&s.decl))
+        else {
+            return Err(missing());
+        };
+        let is_struct = matches!(obj, Value::Struct(_));
+        let call = MethodCall {
+            class: Rc::clone(&class),
+            this,
+        };
+        let (_, this) =
+            self.call_decl(&setter, &class.env, vec![value], &[], span, Some(call), out)?;
+        Ok(this.filter(|_| is_struct))
+    }
+
     /// `Point(1, 2)`: fields get their declared values (or defaults), then
     /// `init` runs, or, without one, the arguments go to the fields that
     /// have no value, in order.
@@ -931,12 +1089,13 @@ impl Interpreter {
         }
         let mut fields = Vec::with_capacity(class.fields.len());
         let mut takes_arg = Vec::new();
+        let fenv = self.member_env(class);
         for m in &class.decl.members {
-            if let MemberKind::Field(f) = &m.kind {
+            if let (MemberKind::Field(f), false) = (&m.kind, m.mods.is_static) {
                 let ty = self.rt(&f.resolved);
                 let value = match &f.value {
                     Some(e) => {
-                        let v = self.eval(e, &class.env, out)?;
+                        let v = self.eval(e, &fenv, out)?;
                         coerce(&ty, v, &format!("field '{}'", f.name))?
                     }
                     None => {
@@ -962,8 +1121,11 @@ impl Interpreter {
             }
         };
         if let Some(init) = class.init().cloned() {
-            let this = Some((make(fields), Ty::Named(class.ty.clone())));
-            let (_, this) = self.call_decl(&init, &class.env, args, &[], span, this, out)?;
+            let call = MethodCall {
+                class: Rc::clone(class),
+                this: Some(make(fields)),
+            };
+            let (_, this) = self.call_decl(&init, &class.env, args, &[], span, Some(call), out)?;
             return this.ok_or_else(|| Error::runtime("init lost 'this'").at(span));
         }
         if args.len() != takes_arg.len() {

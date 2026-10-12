@@ -91,7 +91,21 @@ pub(crate) fn index(analysis: &mut Analysis, loaded: &Loaded) {
         }
         ix.frames.push(HashMap::new());
         ix.stmts(&module.program.stmts);
-        let own = ix.frames.pop().unwrap_or_default();
+        let mut own = ix.frames.pop().unwrap_or_default();
+        // `private` declarations are not seen by other modules.
+        for stmt in &module.program.stmts {
+            let private = match &stmt.kind {
+                StmtKind::FnDecl(d) if d.access == belsk2::syntax::Access::Private => Some(&d.name),
+                StmtKind::VarDecl(d) if d.access == belsk2::syntax::Access::Private => {
+                    Some(&d.name)
+                }
+                StmtKind::Type(d) if d.access == belsk2::syntax::Access::Private => Some(&d.name),
+                _ => None,
+            };
+            if let Some(name) = private {
+                own.remove(name);
+            }
+        }
         ix.scope_stack.pop();
         if let Some(slot) = exports.get_mut(id) {
             *slot = Some(own);
@@ -344,13 +358,54 @@ impl Indexer<'_> {
         };
         self.analysis.types.push(std::rc::Rc::clone(info));
         for m in &decl.members {
+            let mut mods = String::new();
+            if let Some(access) = m
+                .mods
+                .access
+                .filter(|a| *a != belsk2::syntax::Access::Public)
+            {
+                mods.push_str(access.keyword());
+                mods.push(' ');
+            }
+            if m.mods.is_static {
+                mods.push_str("static ");
+            }
             let (name, kind, ty, signature) = match &m.kind {
-                MemberKind::Field(f) => (
-                    f.name.clone(),
-                    SymbolKind::Field,
-                    f.resolved.clone(),
-                    format!("{}.{}: {}", decl.name, f.name, f.resolved),
-                ),
+                MemberKind::Field(f) => {
+                    let accessors = match (f.property, f.readonly, f.set_access) {
+                        (false, ..) => String::new(),
+                        (true, true, _) => " { get; }".to_string(),
+                        (true, false, Some(a)) => format!(" {{ get; {} set; }}", a.keyword()),
+                        (true, false, None) => " { get; set; }".to_string(),
+                    };
+                    (
+                        f.name.clone(),
+                        SymbolKind::Field,
+                        f.resolved.clone(),
+                        format!("{mods}{}.{}: {}{accessors}", decl.name, f.name, f.resolved),
+                    )
+                }
+                MemberKind::Prop(p) => {
+                    let mut accessors = vec!["get;".to_string()];
+                    if let Some(set) = &p.set {
+                        accessors.push(match set.access {
+                            Some(a) => format!("{} set;", a.keyword()),
+                            None => "set;".to_string(),
+                        });
+                    }
+                    (
+                        p.name.clone(),
+                        SymbolKind::Field,
+                        p.resolved.clone(),
+                        format!(
+                            "{mods}{}.{}: {} {{ {} }}",
+                            decl.name,
+                            p.name,
+                            p.resolved,
+                            accessors.join(" ")
+                        ),
+                    )
+                }
                 MemberKind::Method(d) => {
                     let sig = fn_signature(d);
                     let sig = sig.strip_prefix("fn ").unwrap_or(&sig);
@@ -358,7 +413,7 @@ impl Indexer<'_> {
                         d.name.clone(),
                         SymbolKind::Method,
                         belsk2::typeck::fn_type(d),
-                        format!("fn {}.{sig}", decl.name),
+                        format!("{mods}fn {}.{sig}", decl.name),
                     )
                 }
                 MemberKind::Init(_) => continue,
@@ -498,7 +553,14 @@ impl Indexer<'_> {
                                     .get(&(i.id(), d.name.clone()))
                                     .copied()
                             });
-                            self.walk_fn(d, symbol, this.clone());
+                            let this = this.clone().filter(|_| !m.mods.is_static);
+                            self.walk_fn(d, symbol, this);
+                        }
+                        MemberKind::Prop(p) => {
+                            for a in p.get.iter().chain(p.set.iter()) {
+                                let this = this.clone().filter(|_| !m.mods.is_static);
+                                self.walk_fn(&a.decl, None, this);
+                            }
                         }
                         MemberKind::Init(d) => self.walk_fn(d, None, this.clone()),
                         MemberKind::Case { value, .. } => {
@@ -613,6 +675,7 @@ impl Indexer<'_> {
             | ExprKind::Bool(_)
             | ExprKind::Null => {}
             ExprKind::This => self.reference("this", e.span),
+            ExprKind::SelfType => {}
             ExprKind::Ident(name) => self.reference(name, e.span),
             ExprKind::Array(items) => items.iter().for_each(|i| self.expr(i)),
             ExprKind::Map(entries) => {
@@ -645,7 +708,8 @@ impl Indexer<'_> {
             }
             ExprKind::Member { object, name } => {
                 // `x` inside a method is `this.x` with no `this` written.
-                let implicit = matches!(object.kind, ExprKind::This) && object.span == e.span;
+                let implicit = matches!(object.kind, ExprKind::This | ExprKind::SelfType)
+                    && object.span == e.span;
                 if !implicit {
                     self.expr(object);
                 }
