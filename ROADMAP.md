@@ -116,9 +116,7 @@
 
 ## Deferred (do not forget)
 
-- [ ] `for k in dict` iterates over keys. In C# it yields `KeyValuePair<K, V>`
-      with `.Key` and `.Value`. Switch to that once `struct` exists
-      (and update `examples/collections.belsk2` and the tests).
+- [x] `for e in dict` yields `KeyValuePair<K, V>` with read-only `.Key` and `.Value`, as in C#.
 - [ ] Function types (`fn(int): bool`) instead of the untyped `fn`; comes with lambdas.
 - [ ] `belsk2.lock` stores a relative git URL (a local path) as an absolute path, so such a
       lock file is machine-specific. Fine for remote URLs.

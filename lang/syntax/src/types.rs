@@ -246,6 +246,9 @@ pub enum Ty {
     Array(Rc<Ty>),
     /// `Dictionary<K, V>`: a hash map that keeps insertion order.
     Map(Rc<Ty>, Rc<Ty>),
+    /// `KeyValuePair<K, V>`: an entry of a dictionary (`for e in dict`),
+    /// with read-only `Key` and `Value`.
+    KeyValue(Rc<Ty>, Rc<Ty>),
     /// A type parameter of a generic function (`T` in `fn f<T>(x: T)`).
     Param(Rc<str>),
     /// A function; the signature is known for named declarations.
@@ -279,6 +282,10 @@ impl Ty {
         Ty::Map(Rc::new(key), Rc::new(value))
     }
 
+    pub fn key_value(key: Ty, value: Ty) -> Ty {
+        Ty::KeyValue(Rc::new(key), Rc::new(value))
+    }
+
     /// Whether values of this type can be dictionary keys.
     pub fn is_key(&self) -> bool {
         match self.canonical() {
@@ -293,7 +300,7 @@ impl Ty {
         match self {
             Ty::Param(_) => true,
             Ty::Array(elem) => elem.has_params(),
-            Ty::Map(k, v) => k.has_params() || v.has_params(),
+            Ty::Map(k, v) | Ty::KeyValue(k, v) => k.has_params() || v.has_params(),
             _ => false,
         }
     }
@@ -304,6 +311,7 @@ impl Ty {
             Ty::Param(name) => subst(name).unwrap_or_else(|| self.clone()),
             Ty::Array(elem) => Ty::array(elem.substitute(subst)),
             Ty::Map(k, v) => Ty::map(k.substitute(subst), v.substitute(subst)),
+            Ty::KeyValue(k, v) => Ty::key_value(k.substitute(subst), v.substitute(subst)),
             t => t.clone(),
         }
     }
@@ -395,6 +403,7 @@ impl fmt::Display for Ty {
             Ty::Ster => f.write_str("ster"),
             Ty::Array(elem) => write!(f, "{elem}[]"),
             Ty::Map(k, v) => write!(f, "Dictionary<{k}, {v}>"),
+            Ty::KeyValue(k, v) => write!(f, "KeyValuePair<{k}, {v}>"),
             Ty::Param(name) => f.write_str(name),
             Ty::Fn(_) => f.write_str("fn"),
             Ty::Named(t) => f.write_str(&t.name),

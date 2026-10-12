@@ -458,7 +458,7 @@ impl Checker {
                 }
                 let expected = match name.as_str() {
                     "List" => 1,
-                    "Dictionary" | "Map" => 2,
+                    "Dictionary" | "Map" | "KeyValuePair" => 2,
                     _ => 0,
                 };
                 if args.len() != expected {
@@ -479,6 +479,9 @@ impl Checker {
                     .into_iter();
                 match (name.as_str(), args.next(), args.next()) {
                     ("List", Some((elem, _)), _) => return Ty::array(elem),
+                    ("KeyValuePair", Some((key, _)), Some((value, _))) => {
+                        return Ty::key_value(key, value)
+                    }
                     (_, Some((key, kspan)), Some((value, _))) => {
                         if !key.is_key() {
                             self.type_error(
@@ -1293,6 +1296,19 @@ impl Checker {
         if obj.is_any() {
             return Ty::Any;
         }
+        if let Ty::KeyValue(k, v) = obj {
+            return match name {
+                "Key" => (**k).clone(),
+                "Value" => (**v).clone(),
+                _ => {
+                    self.type_error(
+                        format!("{obj} has no member '{name}'; use Key or Value"),
+                        span,
+                    );
+                    Ty::Any
+                }
+            };
+        }
         let Some((t, owner, m)) = self.find_member(obj, name, span) else {
             return Ty::Any;
         };
@@ -1485,8 +1501,8 @@ impl Checker {
                 *var_ty = match iter_ty {
                     Ty::String | Ty::Ster => Ty::Char,
                     Ty::Array(elem) => (*elem).clone(),
-                    // Iterating a dictionary yields its keys.
-                    Ty::Map(key, _) => (*key).clone(),
+                    // Iterating a dictionary yields its entries, as in C#.
+                    Ty::Map(key, value) => Ty::KeyValue(key, value),
                     Ty::Any => Ty::Any,
                     other => {
                         self.type_error(format!("cannot iterate over {other}"), iter.span);
@@ -1591,6 +1607,13 @@ impl Checker {
                 let obj = self.expr(object);
                 if obj.is_any() {
                     return Some(Ty::Any);
+                }
+                if let Ty::KeyValue(..) = obj {
+                    self.type_error(
+                        format!("the {name} of a {obj} cannot be changed; change the dictionary instead"),
+                        span,
+                    );
+                    return None;
                 }
                 let temporary = !object.is_place()
                     && !matches!(object.kind, ExprKind::SelfType)
@@ -2264,7 +2287,7 @@ fn bind_type_params(params: &[Rc<str>], param: &Ty, arg: &Ty, bound: &mut HashMa
             }
         }
         (Ty::Array(p), Ty::Array(a)) => bind_type_params(params, p, a, bound),
-        (Ty::Map(pk, pv), Ty::Map(ak, av)) => {
+        (Ty::Map(pk, pv), Ty::Map(ak, av)) | (Ty::KeyValue(pk, pv), Ty::KeyValue(ak, av)) => {
             bind_type_params(params, pk, ak, bound);
             bind_type_params(params, pv, av, bound);
         }

@@ -519,7 +519,11 @@ impl Interpreter {
             } => {
                 let items: Vec<Value> = match self.eval(iter, env, out)? {
                     Value::Array(a) => a.snapshot()?,
-                    Value::Map(m) => m.keys()?,
+                    Value::Map(m) => m
+                        .pairs()?
+                        .into_iter()
+                        .map(|kv| Value::Pair(Rc::new(kv)))
+                        .collect(),
                     Value::String(s) => s.chars().map(Value::Char).collect(),
                     other => {
                         return Err(Error::type_error(format!(
@@ -1236,6 +1240,13 @@ impl Interpreter {
         out: &mut dyn Write,
     ) -> Result<Value> {
         let missing = || Error::runtime(format!("{} has no member '{name}'", obj.type_name()));
+        if let Value::Pair(p) = obj {
+            return match name {
+                "Key" => Ok(p.0.clone()),
+                "Value" => Ok(p.1.clone()),
+                _ => Err(missing()),
+            };
+        }
         let (class, this) = match obj {
             Value::Struct(s) => {
                 if let Some(i) = s.class.field_index(name) {

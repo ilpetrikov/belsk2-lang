@@ -157,6 +157,9 @@ var ages = {"ann": 30};        // Dictionary<string, int>
 ages["bob"] = 25;
 if has(ages, "ann") { remove(ages, "ann"); }
 prinb(keys(ages));             // [bob]
+for e in ages {                // KeyValuePair<string, int>, as in C#
+    prinb(e.Key + " is " + str(e.Value));
+}
 
 fn first<T>(items: T[]): T { return items[0]; }
 int n = first([10, 20]);       // T is inferred from the argument

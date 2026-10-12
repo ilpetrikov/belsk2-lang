@@ -99,6 +99,10 @@ fn children(v: &Value, out: &mut Vec<Value>) {
         }
         Value::Struct(s) => out.extend(s.fields.iter().cloned()),
         Value::Enum(_, _, data) => out.extend(data.iter().cloned()),
+        Value::Pair(p) => {
+            out.push(p.0.clone());
+            out.push(p.1.clone());
+        }
         Value::Object(o) => {
             if let Ok(fields) = o.fields.try_borrow() {
                 out.extend(fields.iter().cloned());

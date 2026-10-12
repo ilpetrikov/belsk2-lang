@@ -685,6 +685,17 @@ impl Analysis {
                 .find(|s| s.name == name)
                 .map(|s| s.ty.clone())
         });
+        if let Some(Ty::KeyValue(k, v)) = &ty {
+            return [("Key", k), ("Value", v)]
+                .iter()
+                .map(|(n, t)| Completion {
+                    label: (*n).to_string(),
+                    kind: CompletionKind::Field,
+                    detail: Some(format!("{n}: {t}")),
+                    doc: None,
+                })
+                .collect();
+        }
         // `Mode.` lists the cases, `p.` the fields and methods.
         let (t, of_type) = match ty {
             Some(Ty::Named(t)) => (t, false),

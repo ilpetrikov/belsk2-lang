@@ -33,6 +33,8 @@ pub enum Value {
     /// An object of a class. Classes are reference types: copies share
     /// the object.
     Object(Rc<Object>),
+    /// `KeyValuePair<K, V>`: an entry of a dictionary.
+    Pair(Rc<(Value, Value)>),
     /// A case of an enum (its index in [`Class::cases`]) and its data.
     Enum(Rc<Class>, usize, Rc<Vec<Value>>),
 }
@@ -240,6 +242,7 @@ impl Value {
             Value::Struct(s) => Ty::Named(s.class.ty.clone()),
             Value::Object(o) => Ty::Named(o.class.ty.clone()),
             Value::Enum(c, ..) => Ty::Named(c.ty.clone()),
+            Value::Pair(p) => Ty::key_value(p.0.ty(), p.1.ty()),
         }
     }
 
@@ -266,6 +269,7 @@ impl Value {
             | Value::Type(_)
             | Value::Struct(_)
             | Value::Object(_)
+            | Value::Pair(_)
             | Value::Enum(..) => true,
         }
     }
@@ -320,6 +324,7 @@ impl Value {
             (Ty::Named(t), Value::Struct(s)) => s.class.ty.is_subtype_of(&t),
             (Ty::Named(t), Value::Object(o)) => o.class.ty.is_subtype_of(&t),
             (Ty::Named(t), Value::Enum(c, ..)) => c.ty.is_subtype_of(&t),
+            (Ty::KeyValue(k, v), Value::Pair(p)) => p.0.fits(&k) && p.1.fits(&v),
             (Ty::Type(t), Value::Type(c)) => c.ty == t,
             _ => false,
         }
@@ -345,6 +350,17 @@ impl Value {
                 Ok(fields) => fmt_fields(f, &o.class, &fields, depth),
                 Err(_) => write!(f, "{} {{...}}", o.class.ty.name),
             },
+            // As C# prints a KeyValuePair.
+            Value::Pair(p) => {
+                if depth >= MAX_NESTING {
+                    return f.write_str("[...]");
+                }
+                f.write_str("[")?;
+                p.0.fmt_nested(f, depth + 1)?;
+                f.write_str(", ")?;
+                p.1.fmt_nested(f, depth + 1)?;
+                f.write_str("]")
+            }
             Value::Enum(c, i, data) => {
                 f.write_str(c.cases.get(*i).map(|(n, _)| n.as_str()).unwrap_or("?"))?;
                 if data.is_empty() {
@@ -466,6 +482,11 @@ fn values_equal(a: &Value, b: &Value, depth: usize) -> bool {
         (Value::Native(x), Value::Native(y)) => Rc::ptr_eq(x, y),
         (Value::Type(x), Value::Type(y)) => x.ty == y.ty,
         (Value::Object(x), Value::Object(y)) => Rc::ptr_eq(x, y),
+        (Value::Pair(x), Value::Pair(y)) => {
+            depth < MAX_NESTING
+                && values_equal(&x.0, &y.0, depth + 1)
+                && values_equal(&x.1, &y.1, depth + 1)
+        }
         (Value::Enum(x, i, a), Value::Enum(y, j, b)) => {
             x.ty == y.ty
                 && i == j

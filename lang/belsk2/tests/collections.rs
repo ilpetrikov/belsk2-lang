@@ -147,7 +147,8 @@ fn dictionaries() {
         prinb(remove(ages, "bob"));
         prinb(keys(ages));
         prinb(values(ages));
-        for k in ages { prinb(k + "=" + str(ages[k])); }
+        for e in ages { prinb(e.Key + "=" + str(e.Value)); }
+        for e in ages { prinb(e); }
         prinb(ages);
         Dictionary<string, double> d = {};
         d["x"] = 1;
@@ -174,6 +175,8 @@ fn dictionaries() {
             "[31, 40]",
             "ann=31",
             "cid=40",
+            "[ann, 31]",
+            "[cid, 40]",
             "{ann: 31, cid: 40}",
             "double",
             "one",
@@ -346,4 +349,33 @@ fn generics_are_reified_at_run_time() {
     assert_eq!(run(src), lines(&["long[]", "string[]", "double[][]"]));
     let e = err("fn wrap<T>(x: any): T[] { T[] r = []; push(r, x); return r; } wrap<int>(\"s\");");
     assert!(e.message.contains("element of int[]"), "{e}");
+}
+
+#[test]
+fn dictionary_entries_are_key_value_pairs() {
+    let src = r#"var d = {"a": 1, "b": 2};
+        var t = 0;
+        for e in d { t += e.Value; }
+        prinb(t);
+        for e in d { KeyValuePair<string, int> copy = e; prinb(copy.Key); }"#;
+    assert_eq!(
+        run(src),
+        "3
+a
+b
+"
+    );
+    let errors =
+        belsk2::compile("fn main() { var d = {1: 2}; for e in d { e.Key = 3; prinb(e.Size); } }")
+            .err()
+            .unwrap_or_default();
+    let messages: Vec<&str> = errors.iter().map(|e| e.message.as_str()).collect();
+    assert!(
+        messages.iter().any(|m| m.contains("cannot be changed")),
+        "{messages:?}"
+    );
+    assert!(
+        messages.iter().any(|m| m.contains("use Key or Value")),
+        "{messages:?}"
+    );
 }
