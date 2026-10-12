@@ -287,6 +287,31 @@ fn numbers_print_as_in_the_interpreter() {
 }
 
 #[test]
+fn dictionaries() {
+    same(include_str!("dictionaries.belsk2"));
+    same(
+        r#"class Player { name: string; score: int = 0; }
+        class Team {
+            players: Dictionary<string, Player> = {};
+            byScore: Dictionary<int, Player[]> = {};
+            fn add(p: Player) {
+                players[p.name] = p;
+                if !has(byScore, p.score) { byScore[p.score] = []; }
+                push(byScore[p.score], p);
+            }
+        }
+        fn main() {
+            var t = Team();
+            t.add(Player("ann"));
+            t.add(Player("bob"));
+            t.players["ann"].score = 3;
+            prinb(t.players);
+            prinb(len(t.byScore[0]));
+        }"#,
+    );
+}
+
+#[test]
 fn destructors_are_an_error() {
     let mut program = belsk2_syntax::parse("class A { ~A() {} } fn main() {}").unwrap();
     assert!(belsk2_typeck::check(&mut program).is_empty());

@@ -78,7 +78,8 @@
       `is`/`as`, `switch` and `match` (WasmGC structs in one recursion group, a type tag for
       virtual and interface calls); `str()` of floating-point numbers. Destructors are a
       compile error (no finalizers in WasmGC).
-- [ ] WASM: dictionaries and `any`
+- [x] WASM: dictionaries (insertion order, hash index from 8 entries), `KeyValuePair`
+- [ ] WASM: `any`
 - [x] `enum`: typed cases (`Mode.High`) with numbers (`Low = 1`), methods, `int(m)`, dictionary keys
 - [x] Enums with data (`Circle(radius: double)`)
 - [x] `class`: fields, methods, constructors, `this`; reference semantics, `null`

@@ -1,0 +1,56 @@
+enum Color { Red, Green, Blue }
+
+class Inventory {
+    items: Dictionary<string, int> = {};
+    fn add(name: string, n: int) {
+        if has(items, name) { items[name] += n; } else { items[name] = n; }
+    }
+}
+
+fn main() {
+    var ages = {"ann": 30, "bob": 25};
+    prinb(ages);
+    prinb(ages["ann"]);
+    ages["cid"] = 40;
+    ages["ann"] += 1;
+    prinb(len(ages));
+    prinb(has(ages, "bob"));
+    prinb(remove(ages, "bob"));
+    prinb(remove(ages, "bob"));
+    prinb(keys(ages));
+    prinb(values(ages));
+    for e in ages { prinb(e.Key + "=" + str(e.Value)); }
+    for e in ages { prinb(e); }
+    prinb(ages);
+    Dictionary<long, string> byId = {1: "one"};
+    prinb(byId[1]);
+    prinb({"a": 1} == {"a": 1});
+    prinb({"a": 1} == {"a": 2});
+    Dictionary<char, int> counts = {};
+    for c in "hello world" {
+        if has(counts, c) { counts[c] += 1; } else { counts[c] = 1; }
+    }
+    prinb(counts);
+    var big: Dictionary<int, int> = {};
+    var i = 0;
+    while i < 1000 { big[i * 7] = i; i += 1; }
+    i = 0;
+    while i < 1000 { if i % 3 == 0 { remove(big, i * 7); } i += 1; }
+    var sum = 0;
+    for e in big { sum += e.Value; }
+    prinb(len(big));
+    prinb(sum);
+    prinb(big[49]);
+    prinb(has(big, 0));
+    var colors = {Color.Red: "r", Color.Blue: "b"};
+    colors[Color.Green] = "g";
+    prinb(colors);
+    var inv = Inventory();
+    inv.add("apple", 2);
+    inv.add("apple", 3);
+    inv.add("pear", 1);
+    prinb(inv.items);
+    Dictionary<string, double[]> lists = {"x": [1.5, 2]};
+    lists["y"] = [];
+    prinb(lists);
+}

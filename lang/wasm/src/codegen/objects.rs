@@ -88,6 +88,7 @@ fn mentions_user(t: &Ty) -> bool {
     match t {
         Ty::Named(_) => true,
         Ty::Array(e) => mentions_user(e),
+        Ty::Map(k, v) | Ty::KeyValue(k, v) => mentions_user(k) || mentions_user(v),
         _ => false,
     }
 }
@@ -183,10 +184,14 @@ pub fn layout(ctx: &mut Ctx, units: &[Unit]) {
             },
         );
     }
-    // Arrays of user-defined types used by fields belong to the group.
-    let mut arrays: Vec<(u32, u32, ValType)> = Vec::new();
+    // Arrays and dictionaries of user-defined types used by fields belong
+    // to the group.
+    let mut extra: Vec<(u32, Def)> = Vec::new();
+    let first_span = decls.first().map(|d| d.1.span).unwrap_or_default();
     for ty in &field_tys {
-        user_arrays(ctx, ty, &mut next, &mut arrays);
+        if let Err(e) = user_types(ctx, ty, &mut next, &mut extra) {
+            ctx.errors.push(e.at(first_span));
+        }
     }
 
     let mut defs: Vec<Option<Def>> = (start..next).map(|_| None).collect();
@@ -267,16 +272,8 @@ pub fn layout(ctx: &mut Ctx, units: &[Unit]) {
             _ => {}
         }
     }
-    for (raw, obj, elem) in arrays {
-        put(raw, Def::Array(elem));
-        put(
-            obj,
-            Def::Struct {
-                fields: vec![non_null(raw), ValType::I32],
-                sub: None,
-                last: true,
-            },
-        );
+    for (index, def) in extra {
+        put(index, def);
     }
     ctx.errors.extend(errors);
     ctx.types.add_rec(defs.into_iter().flatten().collect());
@@ -313,32 +310,84 @@ pub fn layout(ctx: &mut Ctx, units: &[Unit]) {
     }
 }
 
-/// Defines the arrays (of types outside the group) that fields need.
+/// Defines the arrays and dictionaries (of types outside the group) that
+/// fields need.
 fn prepare(ctx: &mut Ctx, ty: &Ty) {
-    if let Ty::Array(e) = ty {
-        prepare(ctx, e);
-        if !mentions_user(e) {
-            ctx.types.array(e);
+    match ty {
+        Ty::Array(e) => {
+            prepare(ctx, e);
+            if !mentions_user(e) {
+                ctx.types.array(e);
+            }
         }
+        Ty::Map(k, v) => {
+            prepare(ctx, &Ty::array((**k).clone()));
+            prepare(ctx, &Ty::array((**v).clone()));
+            if !mentions_user(ty) {
+                ctx.types.map(k, v);
+            }
+        }
+        _ => {}
     }
 }
 
-/// Reserves group indices for arrays of user-defined types.
-fn user_arrays(ctx: &mut Ctx, ty: &Ty, next: &mut u32, out: &mut Vec<(u32, u32, ValType)>) {
-    let Ty::Array(e) = ty else {
-        return;
-    };
-    user_arrays(ctx, e, next, out);
-    if !mentions_user(e) || ctx.types.has_array(e) {
-        return;
+/// Reserves group indices for arrays and dictionaries of user-defined
+/// types.
+fn user_types(ctx: &mut Ctx, ty: &Ty, next: &mut u32, out: &mut Vec<(u32, Def)>) -> R<()> {
+    match ty {
+        Ty::Array(e) => {
+            user_types(ctx, e, next, out)?;
+            if !mentions_user(e) || ctx.types.has_array(e) {
+                return Ok(());
+            }
+            let Some(elem) = ctx.types.val(e) else {
+                return Ok(());
+            };
+            let (raw, obj) = (*next, *next + 1);
+            *next += 2;
+            ctx.types.set_array(e, ArrayType { raw, obj, elem });
+            out.push((raw, Def::Array(elem)));
+            out.push((
+                obj,
+                Def::Struct {
+                    fields: vec![non_null(raw), ValType::I32],
+                    sub: None,
+                    last: true,
+                },
+            ));
+        }
+        Ty::Map(k, v) => {
+            let (ka, va) = (Ty::array((**k).clone()), Ty::array((**v).clone()));
+            user_types(ctx, &ka, next, out)?;
+            user_types(ctx, &va, next, out)?;
+            if !mentions_user(ty) || ctx.types.has_map(k, v) {
+                return Ok(());
+            }
+            let (Some(keys), Some(values)) = (ctx.types.array(k), ctx.types.array(v)) else {
+                return Ok(());
+            };
+            let st = *next;
+            *next += 1;
+            let fields = ctx.types.map_fields(&keys, &values);
+            ctx.types
+                .set_map(k, v, crate::types::MapType { st, keys, values });
+            out.push((
+                st,
+                Def::Struct {
+                    fields,
+                    sub: None,
+                    last: true,
+                },
+            ));
+        }
+        Ty::KeyValue(..) if mentions_user(ty) => {
+            return Err(Error::compile(
+                "fields of type KeyValuePair with user-defined types are not supported in WASM builds yet",
+            ))
+        }
+        _ => {}
     }
-    let Some(elem) = ctx.types.val(e) else {
-        return;
-    };
-    let (raw, obj) = (*next, *next + 1);
-    *next += 2;
-    ctx.types.set_array(e, ArrayType { raw, obj, elem });
-    out.push((raw, obj, elem));
+    Ok(())
 }
 
 // ---- lookups ----------------------------------------------------------
@@ -411,7 +460,7 @@ pub fn is_virtual(t: &TypeRef, name: &str) -> bool {
 
 /// Reserves a function for `key` and builds it with `build` (which may
 /// use the function itself).
-fn obj_fn(ctx: &mut Ctx, key: String, build: impl FnOnce(&mut Ctx) -> R<Asm>) -> u32 {
+pub(super) fn obj_fn(ctx: &mut Ctx, key: String, build: impl FnOnce(&mut Ctx) -> R<Asm>) -> u32 {
     if let Some(f) = ctx.keys.get(&key) {
         return f.index;
     }
@@ -1147,6 +1196,8 @@ pub fn eq_instrs(ctx: &mut Ctx, ty: &Ty) -> R<Vec<I<'static>>> {
         Ty::Float(FloatKind::F32) => vec![I::F32Eq],
         Ty::Float(FloatKind::F64) => vec![I::F64Eq],
         Ty::Int(k) if k.bits() == 64 => vec![I::I64Eq],
+        Ty::Map(k, v) => vec![I::Call(super::maps::eq_fn(ctx, &k, &v)?)],
+        Ty::KeyValue(k, v) => vec![I::Call(super::maps::pair_eq_fn(ctx, &k, &v)?)],
         Ty::Named(t) => {
             let info = ctx
                 .classes
@@ -1398,6 +1449,123 @@ fn build_show(ctx: &mut Ctx, ty: &Ty) -> R<Asm> {
                 I::End,
                 I::LocalGet(out),
             ]);
+            lit(ctx, &mut a, "]");
+            a.op(I::Call(concat));
+        }
+        Ty::Map(k, v) => {
+            let m = ctx.types.map(k, v).ok_or_else(|| {
+                Error::compile(format!("printing {ty} is not supported in WASM builds yet"))
+            })?;
+            a.ops([I::LocalGet(0), I::RefIsNull, I::If(BlockType::Empty)]);
+            ret_lit(ctx, &mut a, "null");
+            a.ops([
+                I::End,
+                I::LocalGet(1),
+                I::I32Const(64),
+                I::I32GeS,
+                I::If(BlockType::Empty),
+            ]);
+            ret_lit(ctx, &mut a, "{...}");
+            a.op(I::End);
+            let (i, n, kv, vv) = (
+                a.local(ValType::I32),
+                a.local(ValType::I32),
+                a.local(m.keys.elem),
+                a.local(m.values.elem),
+            );
+            let get = |a: &mut Asm, f: u32, arr: ArrayType, into: u32| {
+                a.ops([
+                    I::LocalGet(0),
+                    I::StructGet {
+                        struct_type_index: m.st,
+                        field_index: f,
+                    },
+                    I::StructGet {
+                        struct_type_index: arr.obj,
+                        field_index: 0,
+                    },
+                    I::LocalGet(i),
+                    I::ArrayGet(arr.raw),
+                    I::LocalSet(into),
+                ]);
+            };
+            lit(ctx, &mut a, "{");
+            a.ops([
+                I::LocalSet(out),
+                I::LocalGet(0),
+                I::StructGet {
+                    struct_type_index: m.st,
+                    field_index: 0,
+                },
+                I::StructGet {
+                    struct_type_index: m.keys.obj,
+                    field_index: 1,
+                },
+                I::LocalSet(n),
+                I::Block(BlockType::Empty),
+                I::Loop(BlockType::Empty),
+                I::LocalGet(i),
+                I::LocalGet(n),
+                I::I32GeU,
+                I::BrIf(1),
+                I::LocalGet(i),
+                I::If(BlockType::Empty),
+                I::LocalGet(out),
+            ]);
+            lit(ctx, &mut a, ", ");
+            a.ops([I::Call(concat), I::LocalSet(out), I::End]);
+            get(&mut a, 0, m.keys, kv);
+            get(&mut a, 1, m.values, vv);
+            a.op(I::LocalGet(out));
+            show_value(ctx, &mut a, k, kv, 1)?;
+            a.op(I::Call(concat));
+            lit(ctx, &mut a, ": ");
+            a.op(I::Call(concat));
+            show_value(ctx, &mut a, v, vv, 1)?;
+            a.ops([
+                I::Call(concat),
+                I::LocalSet(out),
+                I::LocalGet(i),
+                I::I32Const(1),
+                I::I32Add,
+                I::LocalSet(i),
+                I::Br(0),
+                I::End,
+                I::End,
+                I::LocalGet(out),
+            ]);
+            lit(ctx, &mut a, "}");
+            a.op(I::Call(concat));
+        }
+        Ty::KeyValue(k, v) => {
+            let st = ctx.types.pair(k, v).ok_or_else(|| {
+                Error::compile(format!("printing {ty} is not supported in WASM builds yet"))
+            })?;
+            let (kv, vv) = (
+                a.local(ctx.types.val(k).unwrap_or(ValType::I32)),
+                a.local(ctx.types.val(v).unwrap_or(ValType::I32)),
+            );
+            a.ops([
+                I::LocalGet(0),
+                I::StructGet {
+                    struct_type_index: st,
+                    field_index: 0,
+                },
+                I::LocalSet(kv),
+                I::LocalGet(0),
+                I::StructGet {
+                    struct_type_index: st,
+                    field_index: 1,
+                },
+                I::LocalSet(vv),
+            ]);
+            lit(ctx, &mut a, "[");
+            show_value(ctx, &mut a, k, kv, 1)?;
+            a.op(I::Call(concat));
+            lit(ctx, &mut a, ", ");
+            a.op(I::Call(concat));
+            show_value(ctx, &mut a, v, vv, 1)?;
+            a.op(I::Call(concat));
             lit(ctx, &mut a, "]");
             a.op(I::Call(concat));
         }

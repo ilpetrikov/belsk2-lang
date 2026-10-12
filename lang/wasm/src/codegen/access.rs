@@ -39,6 +39,19 @@ impl FnGen<'_> {
     /// `object.name` as a value.
     pub(super) fn member_get(&mut self, object: &Expr, name: &str, span: Span) -> R<()> {
         match self.t(&object.ty) {
+            Ty::KeyValue(k, v) => {
+                let st = self
+                    .ctx
+                    .types
+                    .pair(&k, &v)
+                    .ok_or_else(|| unsupported(format!("KeyValuePair<{k}, {v}> is"), span))?;
+                self.expr(object)?;
+                self.emit(I::StructGet {
+                    struct_type_index: st,
+                    field_index: u32::from(name == "Value"),
+                });
+                Ok(())
+            }
             Ty::Type(t) => {
                 let info = self
                     .ctx

@@ -19,6 +19,7 @@ use crate::types::{nullable, Types};
 use crate::Unit;
 
 mod access;
+mod maps;
 mod matching;
 mod objects;
 
@@ -677,6 +678,13 @@ enum Place {
         index: u32,
         ty: Ty,
     },
+    /// `m[key]` of a dictionary (both kept in locals).
+    MapElem {
+        map: u32,
+        key: u32,
+        k: Ty,
+        v: Ty,
+    },
     /// A property: its `get` and `set`, the value it belongs to (kept in a
     /// local; none for a static property), and where a struct goes back
     /// after `set`.
@@ -927,43 +935,100 @@ impl<'c> FnGen<'c> {
         let iter_ty = self.t(&iter.ty).canonical();
         let var_ty = self.t(var_ty);
         let (n, i) = (self.a.local(ValType::I32), self.a.local(ValType::I32));
-        let get: Vec<I<'static>> = match &iter_ty {
-            Ty::String => {
-                let s = self.ctx.types.string();
-                let data = self.a.local(nullable(s));
-                self.expr(iter)?;
-                self.emit(I::LocalTee(data));
-                self.emit(I::ArrayLen);
-                self.emit(I::LocalSet(n));
-                vec![I::LocalGet(data), I::LocalGet(i), I::ArrayGet(s)]
-            }
-            Ty::Array(elem) => {
-                let at = self
-                    .ctx
-                    .types
-                    .array(elem)
-                    .ok_or_else(|| unsupported(format!("arrays of {elem} are"), span))?;
-                let (obj, data) = (
-                    self.a.local(nullable(at.obj)),
-                    self.a.local(nullable(at.raw)),
-                );
-                self.expr(iter)?;
-                self.emit(I::LocalTee(obj));
-                self.emit(I::StructGet {
-                    struct_type_index: at.obj,
-                    field_index: 1,
-                });
-                self.emit(I::LocalSet(n));
-                self.emit(I::LocalGet(obj));
-                self.emit(I::StructGet {
-                    struct_type_index: at.obj,
-                    field_index: 0,
-                });
-                self.emit(I::LocalSet(data));
-                vec![I::LocalGet(data), I::LocalGet(i), I::ArrayGet(at.raw)]
-            }
-            other => return Err(unsupported(format!("iterating over {other} is"), iter.span)),
-        };
+        let get: Vec<I<'static>> =
+            match &iter_ty {
+                Ty::String => {
+                    let s = self.ctx.types.string();
+                    let data = self.a.local(nullable(s));
+                    self.expr(iter)?;
+                    self.emit(I::LocalTee(data));
+                    self.emit(I::ArrayLen);
+                    self.emit(I::LocalSet(n));
+                    vec![I::LocalGet(data), I::LocalGet(i), I::ArrayGet(s)]
+                }
+                Ty::Array(elem) => {
+                    let at = self
+                        .ctx
+                        .types
+                        .array(elem)
+                        .ok_or_else(|| unsupported(format!("arrays of {elem} are"), span))?;
+                    let (obj, data) = (
+                        self.a.local(nullable(at.obj)),
+                        self.a.local(nullable(at.raw)),
+                    );
+                    self.expr(iter)?;
+                    self.emit(I::LocalTee(obj));
+                    self.emit(I::StructGet {
+                        struct_type_index: at.obj,
+                        field_index: 1,
+                    });
+                    self.emit(I::LocalSet(n));
+                    self.emit(I::LocalGet(obj));
+                    self.emit(I::StructGet {
+                        struct_type_index: at.obj,
+                        field_index: 0,
+                    });
+                    self.emit(I::LocalSet(data));
+                    vec![I::LocalGet(data), I::LocalGet(i), I::ArrayGet(at.raw)]
+                }
+                Ty::Map(k, v) => {
+                    let m = self.ctx.types.map(k, v).ok_or_else(|| {
+                        unsupported(format!("dictionaries of {k}, {v} are"), span)
+                    })?;
+                    let pair =
+                        self.ctx.types.pair(k, v).ok_or_else(|| {
+                            unsupported(format!("KeyValuePair<{k}, {v}> is"), span)
+                        })?;
+                    let (keys, values) = (
+                        self.a.local(nullable(m.keys.raw)),
+                        self.a.local(nullable(m.values.raw)),
+                    );
+                    let map = self.a.local(nullable(m.st));
+                    self.expr(iter)?;
+                    self.emit(I::LocalTee(map));
+                    self.a.ops([
+                        I::StructGet {
+                            struct_type_index: m.st,
+                            field_index: 0,
+                        },
+                        I::StructGet {
+                            struct_type_index: m.keys.obj,
+                            field_index: 1,
+                        },
+                        I::LocalSet(n),
+                        I::LocalGet(map),
+                        I::StructGet {
+                            struct_type_index: m.st,
+                            field_index: 0,
+                        },
+                        I::StructGet {
+                            struct_type_index: m.keys.obj,
+                            field_index: 0,
+                        },
+                        I::LocalSet(keys),
+                        I::LocalGet(map),
+                        I::StructGet {
+                            struct_type_index: m.st,
+                            field_index: 1,
+                        },
+                        I::StructGet {
+                            struct_type_index: m.values.obj,
+                            field_index: 0,
+                        },
+                        I::LocalSet(values),
+                    ]);
+                    vec![
+                        I::LocalGet(keys),
+                        I::LocalGet(i),
+                        I::ArrayGet(m.keys.raw),
+                        I::LocalGet(values),
+                        I::LocalGet(i),
+                        I::ArrayGet(m.values.raw),
+                        I::StructNew(pair),
+                    ]
+                }
+                other => return Err(unsupported(format!("iterating over {other} is"), iter.span)),
+            };
         let x = {
             let t = self.vt(&var_ty, span)?;
             self.a.local(t)
@@ -1010,6 +1075,25 @@ impl<'c> FnGen<'c> {
                 _ => Err(Error::compile(format!("cannot assign to '{name}'")).at(target.span)),
             },
             ExprKind::Index { object, index } => {
+                if let Ty::Map(k, v) = self.t(&object.ty).canonical() {
+                    let (k, v) = ((*k).clone(), (*v).clone());
+                    let mvt = self.vt(&object.ty, object.span)?;
+                    let kvt = self.vt(&k, index.span)?;
+                    let (map, key) = (self.a.local(mvt), self.a.local(kvt));
+                    self.expr(object)?;
+                    self.emit(I::LocalSet(map));
+                    self.value(index, &k)?;
+                    self.emit(I::LocalSet(key));
+                    return Ok((
+                        Place::MapElem {
+                            map,
+                            key,
+                            k,
+                            v: v.clone(),
+                        },
+                        v,
+                    ));
+                }
                 let Ty::Array(elem) = self.t(&object.ty).canonical() else {
                     return Err(unsupported("assigning to this place is", target.span));
                 };
@@ -1042,6 +1126,7 @@ impl<'c> FnGen<'c> {
         match place {
             Place::Elem { arr, idx, .. } => self.a.ops([I::LocalGet(*arr), I::LocalGet(*idx)]),
             Place::Field { obj, .. } => self.emit(I::LocalGet(*obj)),
+            Place::MapElem { map, key, .. } => self.a.ops([I::LocalGet(*map), I::LocalGet(*key)]),
             _ => {}
         }
     }
@@ -1077,6 +1162,13 @@ impl<'c> FnGen<'c> {
                 }
                 self.emit(I::Call(get.index));
             }
+            Place::MapElem { map, key, k, v } => {
+                self.a.ops([I::LocalGet(*map), I::LocalGet(*key)]);
+                match maps::get_fn(self.ctx, k, v) {
+                    Ok(f) => self.emit(I::Call(f)),
+                    Err(e) => self.ctx.errors.push(e),
+                }
+            }
         }
     }
 
@@ -1085,6 +1177,10 @@ impl<'c> FnGen<'c> {
             Place::Local(i) => self.emit(I::LocalSet(*i)),
             Place::Global(i) => self.emit(I::GlobalSet(*i)),
             Place::Elem { elem, .. } => self.helper(Helper::ArrSet(elem.clone())),
+            Place::MapElem { k, v, .. } => match maps::set_fn(self.ctx, k, v) {
+                Ok(f) => self.emit(I::Call(f)),
+                Err(e) => self.ctx.errors.push(e),
+            },
             Place::Field { st, index, .. } => self.emit(I::StructSet {
                 struct_type_index: *st,
                 field_index: *index,
@@ -1301,7 +1397,27 @@ impl<'c> FnGen<'c> {
             }
             ExprKind::Index { object, index } => self.index_get(object, index, span)?,
             ExprKind::Null => return Err(unsupported("null without a known type is", span)),
-            ExprKind::Map(_) => return Err(unsupported("dictionaries are", span)),
+            ExprKind::Map(entries) => {
+                let Ty::Map(k, v) = self.t(&e.ty).canonical() else {
+                    return Err(unsupported("this dictionary is", span));
+                };
+                let (k, v) = ((*k).clone(), (*v).clone());
+                let new = maps::new_fn(self.ctx, &k, &v).map_err(|e| e.or_at(span))?;
+                self.emit(I::Call(new));
+                if !entries.is_empty() {
+                    let set = maps::set_fn(self.ctx, &k, &v).map_err(|e| e.or_at(span))?;
+                    let mvt = self.vt(&e.ty, span)?;
+                    let m = self.a.local(mvt);
+                    self.emit(I::LocalSet(m));
+                    for (key, value) in entries {
+                        self.emit(I::LocalGet(m));
+                        self.value(key, &k)?;
+                        self.value(value, &v)?;
+                        self.emit(I::Call(set));
+                    }
+                    self.emit(I::LocalGet(m));
+                }
+            }
             ExprKind::Member { object, name } => self.member_get(object, name, span)?,
             ExprKind::This | ExprKind::Base => self.this_get(span)?,
             ExprKind::SelfType => return Err(unsupported("a type as a value is", span)),
@@ -1367,6 +1483,12 @@ impl<'c> FnGen<'c> {
                 self.expr(object)?;
                 self.index_i32(index)?;
                 self.helper(Helper::ArrGet((*elem).clone()));
+            }
+            Ty::Map(k, v) => {
+                let f = maps::get_fn(self.ctx, &k, &v).map_err(|e| e.or_at(span))?;
+                self.expr(object)?;
+                self.value(index, &k)?;
+                self.emit(I::Call(f));
             }
             other => return Err(unsupported(format!("indexing {other} is"), span)),
         }
@@ -1516,9 +1638,36 @@ impl<'c> FnGen<'c> {
                             field_index: 1,
                         });
                     }
+                    Ty::Map(k, v) => {
+                        let ops = maps::len_instrs(self.ctx, &k, &v)?;
+                        self.a.ops(ops);
+                    }
                     other => return Err(unsupported(format!("len() of {other} is"), span)),
                 }
                 return Ok(Some(ValType::I32));
+            }
+            "has" | "remove" | "keys" | "values" => {
+                let m = arg(0)?;
+                let Ty::Map(k, v) = self.t(&m.ty).canonical() else {
+                    return Err(unsupported(format!("{name}() on {} is", m.ty), span));
+                };
+                let (k, v) = ((*k).clone(), (*v).clone());
+                let f = match name {
+                    "has" => maps::has_fn(self.ctx, &k, &v),
+                    "remove" => maps::remove_fn(self.ctx, &k, &v),
+                    _ => maps::list_fn(self.ctx, &k, &v, name == "values"),
+                }
+                .map_err(|e| e.or_at(span))?;
+                self.expr(m)?;
+                if matches!(name, "has" | "remove") {
+                    self.value(arg(1)?, &k)?;
+                }
+                self.emit(I::Call(f));
+                return match name {
+                    "keys" => self.vt(&Ty::array(k), span).map(Some),
+                    "values" => self.vt(&Ty::array(v), span).map(Some),
+                    _ => Ok(Some(ValType::I32)),
+                };
             }
             "str" => {
                 self.emit_str(arg(0)?)?;
@@ -1618,7 +1767,7 @@ impl<'c> FnGen<'c> {
                 let f = format_fn(self.ctx).map_err(|e2| e2.or_at(e.span))?;
                 self.emit(I::Call(f));
             }
-            other @ (Ty::Named(_) | Ty::Array(_)) => {
+            other @ (Ty::Named(_) | Ty::Array(_) | Ty::Map(..) | Ty::KeyValue(..)) => {
                 let f = objects::show_fn(self.ctx, &other).map_err(|e2| e2.or_at(e.span))?;
                 self.expr(e)?;
                 self.emit(I::I32Const(0));
@@ -1895,7 +2044,9 @@ impl<'c> FnGen<'c> {
                     self.emit(I::I32Eqz);
                 }
             }
-            (Ty::Named(_), Ty::Named(_)) => {
+            (Ty::Named(_), Ty::Named(_))
+            | (Ty::Map(..), Ty::Map(..))
+            | (Ty::KeyValue(..), Ty::KeyValue(..)) => {
                 self.expr(lhs)?;
                 self.expr(rhs)?;
                 let eq = objects::eq_instrs(self.ctx, &lt)?;

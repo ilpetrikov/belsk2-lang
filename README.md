@@ -498,9 +498,10 @@ Parameters and returned values need declared types. Strings,
 arrays, generics, structs, enums (with data too), classes, inheritance,
 interfaces, properties, static members, `is`/`as`, `switch` and `match`
 are supported, and numbers print as in the interpreter (only extremely
-large or small doubles may show more digits). Dictionaries and `any` are
-not supported yet, and destructors are a compile error: WebAssembly's
-garbage collector does not run them.
+large or small doubles may show more digits). Dictionaries keep their
+insertion order and use a hash index once they grow. `any` is not
+supported yet, and destructors are a compile error: WebAssembly's garbage
+collector does not run them.
 
 ### Components
 

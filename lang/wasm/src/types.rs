@@ -50,6 +50,8 @@ pub struct Types {
     funcs: HashMap<(Vec<ValType>, Vec<ValType>), u32>,
     string: Option<u32>,
     arrays: HashMap<String, ArrayType>,
+    maps: HashMap<String, MapType>,
+    pairs: HashMap<String, u32>,
     /// The value type of each user-defined type, by type id.
     user: HashMap<usize, ValType>,
 }
@@ -62,6 +64,17 @@ pub struct ArrayType {
     /// `(struct (field data (mut (ref raw))) (field len (mut i32)))`.
     pub obj: u32,
     pub elem: ValType,
+}
+
+/// The struct behind `Dictionary<K, V>`: `{ keys, values, table }`.
+/// Keys and values are arrays in insertion order; `table` is a hash index
+/// (positions + 1, 0 for free slots), built once there are enough entries
+/// and dropped when an entry is removed.
+#[derive(Debug, Clone, Copy)]
+pub struct MapType {
+    pub st: u32,
+    pub keys: ArrayType,
+    pub values: ArrayType,
 }
 
 pub fn nullable(index: u32) -> ValType {
@@ -82,6 +95,10 @@ pub fn non_null(index: u32) -> ValType {
 /// id, not just by name).
 fn array_key(elem: &Ty) -> String {
     format!("{elem:?}")
+}
+
+fn map_key(key: &Ty, value: &Ty) -> String {
+    format!("{key:?}|{value:?}")
 }
 
 impl Types {
@@ -115,6 +132,58 @@ impl Types {
 
     pub fn has_array(&self, elem: &Ty) -> bool {
         self.arrays.contains_key(&array_key(elem))
+    }
+
+    pub fn has_map(&self, key: &Ty, value: &Ty) -> bool {
+        self.maps.contains_key(&map_key(key, value))
+    }
+
+    /// Records the struct of `Dictionary<key, value>` defined in a
+    /// recursion group.
+    pub fn set_map(&mut self, key: &Ty, value: &Ty, t: MapType) {
+        self.maps.insert(map_key(key, value), t);
+    }
+
+    /// The fields of the struct of a dictionary.
+    pub fn map_fields(&mut self, keys: &ArrayType, values: &ArrayType) -> Vec<ValType> {
+        let table = self.string();
+        vec![nullable(keys.obj), nullable(values.obj), nullable(table)]
+    }
+
+    /// The types of `Dictionary<key, value>`.
+    pub fn map(&mut self, key: &Ty, value: &Ty) -> Option<MapType> {
+        if let Some(t) = self.maps.get(&map_key(key, value)) {
+            return Some(*t);
+        }
+        if key.is_any() || key.has_params() || value.has_params() {
+            return None;
+        }
+        let keys = self.array(key)?;
+        let values = self.array(value)?;
+        let fields = self.map_fields(&keys, &values);
+        let st = self.add(Def::Struct {
+            fields,
+            sub: None,
+            last: true,
+        });
+        let t = MapType { st, keys, values };
+        self.maps.insert(map_key(key, value), t);
+        Some(t)
+    }
+
+    /// The struct of `KeyValuePair<key, value>`: `{ key, value }`.
+    pub fn pair(&mut self, key: &Ty, value: &Ty) -> Option<u32> {
+        if let Some(t) = self.pairs.get(&map_key(key, value)) {
+            return Some(*t);
+        }
+        let fields = vec![self.val(key)?, self.val(value)?];
+        let st = self.add(Def::Struct {
+            fields,
+            sub: None,
+            last: true,
+        });
+        self.pairs.insert(map_key(key, value), st);
+        Some(st)
     }
 
     pub fn func(&mut self, params: Vec<ValType>, results: Vec<ValType>) -> u32 {
@@ -170,6 +239,8 @@ impl Types {
                 nullable(self.array(elem)?.obj)
             }
             Ty::Named(t) => *self.user.get(&t.id())?,
+            Ty::Map(k, v) => nullable(self.map(k, v)?.st),
+            Ty::KeyValue(k, v) => nullable(self.pair(k, v)?),
             _ => return None,
         })
     }
