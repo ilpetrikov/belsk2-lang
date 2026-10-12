@@ -28,7 +28,7 @@ pub use manifest::{
     module_name, valid_package_name, BuildInfo, ComponentInfo, Dependency, Manifest, PackageInfo,
     MANIFEST,
 };
-pub use wit::{WitFunc, WitInterface, WitTy, World};
+pub use wit::{WitFunc, WitInterface, WitTy, WitType, WitTypeKind, World};
 
 /// Looks for `belsk2.toml` in `start` and its parent directories.
 pub fn find_root(start: &Path) -> Option<PathBuf> {

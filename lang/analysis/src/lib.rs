@@ -272,6 +272,7 @@ pub fn analyze_source(name: &str, text: &str) -> Analysis {
         Program { stmts: Vec::new() }
     });
     let loaded = Loaded {
+        wit_types: None,
         packages: vec![Package {
             name: "main".to_string(),
             version: "0.0.0".to_string(),

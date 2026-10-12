@@ -53,6 +53,9 @@ pub struct Loaded {
     pub order: Vec<ModuleId>,
     /// The WIT world of a component project (`[component]`).
     pub world: Option<Rc<World>>,
+    /// The module holding the types of the WIT world as Belsk2
+    /// declarations; every module of the project uses it.
+    pub wit_types: Option<ModuleId>,
 }
 
 impl Loaded {
@@ -369,6 +372,7 @@ impl Loader {
     }
 
     fn finish_lenient(mut self, entry: Option<ModuleId>) -> (Loaded, Vec<Error>) {
+        let wit_types = self.add_wit_types();
         let order = self.order();
         let errors = std::mem::take(&mut self.errors);
         let loaded = Loaded {
@@ -378,11 +382,13 @@ impl Loader {
             entry,
             order,
             world: self.world,
+            wit_types,
         };
         (loaded, errors)
     }
 
     fn finish(mut self, entry: Option<ModuleId>) -> Result<Loaded, (Vec<Error>, SourceMap)> {
+        let wit_types = self.add_wit_types();
         let order = self.order();
         if !self.errors.is_empty() {
             return Err((self.errors, self.sources));
@@ -394,7 +400,40 @@ impl Loader {
             entry,
             order,
             world: self.world,
+            wit_types,
         })
+    }
+
+    /// Adds the types of the WIT world as a module that every module of
+    /// the project uses.
+    fn add_wit_types(&mut self) -> Option<ModuleId> {
+        let world = self.world.clone()?;
+        let source = world.types_source()?;
+        let file = self.sources.add(
+            format!("<wit types of {}>", display_path(&world.path)),
+            source.as_str(),
+        );
+        let program = match belsk2_syntax::parse_file(&source, file) {
+            Ok(p) => p,
+            Err(e) => {
+                self.errors.push(e);
+                return None;
+            }
+        };
+        let id = self.modules.len();
+        for m in self.modules.iter_mut().filter(|m| m.package == 0) {
+            m.uses.push((id, Span::in_file(m.file, 1, 1)));
+        }
+        self.modules.push(Module {
+            package: 0,
+            name: "wit".to_string(),
+            path: world.path.clone(),
+            file,
+            program,
+            uses: Vec::new(),
+            interface: None,
+        });
+        Some(id)
     }
 
     /// Reads a package (and, recursively, its dependencies).

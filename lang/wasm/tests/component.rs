@@ -218,6 +218,7 @@ interface canvas {
     draw: func(text: string, x: s32) -> bool;
     record point { x: s32, y: s32 }
     center: func() -> point;
+    corner: func() -> tuple<s32, s32>;
 }
 "#;
 
@@ -296,7 +297,7 @@ fn update(frame: uint): string {
 
 #[test]
 fn unsupported_wit_types_are_reported_when_used() {
-    let hooks = "using canvas;\n\nfn update(frame: uint): string {\n    var p = center();\n    return \"\";\n}\n";
+    let hooks = "using canvas;\n\nfn update(frame: uint): string {\n    var p = corner();\n    return \"\";\n}\n";
     let dir = project(
         "unsupported",
         &[
@@ -312,7 +313,7 @@ fn unsupported_wit_types_are_reported_when_used() {
     );
     let errors = build(&dir).unwrap_err();
     assert!(
-        errors.contains("'center' cannot be used in Belsk2 yet: it uses record 'point'"),
+        errors.contains("'corner' cannot be used in Belsk2 yet: it uses a tuple"),
         "{errors}"
     );
 }

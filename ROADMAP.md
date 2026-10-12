@@ -49,6 +49,12 @@
         interpreter. wasmtime is a default feature of the CLI (`--no-default-features`
         builds without it). MSRV is 1.98; raise it to 1.99 once that is released.
   - [ ] W5: records, enums, variants, option/result, resources (with struct/enum/class).
+    - [x] WIT types as Belsk2 declarations in a generated `wit` module that every module
+          uses: `record` → `struct`, `enum` → `enum`, `variant`/`option`/`result` → enums
+          with data (`OptionPoint { None, Some(value: Point) }`); checker, interpreter
+          stubs, `belsk2 bindgen`.
+    - [ ] Canonical ABI for them in WASM builds.
+    - [ ] Resources as classes.
   - Known differences from the interpreter: runtime errors are traps without a message;
     float-to-integer conversions saturate at the `long` range (the interpreter wraps
     huge values); `%` on doubles uses `a - b * trunc(a / b)`, inexact for huge quotients;

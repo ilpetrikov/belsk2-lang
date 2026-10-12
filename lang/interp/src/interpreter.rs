@@ -1493,6 +1493,11 @@ impl Interpreter {
 
     /// The value a field has before it is assigned: `0`, `false`, `null`,
     /// or a struct whose fields have their default values.
+    /// The class of a user-defined type, once its declaration has run.
+    pub fn class_of(&self, type_id: usize) -> Option<Rc<Class>> {
+        self.classes.get(&type_id).cloned()
+    }
+
     fn default_value(&self, ty: &Ty, depth: usize) -> Value {
         match ty.canonical() {
             Ty::Bool => Value::Bool(false),

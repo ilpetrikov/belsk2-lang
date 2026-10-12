@@ -3,13 +3,23 @@
 //! The world says which functions the host provides (imports) and which
 //! the program must provide (exports). Names are converted from WIT's
 //! kebab-case to Belsk2's snake_case: `draw-sprite` is `draw_sprite`.
+//!
+//! The types functions use become Belsk2 declarations in a module of
+//! their own (see [`World::types_source`]), visible in every module of the
+//! project: a `record` is a `struct`, an `enum` an `enum`, and a
+//! `variant`, `option<T>` or `result<T, E>` an enum with data
+//! (`OptionString { None, Some(value: string) }`).
 
+use std::cell::OnceCell;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
+use belsk2_syntax::ast::{Program, StmtKind};
 use belsk2_syntax::{Error, FloatKind, IntKind, Sig, Ty};
 use wit_parser::{
-    Function, FunctionKind, Resolve, Type, TypeDefKind, WorldId, WorldItem, WorldKey,
+    Function, FunctionKind, Resolve, Type, TypeDefKind, TypeId, TypeOwner, WorldId, WorldItem,
+    WorldKey,
 };
 
 /// A WIT type that Belsk2 supports.
@@ -21,6 +31,92 @@ pub enum WitTy {
     Char,
     String,
     List(Box<WitTy>),
+    /// A record, enum, variant, option or result: a type declared in
+    /// Belsk2.
+    Named(Rc<WitType>),
+}
+
+/// A WIT type that is a Belsk2 declaration.
+#[derive(Debug)]
+pub struct WitType {
+    /// The Belsk2 name: `Point`, `OptionString`.
+    pub name: String,
+    /// As written in WIT: `point`, `option<string>`.
+    pub wit: String,
+    pub kind: WitTypeKind,
+    pub docs: Option<String>,
+    /// The Belsk2 type, once the declarations are checked.
+    ty: OnceCell<Ty>,
+}
+
+impl PartialEq for WitType {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name
+    }
+}
+
+impl Eq for WitType {}
+
+#[derive(Debug)]
+pub enum WitTypeKind {
+    /// A `struct`: fields in order, with their Belsk2 names.
+    Record(Vec<(String, WitTy)>),
+    /// An `enum` without data: its cases.
+    Enum(Vec<String>),
+    /// An enum with data (`variant`, `option`, `result`): its cases in
+    /// order (the case's index is its discriminant), each with the field
+    /// holding its payload, if it has one.
+    Variant(Vec<(String, Option<(String, WitTy)>)>),
+}
+
+impl WitType {
+    /// The Belsk2 declaration of the type.
+    fn source(&self) -> String {
+        let mut out = String::new();
+        doc_lines(self.docs.as_ref(), &mut out);
+        match &self.kind {
+            WitTypeKind::Record(fields) => {
+                out.push_str(&format!("struct {} {{\n", self.name));
+                for (name, t) in fields {
+                    out.push_str(&format!("    {name}: {};\n", t.belsk2()));
+                }
+                out.push_str("}\n");
+            }
+            WitTypeKind::Enum(cases) => {
+                out.push_str(&format!("enum {} {{\n    {}\n}}\n", self.name, cases.join(",\n    ")));
+            }
+            WitTypeKind::Variant(cases) => {
+                let cases: Vec<String> = cases
+                    .iter()
+                    .map(|(name, payload)| match payload {
+                        Some((field, t)) => format!("{name}({field}: {})", t.belsk2()),
+                        None => name.clone(),
+                    })
+                    .collect();
+                out.push_str(&format!("enum {} {{\n    {}\n}}\n", self.name, cases.join(",\n    ")));
+            }
+        }
+        out
+    }
+
+    /// A Belsk2 expression for the default value: zeros, empty strings and
+    /// lists, the first case.
+    fn default_expr(&self) -> String {
+        match &self.kind {
+            WitTypeKind::Record(fields) => {
+                let args: Vec<String> = fields.iter().map(|(_, t)| t.default_expr()).collect();
+                format!("{}({})", self.name, args.join(", "))
+            }
+            WitTypeKind::Enum(cases) => {
+                format!("{}.{}", self.name, cases.first().map_or("", String::as_str))
+            }
+            WitTypeKind::Variant(cases) => match cases.first() {
+                Some((case, Some((_, t)))) => format!("{}.{case}({})", self.name, t.default_expr()),
+                Some((case, None)) => format!("{}.{case}", self.name),
+                None => self.name.clone(),
+            },
+        }
+    }
 }
 
 impl WitTy {
@@ -33,6 +129,39 @@ impl WitTy {
             WitTy::Char => Ty::Char,
             WitTy::String => Ty::String,
             WitTy::List(elem) => Ty::array(elem.ty()),
+            WitTy::Named(t) => t.ty.get().cloned().unwrap_or(Ty::Any),
+        }
+    }
+
+    /// The Belsk2 type as written in code (known before the declarations
+    /// are checked).
+    pub fn belsk2(&self) -> String {
+        match self {
+            WitTy::List(elem) => format!("{}[]", elem.belsk2()),
+            WitTy::Named(t) => t.name.clone(),
+            other => other.ty().to_string(),
+        }
+    }
+
+    /// A Belsk2 expression for the default value of the type.
+    pub fn default_expr(&self) -> String {
+        match self {
+            WitTy::Bool => "false".into(),
+            WitTy::Int(_) => "0".into(),
+            WitTy::Float(_) => "0.0".into(),
+            WitTy::Char => "char(32)".into(),
+            WitTy::String => "\"\"".into(),
+            WitTy::List(_) => "[]".into(),
+            WitTy::Named(t) => t.default_expr(),
+        }
+    }
+
+    /// The type in a generated name: `Int`, `StringList`, `Point`.
+    fn title(&self) -> String {
+        match self {
+            WitTy::List(elem) => format!("{}List", elem.title()),
+            WitTy::Named(t) => t.name.clone(),
+            other => pascal(&other.ty().to_string()),
         }
     }
 
@@ -56,10 +185,46 @@ impl WitTy {
             WitTy::Char => "char".into(),
             WitTy::String => "string".into(),
             WitTy::List(elem) => format!("list<{}>", elem.wit_name()),
+            WitTy::Named(t) => t.wit.clone(),
         }
     }
+}
 
-    fn from_wit(resolve: &Resolve, ty: &Type) -> Result<WitTy, String> {
+/// The types of a world's functions, collected while they are read.
+#[derive(Default)]
+struct Types {
+    by_id: HashMap<TypeId, Rc<WitType>>,
+    by_name: HashMap<String, Rc<WitType>>,
+    list: Vec<Rc<WitType>>,
+}
+
+impl Types {
+    /// Registers a new type under `name`, or under a longer name if that
+    /// is taken (by a type of another interface).
+    fn add(&mut self, id: TypeId, name: String, prefix: &str, wit: String, kind: WitTypeKind, docs: Option<String>) -> WitTy {
+        let mut unique = name.clone();
+        if self.by_name.contains_key(&unique) {
+            unique = format!("{prefix}{name}");
+        }
+        let mut n = 2;
+        while self.by_name.contains_key(&unique) {
+            unique = format!("{prefix}{name}{n}");
+            n += 1;
+        }
+        let t = Rc::new(WitType {
+            name: unique.clone(),
+            wit,
+            kind,
+            docs,
+            ty: OnceCell::new(),
+        });
+        self.by_id.insert(id, Rc::clone(&t));
+        self.by_name.insert(unique, Rc::clone(&t));
+        self.list.push(Rc::clone(&t));
+        WitTy::Named(t)
+    }
+
+    fn resolve_ty(&mut self, resolve: &Resolve, ty: &Type) -> Result<WitTy, String> {
         Ok(match ty {
             Type::Bool => WitTy::Bool,
             Type::U8 => WitTy::Int(IntKind::U8),
@@ -76,38 +241,128 @@ impl WitTy {
             Type::String => WitTy::String,
             Type::ErrorContext => return Err("error-context".into()),
             Type::Id(id) => {
+                if let Some(t) = self.by_id.get(id) {
+                    return Ok(WitTy::Named(Rc::clone(t)));
+                }
                 let def = resolve
                     .types
                     .get(*id)
                     .ok_or_else(|| "an unknown type".to_string())?;
+                let docs = docs(&def.docs);
+                let prefix = match def.owner {
+                    TypeOwner::Interface(i) => resolve
+                        .interfaces
+                        .get(i)
+                        .and_then(|i| i.name.as_deref())
+                        .map(pascal)
+                        .unwrap_or_default(),
+                    _ => String::new(),
+                };
+                let named = |kind: WitTypeKind, this: &mut Self| -> Result<WitTy, String> {
+                    let wit = def.name.clone().unwrap_or_default();
+                    Ok(this.add(*id, pascal(&wit), &prefix, wit, kind, docs.clone()))
+                };
                 match &def.kind {
                     TypeDefKind::List(elem) => {
-                        WitTy::List(Box::new(WitTy::from_wit(resolve, elem)?))
+                        WitTy::List(Box::new(self.resolve_ty(resolve, elem)?))
                     }
-                    TypeDefKind::Type(t) => WitTy::from_wit(resolve, t)?,
+                    TypeDefKind::Type(t) => self.resolve_ty(resolve, t)?,
+                    TypeDefKind::Record(r) => {
+                        let mut fields = Vec::new();
+                        for f in &r.fields {
+                            fields.push((snake(&f.name), self.resolve_ty(resolve, &f.ty)?));
+                        }
+                        named(WitTypeKind::Record(fields), self)?
+                    }
+                    TypeDefKind::Enum(e) => named(
+                        WitTypeKind::Enum(e.cases.iter().map(|c| pascal(&c.name)).collect()),
+                        self,
+                    )?,
+                    TypeDefKind::Variant(v) => {
+                        let mut cases = Vec::new();
+                        for c in &v.cases {
+                            let payload = match &c.ty {
+                                Some(t) => Some(("value".to_string(), self.resolve_ty(resolve, t)?)),
+                                None => None,
+                            };
+                            cases.push((pascal(&c.name), payload));
+                        }
+                        named(WitTypeKind::Variant(cases), self)?
+                    }
+                    TypeDefKind::Option(t) => {
+                        let inner = self.resolve_ty(resolve, t)?;
+                        let name = format!("Option{}", inner.title());
+                        let wit = format!("option<{}>", inner.wit_name());
+                        let kind = WitTypeKind::Variant(vec![
+                            ("None".to_string(), None),
+                            ("Some".to_string(), Some(("value".to_string(), inner))),
+                        ]);
+                        self.anonymous(*id, name, wit, kind)
+                    }
+                    TypeDefKind::Result(r) => {
+                        let ok = r.ok.as_ref().map(|t| self.resolve_ty(resolve, t)).transpose()?;
+                        let err = r.err.as_ref().map(|t| self.resolve_ty(resolve, t)).transpose()?;
+                        let name = format!(
+                            "Result{}{}",
+                            ok.as_ref().map(WitTy::title).unwrap_or_default(),
+                            err.as_ref().map(|e| format!("Or{}", e.title())).unwrap_or_default()
+                        );
+                        let part = |t: &Option<WitTy>| t.as_ref().map_or("_".to_string(), WitTy::wit_name);
+                        let wit = match (&ok, &err) {
+                            (None, None) => "result".to_string(),
+                            (_, None) => format!("result<{}>", part(&ok)),
+                            _ => format!("result<{}, {}>", part(&ok), part(&err)),
+                        };
+                        let kind = WitTypeKind::Variant(vec![
+                            ("Ok".to_string(), ok.map(|t| ("value".to_string(), t))),
+                            ("Err".to_string(), err.map(|t| ("error".to_string(), t))),
+                        ]);
+                        self.anonymous(*id, name, wit, kind)
+                    }
                     other => {
                         let kind = match other {
-                            TypeDefKind::Record(_) => "record",
                             TypeDefKind::Resource | TypeDefKind::Handle(_) => "resource",
                             TypeDefKind::Flags(_) => "flags",
                             TypeDefKind::Tuple(_) => "tuple",
-                            TypeDefKind::Variant(_) => "variant",
-                            TypeDefKind::Enum(_) => "enum",
-                            TypeDefKind::Option(_) => "option",
-                            TypeDefKind::Result(_) => "result",
                             TypeDefKind::Map(..) => "map",
                             TypeDefKind::FixedLengthList(..) => "fixed-length list",
                             TypeDefKind::Future(_) => "future",
                             TypeDefKind::Stream(_) => "stream",
                             _ => "this type",
                         };
-                        let name = def.name.as_deref().unwrap_or(kind);
-                        return Err(format!("{kind} '{name}'"));
+                        return Err(match &def.name {
+                            Some(name) => format!("{kind} '{name}'"),
+                            None => format!("a {kind}"),
+                        });
                     }
                 }
             }
         })
     }
+
+    /// An `option` or `result`: one declaration for every use of the same
+    /// type.
+    fn anonymous(&mut self, id: TypeId, name: String, wit: String, kind: WitTypeKind) -> WitTy {
+        if let Some(t) = self.by_name.get(&name).filter(|t| t.wit == wit) {
+            let t = Rc::clone(t);
+            self.by_id.insert(id, Rc::clone(&t));
+            return WitTy::Named(t);
+        }
+        self.add(id, name, "Wit", wit, kind, None)
+    }
+}
+
+/// `point` becomes `Point`, `error-code` becomes `ErrorCode`.
+pub fn pascal(name: &str) -> String {
+    name.split(['-', '_', ' '])
+        .map(|part| {
+            let mut chars = part.chars();
+            match chars.next() {
+                Some(c) => c.to_uppercase().chain(chars).collect(),
+                None => String::new(),
+            }
+        })
+        .collect()
 }
 
 /// An interface imported or exported by the world.
@@ -159,12 +414,12 @@ impl WitFunc {
         let params: Vec<String> = self
             .params
             .iter()
-            .map(|(n, t)| format!("{}: {}", snake(n), t.ty()))
+            .map(|(n, t)| format!("{}: {}", snake(n), t.belsk2()))
             .collect();
         let ret = self
             .result
             .as_ref()
-            .map(|t| format!(": {}", t.ty()))
+            .map(|t| format!(": {}", t.belsk2()))
             .unwrap_or_default();
         format!("fn {}({}){ret}", self.name, params.join(", "))
     }
@@ -182,9 +437,35 @@ pub struct World {
     /// Interfaces the world imports and exports.
     pub import_interfaces: Vec<WitInterface>,
     pub export_interfaces: Vec<WitInterface>,
+    /// The records, enums, variants, options and results the functions
+    /// use.
+    pub types: Vec<Rc<WitType>>,
 }
 
 impl World {
+    /// The types as Belsk2 declarations; `None` if there are none.
+    pub fn types_source(&self) -> Option<String> {
+        if self.types.is_empty() {
+            return None;
+        }
+        let decls: Vec<String> = self.types.iter().map(|t| t.source()).collect();
+        Some(format!(
+            "// The types of the WIT world, as Belsk2 declarations.\n\n{}",
+            decls.join("\n")
+        ))
+    }
+
+    /// Connects the types to their declarations, once those are checked.
+    pub fn bind_types(&self, program: &Program) {
+        for stmt in &program.stmts {
+            if let StmtKind::Type(d) = &stmt.kind {
+                if let (Some(info), Some(t)) = (&d.info, self.types.iter().find(|t| t.name == d.name)) {
+                    let _ = t.ty.set(Ty::Named(info.reference()));
+                }
+            }
+        }
+    }
+
     /// Functions imported directly by the world (not in an interface):
     /// visible in every module of the project.
     pub fn root_imports(&self) -> impl Iterator<Item = &WitFunc> {
@@ -208,19 +489,19 @@ fn docs(d: &wit_parser::Docs) -> Option<String> {
     d.contents.clone()
 }
 
-fn func(resolve: &Resolve, f: &Function, interface: Option<WitInterface>) -> WitFunc {
+fn func(resolve: &Resolve, types: &mut Types, f: &Function, interface: Option<WitInterface>) -> WitFunc {
     let mut unsupported = None;
     if !matches!(f.kind, FunctionKind::Freestanding) {
         unsupported = Some("it is a resource method or async function".to_string());
     }
     let mut params = Vec::new();
     for p in &f.params {
-        match WitTy::from_wit(resolve, &p.ty) {
+        match types.resolve_ty(resolve, &p.ty) {
             Ok(t) => params.push((p.name.clone(), t)),
             Err(e) => unsupported = unsupported.or(Some(format!("it uses {e}"))),
         }
     }
-    let result = match f.result.as_ref().map(|t| WitTy::from_wit(resolve, t)) {
+    let result = match f.result.as_ref().map(|t| types.resolve_ty(resolve, t)) {
         Some(Ok(t)) => Some(t),
         Some(Err(e)) => {
             unsupported = unsupported.or(Some(format!("it uses {e}")));
@@ -241,13 +522,14 @@ fn func(resolve: &Resolve, f: &Function, interface: Option<WitInterface>) -> Wit
 
 fn items<'a>(
     resolve: &Resolve,
+    types: &mut Types,
     items: impl IntoIterator<Item = (&'a WorldKey, &'a WorldItem)>,
     funcs: &mut Vec<WitFunc>,
     interfaces: &mut Vec<WitInterface>,
 ) {
     for (key, item) in items {
         match item {
-            WorldItem::Function(f) => funcs.push(func(resolve, f, None)),
+            WorldItem::Function(f) => funcs.push(func(resolve, types, f, None)),
             WorldItem::Interface { id, .. } => {
                 let Some(iface) = resolve.interfaces.get(*id) else {
                     continue;
@@ -262,7 +544,7 @@ fn items<'a>(
                     docs: docs(&iface.docs),
                 };
                 for f in iface.functions.values() {
-                    funcs.push(func(resolve, f, Some(info.clone())));
+                    funcs.push(func(resolve, types, f, Some(info.clone())));
                 }
                 interfaces.push(info);
             }
@@ -296,14 +578,17 @@ pub fn load_world(path: &Path, world_name: Option<&str>) -> Result<World, Error>
         .ok_or_else(|| Error::project("the WIT world could not be found"))?;
     let (mut imports, mut exports) = (Vec::new(), Vec::new());
     let (mut import_interfaces, mut export_interfaces) = (Vec::new(), Vec::new());
+    let mut types = Types::default();
     items(
         &resolve,
+        &mut types,
         &world.imports,
         &mut imports,
         &mut import_interfaces,
     );
     items(
         &resolve,
+        &mut types,
         &world.exports,
         &mut exports,
         &mut export_interfaces,
@@ -315,6 +600,7 @@ pub fn load_world(path: &Path, world_name: Option<&str>) -> Result<World, Error>
         exports,
         import_interfaces,
         export_interfaces,
+        types: types.list,
         resolve,
     })
 }
@@ -354,15 +640,7 @@ pub fn stub(f: &WitFunc) -> String {
     out.push_str(&format!("{} {{\n", f.signature()));
     out.push_str("    // TODO: implement\n");
     if let Some(t) = &f.result {
-        let value = match t {
-            WitTy::Bool => "false",
-            WitTy::Int(_) => "0",
-            WitTy::Float(_) => "0.0",
-            WitTy::Char => "char(32)",
-            WitTy::String => "\"\"",
-            WitTy::List(_) => "[]",
-        };
-        out.push_str(&format!("    return {value};\n"));
+        out.push_str(&format!("    return {};\n", t.default_expr()));
     }
     out.push_str("}\n");
     out
@@ -393,6 +671,11 @@ impl World {
                 None => out.push_str(&format!("{};\n", f.signature())),
             }
         };
+        if let Some(types) = self.types_source() {
+            out.push_str("\n// Types, visible in every module:\n\n");
+            out.push_str(types.lines().skip(2).collect::<Vec<_>>().join("\n").as_str());
+            out.push('\n');
+        }
         let roots: Vec<&WitFunc> = self.root_imports().collect();
         if !roots.is_empty() {
             out.push_str("\n// Imports, callable from every module:\n\n");

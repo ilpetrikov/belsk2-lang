@@ -575,3 +575,89 @@ fn partial_types_over_several_files() {
     );
     assert_eq!(run_project(&dir).as_deref(), Ok("hi Bob\n"));
 }
+
+#[test]
+fn wit_records_enums_and_variants() {
+    let dir = temp_dir("wit_types");
+    write(
+        &dir,
+        &[
+            (
+                "belsk2.toml",
+                "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[component]\nworld = \"wit\"\n",
+            ),
+            (
+                "wit/world.wit",
+                "package demo:app;
+
+interface shapes {
+    record point { x: s32, y: s32 }
+    enum color { red, dark-blue }
+    variant shape { circle(f64), rect(point), empty }
+    /// The shape under the cursor.
+    hovered: func() -> option<shape>;
+    paint: func(s: shape, c: color) -> result<u32, string>;
+}
+
+world app {
+    import shapes;
+    use shapes.{point, shape};
+    export area: func(s: shape) -> f64;
+    export find: func(points: list<point>, x: s32) -> option<point>;
+    export run: func();
+}
+",
+            ),
+            (
+                "src/main.belsk2",
+                "using shapes;
+
+fn area(s: Shape): double {
+    return match s {
+        Circle(r) => 3.0 * r * r,
+        Rect(p) => double(p.x * p.y),
+        Empty => 0.0,
+    };
+}
+
+fn find(points: Point[], x: int): OptionPoint {
+    for p in points {
+        if p.x == x { return OptionPoint.Some(p); }
+    }
+    return OptionPoint.None;
+}
+
+fn run() {
+    var h = hovered();
+    prinb(h);
+    var r = paint(Shape.Rect(Point(2, 3)), Color.DarkBlue);
+    match r {
+        Ok(n) => prinb(\"painted \" + str(n)),
+        Err(e) => prinb(\"failed: \" + e),
+    }
+    prinb(area(Shape.Rect(Point(2, 3))));
+    prinb(find([Point(1, 2), Point(5, 6)], 5));
+}
+",
+            ),
+        ],
+    );
+    let loaded = project::load(&dir, Mode::All);
+    assert!(loaded.is_ok());
+    let Ok(mut loaded) = loaded else {
+        return;
+    };
+    let errors = project::check(&mut loaded);
+    assert!(errors.is_empty(), "{errors:?}");
+    let mut out = Vec::new();
+    let result = project::call(&loaded, &mut Interpreter::new(), None, &[], &mut out);
+    assert!(result.is_ok(), "{result:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&out),
+        "[host] shapes.hovered()\nNone\n[host] shapes.paint(Rect(Point { x: 2, y: 3 }), DarkBlue)\npainted 0\n6\nSome(Point { x: 5, y: 6 })\n"
+    );
+    let world = loaded.world.as_ref().map(|w| w.describe()).unwrap_or_default();
+    assert!(world.contains("enum Color {\n    Red,\n    DarkBlue\n}"), "{world}");
+    assert!(world.contains("fn find(points: Point[], x: int): OptionPoint;"), "{world}");
+    assert!(world.contains("enum ResultUintOrString {\n    Ok(value: uint),\n    Err(error: string)\n}"), "{world}");
+}

@@ -19,13 +19,14 @@ pub use belsk2_project::wit;
 pub use belsk2_project::{
     create, display_path, find_root, load, load_file, load_file_lenient, load_lenient, load_with,
     module_name, ComponentInfo, Dependency, Loaded, Lockfile, Manifest, Mode, Module, ModuleId,
-    Options, Package, PackageInfo, Template, WitFunc, WitInterface, WitTy, World, LOCKFILE,
+    Options, Package, PackageInfo, Template, WitFunc, WitInterface, WitTy, WitTypeKind, World,
+    LOCKFILE,
     MANIFEST,
 };
 use belsk2_syntax::Ty;
 use belsk2_typeck::Checker;
 
-use crate::{Array, Error, Interpreter, Native, Result, Value};
+use crate::{Array, Error, Interpreter, Native, Result, StructValue, Value};
 
 /// Type-checks every loaded module, each after the modules it uses, and
 /// returns all errors.
@@ -79,6 +80,9 @@ pub fn check(loaded: &mut Loaded) -> Vec<Error> {
         }
         let (errs, items) = checker.check_module(&mut module.program);
         errors.extend(errs);
+        if let (Some(world), true) = (&loaded.world, Some(id) == loaded.wit_types) {
+            world.bind_types(&module.program);
+        }
         // A component starts in the functions its WIT world exports.
         let needs_main = loaded.world.is_none();
         if needs_main && Some(id) == loaded.entry && !items.iter().any(|(name, _)| name == "main") {
@@ -390,13 +394,9 @@ fn run_modules(
 ) -> Result<Vec<Option<Exports>>> {
     let mut values: Vec<Option<Vec<(String, Value, Ty)>>> = vec![None; loaded.modules.len()];
     // There is no host in the interpreter: functions the WIT world imports
-    // are stubs that print the call and return a default value.
-    let world_imports: Vec<(String, Value, Ty)> = loaded
-        .world
-        .iter()
-        .flat_map(|w| w.root_imports())
-        .map(|f| (f.name.clone(), stub(f, f.wit_name.clone()), f.ty()))
-        .collect();
+    // are stubs that print the call and return a default value. They are
+    // made once the types of the world are defined.
+    let mut world_imports: Option<Vec<(String, Value, Ty)>> = None;
     for id in loaded.run_order() {
         let Some(module) = loaded.modules.get(id) else {
             continue;
@@ -407,7 +407,7 @@ fn run_modules(
                 .interface_imports(&iface.module)
                 .map(|f| {
                     let shown = format!("{short}.{}", f.wit_name);
-                    (f.name.clone(), stub(f, shown), f.ty())
+                    (f.name.clone(), stub(f, shown, interp), f.ty())
                 })
                 .collect();
             if let Some(slot) = values.get_mut(id) {
@@ -416,8 +416,16 @@ fn run_modules(
             continue;
         }
         let mut imports = Vec::new();
-        if module.package == 0 {
-            imports.extend(world_imports.iter().cloned());
+        if module.package == 0 && Some(id) != loaded.wit_types {
+            let roots = world_imports.get_or_insert_with(|| {
+                loaded
+                    .world
+                    .iter()
+                    .flat_map(|w| w.root_imports())
+                    .map(|f| (f.name.clone(), stub(f, f.wit_name.clone(), interp), f.ty()))
+                    .collect()
+            });
+            imports.extend(roots.iter().cloned());
         }
         for &(used, _) in &module.uses {
             if let Some(Some(items)) = values.get(used) {
@@ -440,20 +448,26 @@ fn short_name(key: &str) -> &str {
 
 /// A stand-in for a function the host provides: prints
 /// `[host] name(args)` and returns the default value of its result type.
-fn stub(f: &WitFunc, shown: String) -> Value {
-    let result = f.result.clone();
+fn stub(f: &WitFunc, shown: String, interp: &Interpreter) -> Value {
+    let result = f
+        .result
+        .as_ref()
+        .map(|t| default(t, interp))
+        .unwrap_or(Value::Null);
     Value::Native(Rc::new(Native {
         name: f.name.clone(),
         ty: f.ty(),
         func: Box::new(move |args, out| {
             let args: Vec<String> = args.iter().map(show).collect();
             writeln!(out, "[host] {shown}({})", args.join(", "))?;
-            Ok(result.as_ref().map(default).unwrap_or(Value::Null))
+            Ok(result.clone())
         }),
     }))
 }
 
-fn default(t: &WitTy) -> Value {
+/// The value a stub returns: zeros, empty strings and lists, the first
+/// case of an enum.
+fn default(t: &WitTy, interp: &Interpreter) -> Value {
     match t {
         WitTy::Bool => Value::Bool(false),
         WitTy::Int(k) => Value::Int(0, *k),
@@ -461,6 +475,30 @@ fn default(t: &WitTy) -> Value {
         WitTy::Char => Value::Char(' '),
         WitTy::String => Value::String(String::new()),
         WitTy::List(elem) => Value::Array(Array::typed(elem.ty(), Vec::new())),
+        WitTy::Named(named) => {
+            let class = match t.ty() {
+                Ty::Named(r) => interp.class_of(r.id()),
+                _ => None,
+            };
+            let Some(class) = class else {
+                return Value::Null;
+            };
+            match &named.kind {
+                WitTypeKind::Record(fields) => Value::Struct(Rc::new(StructValue {
+                    class,
+                    fields: fields.iter().map(|(_, t)| default(t, interp)).collect(),
+                })),
+                WitTypeKind::Enum(_) => Value::Enum(class, 0, Rc::new(Vec::new())),
+                WitTypeKind::Variant(cases) => {
+                    let data = cases
+                        .first()
+                        .and_then(|(_, payload)| payload.as_ref())
+                        .map(|(_, t)| vec![default(t, interp)])
+                        .unwrap_or_default();
+                    Value::Enum(class, 0, Rc::new(data))
+                }
+            }
+        }
     }
 }
 

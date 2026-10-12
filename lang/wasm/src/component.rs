@@ -61,6 +61,18 @@ fn size_align(t: &WitTy) -> (i32, i32) {
     }
 }
 
+/// Records, enums and variants are not supported in WASM builds yet.
+fn named(f: &WitFunc) -> bool {
+    fn has(t: &WitTy) -> bool {
+        match t {
+            WitTy::Named(_) => true,
+            WitTy::List(e) => has(e),
+            _ => false,
+        }
+    }
+    f.params.iter().any(|(_, t)| has(t)) || f.result.as_ref().is_some_and(has)
+}
+
 fn in_memory(t: &WitTy) -> bool {
     matches!(t, WitTy::String | WitTy::List(_))
 }
@@ -82,6 +94,13 @@ pub fn imports(ctx: &mut Ctx, world: Option<&World>, wasi: bool) {
     for f in world.iter().flat_map(|w| w.imports.iter()) {
         if let Some(why) = &f.unsupported {
             ctx.unavailable.insert(f.name.clone(), why.clone());
+            continue;
+        }
+        if named(f) {
+            ctx.unavailable.insert(
+                f.name.clone(),
+                "WASM builds do not support WIT records and variants yet".to_string(),
+            );
             continue;
         }
         let mut params: Vec<ValType> = f.params.iter().flat_map(|(_, t)| flat(t)).collect();
@@ -164,6 +183,11 @@ fn export(ctx: &mut Ctx, f: &WitFunc, units: &[Unit], exported: Option<usize>) -
     if let Some(why) = &f.unsupported {
         return Err(Error::compile(format!(
             "{what}, but {why}, which Belsk2 does not support yet"
+        )));
+    }
+    if named(f) {
+        return Err(Error::compile(format!(
+            "{what}, which uses WIT records or variants; WASM builds do not support them yet"
         )));
     }
     let unit = match &f.interface {
