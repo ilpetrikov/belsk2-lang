@@ -194,7 +194,8 @@ fn main() {
 
 Inside a method the fields and other methods can be used directly or
 through `this` (`this.x`). A struct may declare a constructor instead of
-the field-by-field one: `init(x: double) { this.x = x; }` (fields not set
+the field-by-field one, named like the type as in C#:
+`Point(x: double) { this.x = x; }` (fields not set
 there keep their value or the default: `0`, `false`, `null`). Fields can
 also be written C#-style (`double x;`) or with `var` (`var count = 0;`).
 
@@ -246,7 +247,7 @@ fn main() {
 }
 ```
 
-A class has fields, methods, `this` and `init` like a struct, but it is a
+A class has fields, methods, `this` and the constructor like a struct, but it is a
 reference type, as in C#: copies share one object, changes through any of
 them are seen by all, a variable of a class type may be `null`, and `==`
 asks whether two values are the same object.
@@ -258,7 +259,7 @@ class Player {
     static count: int = 0;              // one for the whole type: Player.count
 
     Name: string { get; private set; }  // an auto-property: stored like a field
-    Id: int { get; }                    // read-only: set by its value or in init
+    Id: int { get; }                    // read-only: set by its value or the constructor
     private hp: int = 100;
 
     Hp: int {                           // a property with code
@@ -266,7 +267,7 @@ class Player {
         set { if value < 0 { hp = 0; } else { hp = value; } }
     }
 
-    init(name: string) { Name = name; count += 1; Id = count; }
+    Player(name: string) { Name = name; count += 1; Id = count; }
 
     static fn create(name: string): Player { return Player(name); }
 }
@@ -279,7 +280,7 @@ prinb(Player.count);
 Members are `public` unless marked `private` (only the type itself may use
 them) or `protected` (the type and, once inheritance exists, the types
 derived from it); a property's `set` (or `get` for a whole property) can
-have its own modifier, and `private init` keeps others from creating
+have its own modifier, and `a private constructor` keeps others from creating
 values. `static` fields, properties and methods belong to the type and are
 used through it (`Player.count`); inside the type they can be used by
 name, but there is no `this` in them. Static fields get their values when
@@ -301,14 +302,14 @@ abstract class Animal : INamed {
     Name: string { get; }
     protected legs: int = 4;            // seen by Animal and derived classes
 
-    init(name: string) { Name = name; }
+    Animal(name: string) { Name = name; }
 
     abstract fn speak(): string;        // no body: every class below overrides it
     virtual fn describe(): string { return Name + " says " + speak(); }
 }
 
 class Dog : Animal {
-    init(name: string) : base(name) {}  // the base class's init runs first
+    Dog(name: string) : base(name) {}   // the base class's constructor runs first
     override fn speak(): string { return "woof"; }
     override fn describe(): string { return base.describe() + "!"; }
 }
@@ -331,9 +332,26 @@ object's real class, and `base.m()` calls the base class's version. An
 `abstract class` cannot be created. An interface lists methods and
 properties (`Name: T { get; }` or `{ get; set; }`); a type implementing it
 must have all of them, public. Interfaces can extend other interfaces.
-Without `: base(...)`, the base class's `init` is called without arguments
+Without `: base(...)`, the base class's the constructor is called without arguments
 (an error if it needs some). `x is T` tests the type, and `x as T` gives
 `x` as a `T` or `null`.
+
+## Destructors and the garbage collector
+
+```belsk2
+class File {
+    name: string;
+    File(name: string) { this.name = name; prinb("open " + name); }
+    ~File() { prinb("close " + name); }   // runs when the object is freed
+}
+```
+
+Memory is managed automatically. An object is freed as soon as nothing
+refers to it any more, and its destructor runs right after the statement
+that dropped the last reference (destructors of base classes run after the
+class's own). Objects that only refer to each other in a cycle are found by
+a garbage collector, which runs every 10,000 new objects; `gc()` runs it
+now and returns how many objects it freed. Only classes have destructors.
 
 ## Using belsk2 from Rust
 

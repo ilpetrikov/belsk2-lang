@@ -10,7 +10,7 @@ use crate::checker::{const_of, Const};
 pub const BUILTINS: &[&str] = &[
     "prinb", "reab", "input", "len", "str", "num", "bool", "push", "pop", "substr", "type",
     "sbyte", "byte", "short", "ushort", "int", "uint", "long", "ulong", "float", "double", "char",
-    "has", "remove", "keys", "values",
+    "has", "remove", "keys", "values", "gc",
 ];
 
 pub fn is_builtin(name: &str) -> bool {
@@ -107,6 +107,10 @@ pub fn check(name: &str, args: &[Expr]) -> Result<Ty> {
             expect(name, args, 1, "an integer for start", is_integer)?;
             expect(name, args, 2, "an integer for length", is_integer)?;
             Ok(Ty::String)
+        }
+        "gc" => {
+            arity(name, n, 0, 0)?;
+            Ok(Ty::INT)
         }
         "type" => {
             arity(name, n, 1, 1)?;

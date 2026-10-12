@@ -71,14 +71,16 @@
 - [ ] Rust dependencies (crates.io / git) in `belsk2.toml`
 
 ### Language
-- [x] `struct`: fields (with values), methods, `init`, `this`, value semantics (copies;
+- [x] `struct`: fields (with values), methods, constructors, `this`, value semantics (copies;
       methods may change the variable they are called on), `==` by fields; interpreter only
 - [ ] WASM: structs, enums and classes in the WASM backend
 - [x] `enum`: typed cases (`Mode.High`) with numbers (`Low = 1`), methods, `int(m)`, dictionary keys
 - [ ] Enums with data (`Circle(radius: double)`) together with `match`
-- [x] `class`: fields, methods, `init`, `this`; reference semantics, `null`
+- [x] `class`: fields, methods, constructors, `this`; reference semantics, `null`
 - [x] Inheritance: one base class, `virtual`/`override`/`abstract`, `abstract class`, `base.m()`,
-      `init(...) : base(...)`, `protected`, `is`/`as`
+      `Dog(...) : base(...)`, `protected`, `is`/`as`
+- [x] Constructors named like the type (`Player(...) : base(...)`, as in C#), destructors
+      (`~Player()`), garbage collection (reference counting + cycle collector, `gc()`)
 - [x] `interface`: methods and properties, interfaces extending interfaces, implemented by
       classes, structs and enums
 - [x] Properties (auto `{ get; private set; }` and with `get`/`set` code), `static` fields,

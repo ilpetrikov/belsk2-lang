@@ -432,7 +432,7 @@ impl Indexer<'_> {
                         format!("{mods}fn {}.{sig}", decl.name),
                     )
                 }
-                MemberKind::Init(_) => continue,
+                MemberKind::Init(_) | MemberKind::Drop(_) => continue,
                 MemberKind::Case { name, .. } => {
                     let value = info
                         .reference()
@@ -578,7 +578,9 @@ impl Indexer<'_> {
                                 self.walk_fn(&a.decl, None, this);
                             }
                         }
-                        MemberKind::Init(d) => self.walk_fn(d, None, this.clone()),
+                        MemberKind::Init(d) | MemberKind::Drop(d) => {
+                            self.walk_fn(d, None, this.clone())
+                        }
                         MemberKind::Case { value, .. } => {
                             if let Some(v) = value {
                                 self.expr(v);

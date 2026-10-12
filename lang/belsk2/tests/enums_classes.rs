@@ -58,7 +58,7 @@ fn enum_cases_are_typed_values_with_numbers() {
 #[test]
 fn enum_fields_default_to_the_first_case() {
     let src = format!(
-        "{MODE}struct Settings {{ mode: PerformanceMode; level: int; init() {{ level = 1; }} }}
+        "{MODE}struct Settings {{ mode: PerformanceMode; level: int; Settings() {{ level = 1; }} }}
         fn main() {{ prinb(Settings()); }}"
     );
     assert_eq!(run(&src), "Settings { mode: Low, level: 1 }\n");
@@ -104,7 +104,7 @@ fn classes_are_shared_references() {
 fn class_init_and_this() {
     let src = "class Counter {
         count: int;
-        init(start: int) { count = start; }
+        Counter(start: int) { count = start; }
         fn inc(): Counter { count += 1; return this; }
     }
     fn main() {

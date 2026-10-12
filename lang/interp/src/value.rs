@@ -41,6 +41,29 @@ pub enum Value {
 pub struct Object {
     pub class: Rc<Class>,
     pub fields: std::cell::RefCell<Vec<Value>>,
+    /// Its destructor ran already (or is running): it does not run again.
+    pub finalized: std::cell::Cell<bool>,
+}
+
+impl Object {
+    pub fn new(class: Rc<Class>, fields: Vec<Value>) -> Self {
+        Object {
+            class,
+            fields: std::cell::RefCell::new(fields),
+            finalized: std::cell::Cell::new(false),
+        }
+    }
+}
+
+/// A freed object with a destructor hands its fields to the interpreter,
+/// which runs the destructor at the next statement.
+impl Drop for Object {
+    fn drop(&mut self) {
+        if !self.finalized.get() && self.class.has_destructor() {
+            let fields = std::mem::take(self.fields.get_mut());
+            crate::gc::enqueue(Rc::clone(&self.class), fields);
+        }
+    }
 }
 
 /// A user-defined type at run time.
@@ -106,6 +129,41 @@ impl Class {
             })?;
             Some((c, prop))
         })
+    }
+
+    /// The destructors to run for an object of this class: its own, then
+    /// its base classes'.
+    pub fn destructors(self: &Rc<Self>) -> Vec<(Rc<Class>, Rc<FnDecl>)> {
+        self.chain()
+            .into_iter()
+            .filter_map(|c| {
+                let d = c.decl.members.iter().find_map(|m| match &m.kind {
+                    MemberKind::Drop(d) => Some(Rc::clone(d)),
+                    _ => None,
+                })?;
+                Some((c, d))
+            })
+            .collect()
+    }
+
+    pub fn has_destructor(&self) -> bool {
+        let mut cur = Some(self);
+        let mut depth = 0;
+        while let Some(c) = cur {
+            if c.decl
+                .members
+                .iter()
+                .any(|m| matches!(m.kind, MemberKind::Drop(_)))
+            {
+                return true;
+            }
+            depth += 1;
+            if depth > 64 {
+                break;
+            }
+            cur = c.base.get().map(|b| &**b);
+        }
+        false
     }
 
     pub fn init(&self) -> Option<&Rc<FnDecl>> {

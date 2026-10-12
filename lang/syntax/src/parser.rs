@@ -752,7 +752,7 @@ impl Parser {
             if self.eat(TokenKind::Semicolon) {
                 continue;
             }
-            let member = self.parse_member(kind)?;
+            let member = self.parse_member(kind, &name)?;
             if kind == TypeKind::Enum
                 && !matches!(member.kind, MemberKind::Method(_) | MemberKind::Prop(_))
                 && !(member.mods.is_static && matches!(member.kind, MemberKind::Field(_)))
@@ -810,24 +810,64 @@ impl Parser {
         }
     }
 
-    /// A field, `fn` or `init` in a type body.
-    fn parse_member(&mut self, owner: TypeKind) -> Result<Member> {
+    /// A field, property, `fn`, constructor (`Name(...)`) or destructor
+    /// (`~Name()`) in the body of type `type_name`.
+    fn parse_member(&mut self, owner: TypeKind, type_name: &str) -> Result<Member> {
         let span = self.span();
         let mods = self.parse_modifiers()?;
         let t = self.peek().clone();
+        if t.kind == TokenKind::Tilde {
+            self.bump();
+            let name_span = self.span();
+            if !self.at_word(type_name) {
+                return Err(Error::syntax(
+                    format!("a destructor is named like its class: ~{type_name}()"),
+                    name_span,
+                ));
+            }
+            self.bump();
+            self.expect(TokenKind::LParen)?;
+            if !self.parse_params()?.is_empty() {
+                return Err(Error::syntax("a destructor takes no parameters", name_span));
+            }
+            let body = self.parse_body()?;
+            let decl = FnDecl {
+                name: format!("~{type_name}"),
+                type_params: Vec::new(),
+                params: Vec::new(),
+                ret: None,
+                ret_resolved: Ty::Any,
+                body,
+                span,
+                access: Access::Public,
+            };
+            return Ok(Member {
+                kind: MemberKind::Drop(Rc::new(decl)),
+                mods,
+                span,
+            });
+        }
         if t.kind != TokenKind::Ident {
-            return Err(self.unexpected("a field, `fn` or `init`"));
+            return Err(self.unexpected("a field, `fn` or a constructor"));
+        }
+        if t.text == "init" && self.peek_at(1).kind == TokenKind::LParen {
+            return Err(Error::syntax(
+                format!(
+                    "a constructor is named like its type, as in C#: {type_name}(...) {{ ... }}"
+                ),
+                t.span,
+            ));
         }
         let kind = match t.text.as_str() {
             "fn" => {
                 let bodyless = owner == TypeKind::Interface || mods.virt == Virt::Abstract;
                 MemberKind::Method(self.parse_fn(bodyless)?)
             }
-            "init" if self.peek_at(1).kind == TokenKind::LParen => {
+            name if name == type_name && self.peek_at(1).kind == TokenKind::LParen => {
                 self.bump();
                 self.bump();
                 let params = self.parse_params()?;
-                // `: base(args)` calls the base class's init first.
+                // `: base(args)` calls the base class's constructor first.
                 let base_call = if self.eat(TokenKind::Colon) {
                     let base = self.expect_word_span("base")?;
                     self.expect(TokenKind::LParen)?;
@@ -851,7 +891,7 @@ impl Parser {
                     body.stmts.insert(0, call);
                 }
                 MemberKind::Init(Rc::new(FnDecl {
-                    name: "init".to_string(),
+                    name: type_name.to_string(),
                     type_params: Vec::new(),
                     params,
                     ret: None,

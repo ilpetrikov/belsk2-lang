@@ -14,7 +14,7 @@ struct FnCtx {
     ret: Ty,
 }
 
-/// A method (or `init`) being checked: its members can be used without
+/// A method (or constructor) being checked: its members can be used without
 /// `this.`.
 struct TypeCtx {
     ty: TypeRef,
@@ -23,7 +23,7 @@ struct TypeCtx {
     depth: usize,
     /// A static method or field value: there is no `this`.
     is_static: bool,
-    /// `init`: read-only fields may be assigned.
+    /// A constructor: read-only fields may be assigned.
     in_init: bool,
 }
 
@@ -651,12 +651,13 @@ impl Checker {
                 MemberKind::Field(f) => f.name.clone(),
                 MemberKind::Prop(p) => p.name.clone(),
                 MemberKind::Method(d) => d.name.clone(),
-                MemberKind::Init(_) => "init".to_string(),
+                MemberKind::Init(_) => "constructor".to_string(),
+                MemberKind::Drop(_) => "destructor".to_string(),
                 MemberKind::Case { name, .. } => name.clone(),
             };
             if names.contains(&name) {
-                let what = if name == "init" {
-                    format!("'{}' already has an init", decl.name)
+                let what = if name == "constructor" || name == "destructor" {
+                    format!("'{}' already has a {name}", decl.name)
                 } else {
                     format!("'{}' already has a member '{name}'", decl.name)
                 };
@@ -766,7 +767,7 @@ impl Checker {
                 MemberKind::Init(d) => {
                     if is_static || m.mods.virt != Virt::None || interface {
                         self.type_error(
-                            "'init' cannot be static, virtual or in an interface",
+                            "a constructor cannot be static, virtual or in an interface",
                             span,
                         );
                     }
@@ -782,6 +783,17 @@ impl Checker {
                         .collect();
                     body.explicit_ctor = true;
                     body.ctor_access = access;
+                }
+                MemberKind::Drop(d) => {
+                    if decl.kind != TypeKind::Class {
+                        self.type_error("only classes have a destructor", span);
+                    }
+                    if m.mods != Modifiers::default() {
+                        self.type_error("a destructor has no modifiers", span);
+                    }
+                    if let Some(d) = Rc::get_mut(d) {
+                        d.ret_resolved = Ty::Null;
+                    }
                 }
                 MemberKind::Case { value, .. } => {
                     if let Some(e) = value {
@@ -992,7 +1004,7 @@ impl Checker {
                 }
             }
         }
-        // The base class's init runs first; it needs its arguments.
+        // The base class's constructor runs first; it needs its arguments.
         if let Some(b) = &base {
             let needs_args = b.with_body(|x| !x.ctor.is_empty()).unwrap_or(false);
             let init = decl.members.iter().find_map(|m| match &m.kind {
@@ -1007,8 +1019,8 @@ impl Checker {
             if needs_args && !calls_base {
                 self.type_error(
                     format!(
-                        "the init of {} takes arguments, so {} needs `init(...) : base(...)`",
-                        b.name, t.name
+                        "the constructor of {} takes arguments, so {} needs `{}(...) : base(...)`",
+                        b.name, t.name, t.name
                     ),
                     decl.span,
                 );
@@ -1056,17 +1068,18 @@ impl Checker {
                 }
                 MemberKind::Method(_)
                     if decl.kind == TypeKind::Interface || m.mods.virt == Virt::Abstract => {}
-                MemberKind::Method(d) | MemberKind::Init(d) => match Rc::get_mut(d) {
-                    Some(d) => {
-                        let c = ctx(self, is_static, in_init);
-                        self.types.push(c);
-                        self.check_fn(d);
-                        self.types.pop();
+                MemberKind::Method(d) | MemberKind::Init(d) | MemberKind::Drop(d) => {
+                    match Rc::get_mut(d) {
+                        Some(d) => {
+                            let c = ctx(self, is_static, in_init);
+                            self.types.push(c);
+                            self.check_fn(d);
+                            self.types.pop();
+                        }
+                        None => self
+                            .type_error("internal error: method is shared before checking", span),
                     }
-                    None => {
-                        self.type_error("internal error: method is shared before checking", span)
-                    }
-                },
+                }
             }
         }
     }
@@ -1212,7 +1225,7 @@ impl Checker {
             }
             Some(ctx) => Some(Ty::Named(ctx.ty.clone())),
             None => {
-                self.type_error("'this' can only be used in methods and init", span);
+                self.type_error("'this' can only be used in methods and constructors", span);
                 None
             }
         }
@@ -1467,7 +1480,7 @@ impl Checker {
                             MemberInfo::Field(f) => {
                                 if f.set.is_none() && in_init.as_ref() != Some(&owner) {
                                     self.type_error(
-                                        format!("'{name}' is read-only; it is set only by its value and by init"),
+                                        format!("'{name}' is read-only; it is set only by its value and by the constructor"),
                                         span,
                                     );
                                 }
@@ -1903,7 +1916,7 @@ impl Checker {
             }
         }
 
-        // `base(...)` at the start of `init` runs the base class's init.
+        // `: base(...)` of a constructor runs the base class's constructor.
         if matches!(callee.kind, ExprKind::Base) {
             let ctx = self.types.last().filter(|c| c.in_init);
             let Some(b) = ctx.and_then(|c| c.ty.base()) else {
@@ -1911,12 +1924,12 @@ impl Checker {
                 return Ty::Any;
             };
             let access = b.with_body(|x| x.ctor_access).unwrap_or_default();
-            self.check_access(&b, access, &format!("the init of {}", b.name), span);
+            self.check_access(&b, access, &format!("the constructor of {}", b.name), span);
             let params = b.with_body(|x| x.ctor.clone()).unwrap_or_default();
             if params.len() != args.len() {
                 self.type_error(
                     format!(
-                        "the init of {} expects {} argument(s), got {}",
+                        "the constructor of {} expects {} argument(s), got {}",
                         b.name,
                         params.len(),
                         args.len()
@@ -1927,7 +1940,7 @@ impl Checker {
             for (i, ((_, ty), arg)) in params.iter().zip(args.iter_mut()).enumerate() {
                 let name = b.name.clone();
                 self.coerce(arg, ty, &|| {
-                    format!("argument {} of the init of {name}", i + 1)
+                    format!("argument {} of the constructor of {name}", i + 1)
                 });
             }
             return Ty::Null;
@@ -1990,7 +2003,12 @@ impl Checker {
             }
             Ty::Type(t) => {
                 let access = t.with_body(|b| b.ctor_access).unwrap_or_default();
-                self.check_access(&t, access, &format!("the init of {}", t.name), callee.span);
+                self.check_access(
+                    &t,
+                    access,
+                    &format!("the constructor of {}", t.name),
+                    callee.span,
+                );
                 let params = t.with_body(|b| b.ctor.clone()).unwrap_or_default();
                 Ty::Fn(Some(Rc::new(Sig {
                     name: t.name.to_string(),

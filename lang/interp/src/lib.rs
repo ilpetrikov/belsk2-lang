@@ -15,6 +15,7 @@
 mod builtins;
 pub mod collections;
 pub mod env;
+mod gc;
 mod interpreter;
 pub mod num;
 pub mod trace;

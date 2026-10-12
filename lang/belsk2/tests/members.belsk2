@@ -14,7 +14,7 @@ class Player {
     }
     Alive: bool { get { return hp > 0; } }
 
-    init(name: string) {
+    Player(name: string) {
         Name = name;
         count += 1;
         Id = count;

@@ -205,6 +205,11 @@ pub fn call(
                 _ => Value::Array(Array::typed(m.value_ty().clone(), m.values()?)),
             })
         }
+        "gc" => {
+            arity(name, &args, 0, 0)?;
+            let freed = interp.collect(true, out)?;
+            Ok(Value::int(i32::try_from(freed).unwrap_or(i32::MAX)))
+        }
         "type" => {
             arity(name, &args, 1, 1)?;
             Ok(Value::String(

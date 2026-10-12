@@ -35,6 +35,11 @@ impl Array {
         }))
     }
 
+    /// Whether no other value shares these elements.
+    pub fn is_unique(&self) -> bool {
+        Rc::strong_count(&self.0) == 1
+    }
+
     pub fn elem_ty(&self) -> &Ty {
         &self.0.elem
     }
@@ -137,6 +142,11 @@ impl Map {
             value,
             entries: RefCell::new(IndexMap::new()),
         }))
+    }
+
+    /// Whether no other value shares these entries.
+    pub fn is_unique(&self) -> bool {
+        Rc::strong_count(&self.0) == 1
     }
 
     pub fn key_ty(&self) -> &Ty {

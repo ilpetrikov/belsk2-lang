@@ -118,9 +118,13 @@ pub enum MemberKind {
     Field(Box<FieldDecl>),
     /// `fn name(...) { ... }`; abstract and interface methods have no body.
     Method(Rc<FnDecl>),
-    /// `init(...) { ... }`, the constructor. `init(...) : base(args)`
-    /// becomes a call `base(args)` at the start of the body.
+    /// `Point(...) { ... }`, the constructor (named like the type, as in
+    /// C#). `Dog(...) : base(args)` becomes a call `base(args)` at the
+    /// start of the body.
     Init(Rc<FnDecl>),
+    /// `~Player() { ... }`, the destructor: runs when the garbage
+    /// collector frees the object.
+    Drop(Rc<FnDecl>),
     /// A property with `get`/`set` bodies.
     Prop(Box<PropDecl>),
     /// A case of an enum: `High` or `High = 10`.

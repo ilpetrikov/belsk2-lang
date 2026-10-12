@@ -225,10 +225,12 @@ fn tokens(source: &str) -> Result<Vec<Tok>, Error> {
             && prev.as_ref().is_some_and(|p| {
                 p.is(K::Gt) && !p.generic && p.end_line == t.line && p.end_col == t.col
             });
-        let unary = (t.is(K::Minus) || t.is(K::Plus) || t.is(K::Not) || t.is(K::Tilde))
+        let unary = ((t.is(K::Minus) || t.is(K::Plus) || t.is(K::Not) || t.is(K::Tilde))
             && prev
                 .as_ref()
-                .is_none_or(|p| p.expects_expr() && !p.is(K::RBrace));
+                .is_none_or(|p| p.expects_expr() && !p.is(K::RBrace)))
+            // `~Name()`, a destructor.
+            || (t.is(K::Tilde) && prev.as_ref().is_some_and(|p| p.is(K::RBrace)));
         let literal = t.is(K::LBrace)
             && prev.as_ref().is_some_and(|p| {
                 p.expects_expr() && !p.is(K::Semicolon) && !(p.is(K::LBrace) && !p.literal)

@@ -11,7 +11,7 @@ abstract class Animal : INamed {
     Name: string { get; }
     protected legs: int = 4;
 
-    init(name: string) { Name = name; }
+    Animal(name: string) { Name = name; }
 
     abstract fn speak(): string;
     virtual fn describe(): string { return Name + " says " + speak(); }
@@ -20,7 +20,7 @@ abstract class Animal : INamed {
 class Dog : Animal, IPet {
     tricks: int = 0;
 
-    init(name: string, tricks: int) : base(name) { this.tricks = tricks; }
+    Dog(name: string, tricks: int) : base(name) { this.tricks = tricks; }
 
     override fn speak(): string { return "woof"; }
     override fn describe(): string { return base.describe() + " (" + str(tricks) + " tricks)"; }
@@ -28,7 +28,7 @@ class Dog : Animal, IPet {
 }
 
 class Bird : Animal {
-    init(name: string) : base(name) { legs = 2; }
+    Bird(name: string) : base(name) { legs = 2; }
     override fn speak(): string { return "tweet"; }
     fn legCount(): int { return legs; }
 }

@@ -1,4 +1,4 @@
-//! `struct`: fields, methods, `init`, `this` and value semantics.
+//! `struct`: fields, methods, constructors, `this` and value semantics.
 
 use belsk2::Interpreter;
 
@@ -91,7 +91,7 @@ fn init_and_field_values() {
         var count = 0;
         name: string = \"c\";
         step: int;
-        init(start: int) { count = start; step = 2; }
+        Counter(start: int) { count = start; step = 2; }
         fn inc() { count += step; }
     }
     struct Opts { verbose: bool = true; level: int; }

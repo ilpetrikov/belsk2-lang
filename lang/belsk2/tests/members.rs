@@ -58,7 +58,7 @@ const P: &str = "class P {
     Id: int { get; }
     Total: int { get { return secret; } }
     static count: int = 0;
-    private init(id: int) { Id = id; }
+    private P(id: int) { Id = id; }
     fn rename(n: string) { Name = n; Id = 2; }
     static fn make(): P { return P(1); }
     static fn bad(): int { return secret; }
@@ -78,7 +78,10 @@ fn access_errors() {
         "'count' is static; use it through the type: P.count",
     );
     assert_error(&main("prinb(P.Name);"), "belongs to a value of P");
-    assert_error(&main("var q = P(2);"), "the init of P is private in P");
+    assert_error(
+        &main("var q = P(2);"),
+        "the constructor of P is private in P",
+    );
     assert_error(&main(""), "cannot be used in a static member");
     assert_error(
         "protected fn f() {}",

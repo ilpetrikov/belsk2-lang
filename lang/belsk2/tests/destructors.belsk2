@@ -1,0 +1,46 @@
+class Resource {
+    name: string;
+    other: Resource = null;
+
+    Resource(name: string) {
+        this.name = name;
+        prinb("open " + name);
+    }
+
+    ~Resource() { prinb("close " + name); }
+}
+
+class Logged : Resource {
+    Logged(name: string) : base(name) {}
+    ~Logged() { prinb("logged " + name); }
+}
+
+struct P {
+    x: int;
+    P(v: int) { x = v * 2; }
+}
+
+fn use() {
+    var r = Resource("a");
+    prinb("using " + r.name);
+}
+
+fn main() {
+    use();
+    prinb("after use");
+    var x = Resource("b");
+    x = null;
+    prinb("after null");
+    var c1 = Resource("c1");
+    var c2 = Resource("c2");
+    c1.other = c2;
+    c2.other = c1;
+    c1 = null;
+    c2 = null;
+    prinb("cycle dropped");
+    prinb(gc());
+    var l = Logged("l");
+    l = null;
+    prinb(P(3).x);
+    prinb("end");
+}

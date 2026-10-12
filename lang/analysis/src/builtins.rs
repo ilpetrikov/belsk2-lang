@@ -54,6 +54,11 @@ const DOCS: &[(&str, &str, &str)] = &[
         "Part of a string.",
     ),
     (
+        "gc",
+        "fn gc(): int",
+        "Runs the garbage collector now: frees objects that only refer to each other in cycles and runs destructors. Returns how many objects were freed.",
+    ),
+    (
         "type",
         "fn type(value): string",
         "Name of the run-time type of a value.",

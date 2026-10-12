@@ -71,6 +71,10 @@ pub struct Interpreter {
     /// Every user-defined type declared so far, by type id (for default
     /// values of fields).
     classes: HashMap<usize, Rc<Class>>,
+    /// Enough objects were created for a cycle collection.
+    gc_due: bool,
+    /// Destructors are running (they do not start another collection).
+    in_gc: bool,
 }
 
 impl Default for Interpreter {
@@ -96,6 +100,8 @@ impl Interpreter {
             max_call_depth: DEFAULT_MAX_CALL_DEPTH,
             type_env: Vec::new(),
             classes: HashMap::new(),
+            gc_due: false,
+            in_gc: false,
         }
     }
 
@@ -185,6 +191,8 @@ impl Interpreter {
         };
         self.call_depth = 0;
         let result = self.call(f, values, &[], f.decl.span, out)?;
+        // Destructors of objects freed at the end of `main`.
+        self.collect(false, out)?;
         out.flush()?;
         Ok(result.as_i64())
     }
@@ -355,6 +363,10 @@ impl Interpreter {
     }
 
     fn exec(&mut self, stmt: &Stmt, env: &EnvRef, out: &mut dyn Write) -> Result<Flow> {
+        if (self.gc_due || crate::gc::has_pending()) && !self.in_gc {
+            let full = std::mem::take(&mut self.gc_due);
+            self.collect(full, out).map_err(|e| e.or_at(stmt.span))?;
+        }
         if self.trace.is_some() && !matches!(stmt.kind, StmtKind::FnDecl(_) | StmtKind::Using(_)) {
             self.record(|t| t.hit(stmt.span));
         }
@@ -994,6 +1006,73 @@ impl Interpreter {
         }
     }
 
+    /// Runs the destructors of freed objects; with `full`, first finds
+    /// objects kept alive only by cycles among themselves, runs their
+    /// destructors and frees them. Returns how many objects it freed.
+    pub fn collect(&mut self, full: bool, out: &mut dyn Write) -> Result<usize> {
+        if self.in_gc {
+            return Ok(0);
+        }
+        self.in_gc = true;
+        let result = self.collect_inner(full, out);
+        self.in_gc = false;
+        result
+    }
+
+    fn collect_inner(&mut self, full: bool, out: &mut dyn Write) -> Result<usize> {
+        let mut freed = 0;
+        if full {
+            let garbage = crate::gc::find_garbage();
+            freed += garbage.len();
+            for o in &garbage {
+                if !o.finalized.replace(true) {
+                    self.destruct(Value::Object(Rc::clone(o)), &o.class, out)?;
+                }
+            }
+            // Emptying the fields breaks the cycles, which frees them.
+            for o in &garbage {
+                let fields = o
+                    .fields
+                    .try_borrow_mut()
+                    .map(|mut f| std::mem::take(&mut *f));
+                drop(fields);
+            }
+        }
+        loop {
+            let pending = crate::gc::take_pending();
+            if pending.is_empty() {
+                break;
+            }
+            for (class, fields) in pending {
+                freed += 1;
+                let object = Object::new(Rc::clone(&class), fields);
+                object.finalized.set(true);
+                self.destruct(Value::Object(Rc::new(object)), &class, out)?;
+            }
+        }
+        Ok(freed)
+    }
+
+    /// Runs the destructors of `this`: its class's, then the base classes'.
+    fn destruct(&mut self, this: Value, class: &Rc<Class>, out: &mut dyn Write) -> Result<()> {
+        for (owner, decl) in class.destructors() {
+            let call = MethodCall {
+                class: Rc::clone(&owner),
+                this: Some(this.clone()),
+            };
+            self.call_decl(
+                &decl,
+                &owner.env,
+                Vec::new(),
+                &[],
+                decl.span,
+                Some(call),
+                out,
+            )?;
+        }
+        Ok(())
+    }
+
     /// Where the values of a type's fields are evaluated: its static
     /// members can be used by name.
     fn member_env(&self, class: &Rc<Class>) -> EnvRef {
@@ -1183,10 +1262,11 @@ impl Interpreter {
             }
         }
         let this = if class.ty.kind == TypeKind::Class {
-            Value::Object(Rc::new(Object {
-                class: Rc::clone(class),
-                fields: std::cell::RefCell::new(fields),
-            }))
+            let object = Rc::new(Object::new(Rc::clone(class), fields));
+            if crate::gc::register(&object) {
+                self.gc_due = true;
+            }
+            Value::Object(object)
         } else {
             Value::Struct(Rc::new(StructValue {
                 class: Rc::clone(class),

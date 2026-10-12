@@ -35,10 +35,10 @@ fn virtual_methods_base_and_interfaces() {
 
 #[test]
 fn inits_run_from_the_base_class_down() {
-    let src = "class A { log: string[] = []; init() { push(log, \"A\"); } }
-    class B : A { init() { push(log, \"B\"); } }
+    let src = "class A { log: string[] = []; A() { push(log, \"A\"); } }
+    class B : A { B() { push(log, \"B\"); } }
     class C : B { x: int; }
-    class D : A { n: int; init(n: int) : base() { this.n = n; push(log, \"D\"); } }
+    class D : A { n: int; D(n: int) : base() { this.n = n; push(log, \"D\"); } }
     fn main() {
         prinb(C(5).log);
         prinb(C(5).x);
@@ -116,12 +116,12 @@ fn inheritance_errors() {
     );
     assert_error("interface I { x: int; }", "an interface has no fields");
     assert_error(
-        "class A { init(x: int) {} } class B : A {}",
-        "needs `init(...) : base(...)`",
+        "class A { A(x: int) {} } class B : A {}",
+        "needs `B(...) : base(...)`",
     );
     assert_error(
-        "class A { init(x: int) {} } class B : A { init() : base(\"s\") {} }",
-        "argument 1 of the init of A",
+        "class A { A(x: int) {} } class B : A { B() : base(\"s\") {} }",
+        "argument 1 of the constructor of A",
     );
     assert_error("class A { } class B : A, A {}", "must come first");
     assert_error("interface I { fn f() { } }", "has no body");
