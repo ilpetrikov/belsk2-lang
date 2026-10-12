@@ -81,6 +81,8 @@
       `Dog(...) : base(...)`, `protected`, `is`/`as`
 - [x] Constructors named like the type (`Player(...) : base(...)`, as in C#), destructors
       (`~Player()`), garbage collection (reference counting + cycle collector, `gc()`)
+- [x] `partial class`/`struct`/`interface` (parts in one file)
+- [ ] `partial` types over several files (needs files that share their names)
 - [x] `interface`: methods and properties, interfaces extending interfaces, implemented by
       classes, structs and enums
 - [x] Properties (auto `{ get; private set; }` and with `get`/`set` code), `static` fields,

@@ -336,6 +336,11 @@ Without `: base(...)`, the base class's the constructor is called without argume
 (an error if it needs some). `x is T` tests the type, and `x as T` gives
 `x` as a `T` or `null`.
 
+A `partial class` (or `partial struct`, `partial interface`) may be written
+in several parts in the same file; they are joined into one type, with the
+members and base types of every part. Splitting one type over several
+files is not supported yet.
+
 ## Destructors and the garbage collector
 
 ```belsk2
