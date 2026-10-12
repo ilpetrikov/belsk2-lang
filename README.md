@@ -499,9 +499,12 @@ arrays, generics, structs, enums (with data too), classes, inheritance,
 interfaces, properties, static members, `is`/`as`, `switch` and `match`
 are supported, and numbers print as in the interpreter (only extremely
 large or small doubles may show more digits). Dictionaries keep their
-insertion order and use a hash index once they grow. `any` is not
-supported yet, and destructors are a compile error: WebAssembly's garbage
-collector does not run them.
+insertion order and use a hash index once they grow. Values of type `any`
+can be stored, printed, compared, tested (`is`, `as`, `match`) and
+converted back (`int y = x;`, `int(x)`); arithmetic directly on `any` needs
+a conversion first, and a string in an `any` is not parsed as a number.
+Destructors are a compile error: WebAssembly's garbage collector does not
+run them.
 
 ### Components
 

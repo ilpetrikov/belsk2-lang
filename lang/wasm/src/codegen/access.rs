@@ -371,6 +371,12 @@ impl FnGen<'_> {
     pub(super) fn is_expr(&mut self, e: &Expr, target: &Ty, span: Span) -> R<()> {
         let target = self.t(target);
         let from = self.t(&e.ty);
+        if from.is_any() {
+            let v = self.a.local(crate::types::any_type());
+            self.expr(e)?;
+            self.emit(I::LocalSet(v));
+            return self.any_test(v, &target, span);
+        }
         match (&from, &target) {
             (Ty::Named(_), Ty::Named(b))
                 if self
@@ -408,10 +414,15 @@ impl FnGen<'_> {
         };
         let v = self.a.local(from_vt);
         self.expr(e)?;
-        self.emit(I::LocalTee(v));
-        let f = objects::is_fn(self.ctx, t);
+        if self.t(&e.ty).is_any() {
+            self.emit(I::LocalSet(v));
+            self.any_test(v, &target, span)?;
+        } else {
+            self.emit(I::LocalTee(v));
+            let f = objects::is_fn(self.ctx, t);
+            self.emit(I::Call(f));
+        }
         self.a.ops([
-            I::Call(f),
             I::If(BlockType::Result(to_vt)),
             I::LocalGet(v),
             I::RefCastNullable(to.heap_type),

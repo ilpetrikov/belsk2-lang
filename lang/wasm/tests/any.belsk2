@@ -1,0 +1,49 @@
+enum Mode { Low, High }
+class Dog { name: string; }
+struct P { x: int; }
+
+fn describe(x: any): string {
+    return match x {
+        int n => "int " + str(n),
+        string s => "string " + s,
+        Dog d => "dog " + d.name,
+        double d => "double " + str(d),
+        null => "nothing",
+        _ => "other " + str(x),
+    };
+}
+
+fn main() {
+    var mixed = [1, "two", 3.5, true, 'c', null];
+    prinb(mixed);
+    any[] things = [Dog("rex"), P(3), Mode.High, 10L, 2.5f, [1, 2], {"k": 1}, byte(7)];
+    prinb(things);
+    for t in things { prinb(describe(t)); }
+    for m in mixed { prinb(describe(m)); }
+    var x: any = 41;
+    int y = x;
+    prinb(y + 1);
+    double z = x;
+    prinb(z / 2);
+    prinb(int(x) * 2);
+    prinb(long(x) + 1L);
+    prinb(x == 41);
+    prinb(x == 41.0);
+    prinb(x == "41");
+    prinb(x != null);
+    any s = "hi";
+    string t = s;
+    prinb(t + "!");
+    prinb(s is string);
+    prinb(s is int);
+    prinb(x is int);
+    any d = Dog("ace");
+    prinb(d is Dog);
+    var dog = d as Dog;
+    prinb(dog.name);
+    Dictionary<string, any> config = {"name": "app", "port": 8080, "debug": false};
+    prinb(config);
+    int port = config["port"];
+    prinb(port);
+    prinb("value: " + str(config["debug"]));
+}

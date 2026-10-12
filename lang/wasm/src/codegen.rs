@@ -19,6 +19,7 @@ use crate::types::{nullable, Types};
 use crate::Unit;
 
 mod access;
+mod anys;
 mod maps;
 mod matching;
 mod objects;
@@ -194,6 +195,8 @@ pub struct Ctx {
     classes: HashMap<usize, objects::ClassInfo>,
     /// `$object`, the struct every user-defined type extends.
     object: u32,
+    /// The function printing an `any` (built last).
+    show_any: Option<u32>,
 }
 
 impl Ctx {
@@ -316,7 +319,7 @@ impl Ctx {
         let mut params = Vec::new();
         let mut vals = Vec::new();
         for p in &decl.params {
-            if p.resolved.is_any() {
+            if p.ty.is_none() {
                 return Err(Error::compile(format!(
                     "parameter '{}' needs a type in WASM builds",
                     p.name
@@ -473,8 +476,10 @@ pub fn export_unit(ctx: &mut Ctx, units: &[Unit], unit: usize) {
 
 /// Generates every pending function and encodes the module.
 pub fn finish(mut ctx: Ctx) -> Result<Vec<u8>, Vec<Error>> {
-    while let Some((index, job)) = ctx.pending.pop() {
-        match generate(&mut ctx, job) {
+    run_pending(&mut ctx);
+    // Printing an `any` needs every array and dictionary type there is.
+    if let Some(index) = ctx.show_any {
+        match anys::build_show(&mut ctx) {
             Ok(asm) => {
                 if let Some(def) = ctx.def_mut(index) {
                     def.body = Some(asm);
@@ -482,6 +487,7 @@ pub fn finish(mut ctx: Ctx) -> Result<Vec<u8>, Vec<Error>> {
             }
             Err(e) => ctx.errors.push(e),
         }
+        run_pending(&mut ctx);
     }
     if !ctx.errors.is_empty() {
         let mut errors = std::mem::take(&mut ctx.errors);
@@ -490,6 +496,19 @@ pub fn finish(mut ctx: Ctx) -> Result<Vec<u8>, Vec<Error>> {
         return Err(errors);
     }
     Ok(assemble(&ctx))
+}
+
+fn run_pending(ctx: &mut Ctx) {
+    while let Some((index, job)) = ctx.pending.pop() {
+        match generate(ctx, job) {
+            Ok(asm) => {
+                if let Some(def) = ctx.def_mut(index) {
+                    def.body = Some(asm);
+                }
+            }
+            Err(e) => ctx.errors.push(e),
+        }
+    }
 }
 
 fn generate(ctx: &mut Ctx, job: Job) -> R<Asm> {
@@ -1312,8 +1331,20 @@ impl<'c> FnGen<'c> {
                 self.array_lit(items, &elem, e.span)?;
             }
             _ => {
+                let from = self.t(&e.ty);
                 let got = self.expr(e)?;
                 let want = self.vt(&target, e.span)?;
+                if got.is_some() && target.is_any() && !from.is_any() {
+                    self.box_value(&from, e.span)?;
+                    return Ok(());
+                }
+                if got.is_some() && from.is_any() && !target.is_any() {
+                    self.unbox(&target, e.span)?;
+                    if matches!(target, Ty::Bel) {
+                        self.helper(Helper::Bel);
+                    }
+                    return Ok(());
+                }
                 match got {
                     Some(t) if t == want => {}
                     // A subtype (a `Dog` for an `Animal`); the checker allowed it.
@@ -1767,7 +1798,7 @@ impl<'c> FnGen<'c> {
                 let f = format_fn(self.ctx).map_err(|e2| e2.or_at(e.span))?;
                 self.emit(I::Call(f));
             }
-            other @ (Ty::Named(_) | Ty::Array(_) | Ty::Map(..) | Ty::KeyValue(..)) => {
+            other @ (Ty::Named(_) | Ty::Array(_) | Ty::Map(..) | Ty::KeyValue(..) | Ty::Any) => {
                 let f = objects::show_fn(self.ctx, &other).map_err(|e2| e2.or_at(e.span))?;
                 self.expr(e)?;
                 self.emit(I::I32Const(0));
@@ -1796,6 +1827,10 @@ impl<'c> FnGen<'c> {
         let from = self.t(&e.ty);
         if is_text(&to.canonical()) && !is_text(&from) {
             return self.emit_str(e);
+        }
+        if from.is_any() {
+            self.expr(e)?;
+            return self.unbox(to, span);
         }
         // `int(Mode.High)`: the number the case stands for.
         if let Ty::Named(t) = &from {
@@ -2026,6 +2061,15 @@ impl<'c> FnGen<'c> {
                         self.emit(I::I32Const(i32::from(ne)));
                     }
                     None => return Err(Error::compile("this expression has no value").at(span)),
+                }
+            }
+            (Ty::Any, _) | (_, Ty::Any) => {
+                self.value(lhs, &Ty::Any)?;
+                self.value(rhs, &Ty::Any)?;
+                let f = anys::eq_fn(self.ctx);
+                self.emit(I::Call(f));
+                if ne {
+                    self.emit(I::I32Eqz);
                 }
             }
             (Ty::String, Ty::String) => {

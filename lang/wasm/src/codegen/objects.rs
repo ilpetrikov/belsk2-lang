@@ -516,7 +516,7 @@ pub fn member_fn(
     let sub = |t: &Ty| t.substitute(&|n| subst.get(n).cloned());
     let mut params = Vec::new();
     for p in &decl.params {
-        if p.resolved.is_any() {
+        if p.ty.is_none() {
             return Err(Error::compile(format!(
                 "parameter '{}' needs a type in WASM builds",
                 p.name
@@ -1197,6 +1197,7 @@ pub fn eq_instrs(ctx: &mut Ctx, ty: &Ty) -> R<Vec<I<'static>>> {
         Ty::Float(FloatKind::F64) => vec![I::F64Eq],
         Ty::Int(k) if k.bits() == 64 => vec![I::I64Eq],
         Ty::Map(k, v) => vec![I::Call(super::maps::eq_fn(ctx, &k, &v)?)],
+        Ty::Any => vec![I::Call(super::anys::eq_fn(ctx))],
         Ty::KeyValue(k, v) => vec![I::Call(super::maps::pair_eq_fn(ctx, &k, &v)?)],
         Ty::Named(t) => {
             let info = ctx
@@ -1299,6 +1300,9 @@ fn eq_fn(ctx: &mut Ctx, tid: usize) -> u32 {
 /// the interpreter prints them.
 pub fn show_fn(ctx: &mut Ctx, ty: &Ty) -> R<u32> {
     let ty = ty.canonical();
+    if ty.is_any() {
+        return Ok(super::anys::show_fn(ctx));
+    }
     let key = format!("Show:{ty:?}");
     let t2 = ty.clone();
     Ok(obj_fn(ctx, key, move |ctx| build_show(ctx, &t2)))

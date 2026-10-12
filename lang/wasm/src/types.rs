@@ -16,8 +16,8 @@ use std::collections::HashMap;
 
 use belsk2_syntax::{FloatKind, Ty};
 use wasm_encoder::{
-    ArrayType as WasmArray, CompositeInnerType, CompositeType, FieldType, FuncType, HeapType,
-    RefType, StorageType, StructType, SubType, TypeSection, ValType,
+    AbstractHeapType, ArrayType as WasmArray, CompositeInnerType, CompositeType, FieldType,
+    FuncType, HeapType, RefType, StorageType, StructType, SubType, TypeSection, ValType,
 };
 
 /// A type definition.
@@ -52,6 +52,10 @@ pub struct Types {
     arrays: HashMap<String, ArrayType>,
     maps: HashMap<String, MapType>,
     pairs: HashMap<String, u32>,
+    /// Every array, dictionary and pair type with its struct (for printing
+    /// an `any`).
+    containers: Vec<(Ty, u32)>,
+    boxes: Option<Boxes>,
     /// The value type of each user-defined type, by type id.
     user: HashMap<usize, ValType>,
 }
@@ -75,6 +79,28 @@ pub struct MapType {
     pub st: u32,
     pub keys: ArrayType,
     pub values: ArrayType,
+}
+
+/// The structs boxing a value stored in an `any`: `{ kind, value }`, all
+/// subtypes of `base` (`{ kind }`).
+#[derive(Debug, Clone, Copy)]
+pub struct Boxes {
+    pub base: u32,
+    pub i32: u32,
+    pub i64: u32,
+    pub f32: u32,
+    pub f64: u32,
+}
+
+/// The type of `any` values: `(ref null eq)`.
+pub fn any_type() -> ValType {
+    ValType::Ref(RefType {
+        nullable: true,
+        heap_type: HeapType::Abstract {
+            shared: false,
+            ty: AbstractHeapType::Eq,
+        },
+    })
 }
 
 pub fn nullable(index: u32) -> ValType {
@@ -128,6 +154,40 @@ impl Types {
     /// Records the types of `elem[]` defined in a recursion group.
     pub fn set_array(&mut self, elem: &Ty, t: ArrayType) {
         self.arrays.insert(array_key(elem), t);
+        self.containers.push((Ty::array(elem.clone()), t.obj));
+    }
+
+    /// Every array, dictionary and pair type so far, with its struct.
+    pub fn containers(&self) -> Vec<(Ty, u32)> {
+        self.containers.clone()
+    }
+
+    /// The box types of `any` values.
+    pub fn boxes(&mut self) -> Boxes {
+        if let Some(b) = self.boxes {
+            return b;
+        }
+        let base = self.add(Def::Struct {
+            fields: vec![ValType::I32],
+            sub: None,
+            last: false,
+        });
+        let mut one = |t: ValType| {
+            self.add(Def::Struct {
+                fields: vec![ValType::I32, t],
+                sub: Some(base),
+                last: true,
+            })
+        };
+        let b = Boxes {
+            base,
+            i32: one(ValType::I32),
+            i64: one(ValType::I64),
+            f32: one(ValType::F32),
+            f64: one(ValType::F64),
+        };
+        self.boxes = Some(b);
+        b
     }
 
     pub fn has_array(&self, elem: &Ty) -> bool {
@@ -142,6 +202,8 @@ impl Types {
     /// recursion group.
     pub fn set_map(&mut self, key: &Ty, value: &Ty, t: MapType) {
         self.maps.insert(map_key(key, value), t);
+        self.containers
+            .push((Ty::map(key.clone(), value.clone()), t.st));
     }
 
     /// The fields of the struct of a dictionary.
@@ -168,6 +230,8 @@ impl Types {
         });
         let t = MapType { st, keys, values };
         self.maps.insert(map_key(key, value), t);
+        self.containers
+            .push((Ty::map(key.clone(), value.clone()), st));
         Some(t)
     }
 
@@ -183,6 +247,8 @@ impl Types {
             last: true,
         });
         self.pairs.insert(map_key(key, value), st);
+        self.containers
+            .push((Ty::key_value(key.clone(), value.clone()), st));
         Some(st)
     }
 
@@ -214,6 +280,7 @@ impl Types {
         if let Some(t) = self.arrays.get(&key) {
             return Some(*t);
         }
+        let elem_ty = elem.clone();
         let elem = self.val(elem)?;
         let raw = self.add(Def::Array(elem));
         let obj = self.add(Def::Struct {
@@ -223,6 +290,7 @@ impl Types {
         });
         let t = ArrayType { raw, obj, elem };
         self.arrays.insert(key, t);
+        self.containers.push((Ty::array(elem_ty), obj));
         Some(t)
     }
 
@@ -235,9 +303,8 @@ impl Types {
             Ty::Float(FloatKind::F32) => ValType::F32,
             Ty::Float(FloatKind::F64) | Ty::Bel => ValType::F64,
             Ty::String | Ty::Ster => nullable(self.string()),
-            Ty::Array(elem) if !elem.is_any() && !elem.has_params() => {
-                nullable(self.array(elem)?.obj)
-            }
+            Ty::Array(elem) if !elem.has_params() => nullable(self.array(elem)?.obj),
+            Ty::Any => any_type(),
             Ty::Named(t) => *self.user.get(&t.id())?,
             Ty::Map(k, v) => nullable(self.map(k, v)?.st),
             Ty::KeyValue(k, v) => nullable(self.pair(k, v)?),

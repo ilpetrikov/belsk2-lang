@@ -247,6 +247,20 @@ impl FnGen<'_> {
         fail: u32,
         span: Span,
     ) -> R<()> {
+        if from.is_any() {
+            self.any_test(v, t, span)?;
+            self.emit(I::I32Eqz);
+            self.emit(I::BrIf(self.depth - fail));
+            let vt = self.vt(t, span)?;
+            let local = self.a.local(vt);
+            self.emit(I::LocalGet(v));
+            self.unbox(t, span)?;
+            self.emit(I::LocalSet(local));
+            if let Some(name) = bind {
+                self.declare(name, local, t.clone());
+            }
+            return Ok(());
+        }
         let bound = match t {
             Ty::Named(n)
                 if n.kind != TypeKind::Enum

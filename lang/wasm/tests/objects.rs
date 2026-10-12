@@ -312,6 +312,11 @@ fn dictionaries() {
 }
 
 #[test]
+fn any_values() {
+    same(include_str!("any.belsk2"));
+}
+
+#[test]
 fn destructors_are_an_error() {
     let mut program = belsk2_syntax::parse("class A { ~A() {} } fn main() {}").unwrap();
     assert!(belsk2_typeck::check(&mut program).is_empty());

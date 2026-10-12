@@ -79,7 +79,8 @@
       virtual and interface calls); `str()` of floating-point numbers. Destructors are a
       compile error (no finalizers in WasmGC).
 - [x] WASM: dictionaries (insertion order, hash index from 8 entries), `KeyValuePair`
-- [ ] WASM: `any`
+- [x] WASM: `any` (an `eqref`; numbers, bools, chars and enums boxed with their kind)
+- [ ] WASM: arithmetic directly on `any`, parsing strings in `int(any)`
 - [x] `enum`: typed cases (`Mode.High`) with numbers (`Low = 1`), methods, `int(m)`, dictionary keys
 - [x] Enums with data (`Circle(radius: double)`)
 - [x] `class`: fields, methods, constructors, `this`; reference semantics, `null`
