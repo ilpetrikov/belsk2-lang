@@ -354,9 +354,9 @@ fn unsupported_code_is_a_compile_error() {
     assert!(error("idb 1 = 2;\nfn main() {}").contains("idb"));
     assert!(error("fn f(x) { }").contains("needs a type"));
     assert!(error("fn f() { return 1; }").contains("declare its return type"));
-    assert!(
-        error("fn f(): double { return 1.5; } fn g(): string { return str(f()); }")
-            .contains("not supported")
+    assert_eq!(
+        error("fn f(): double { return 1.5; } fn g(): string { return str(f()); }"),
+        "compiled"
     );
     assert!(error("fn f() { var d = {\"a\": 1}; }").contains("dictionaries"));
 }

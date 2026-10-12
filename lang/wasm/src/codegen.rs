@@ -18,6 +18,12 @@ use crate::helpers::{self, Asm, Helper};
 use crate::types::{nullable, Types};
 use crate::Unit;
 
+mod access;
+mod matching;
+mod objects;
+
+pub(crate) use objects::eq_instrs;
+
 pub type R<T> = Result<T, Error>;
 
 pub fn unsupported(what: impl Into<String>, span: Span) -> Error {
@@ -60,12 +66,24 @@ fn returns_value(stmts: &[Stmt]) -> bool {
         StmtKind::While { body, .. } | StmtKind::For { body, .. } | StmtKind::Block(body) => {
             returns_value(&body.stmts)
         }
+        StmtKind::Switch { cases, default, .. } => {
+            cases.iter().any(|c| returns_value(&c.body.stmts))
+                || default.as_ref().is_some_and(|d| returns_value(&d.stmts))
+        }
+        StmtKind::Match(m) => m.arms.iter().any(|a| match &a.body {
+            belsk2_syntax::ast::ArmBody::Block(b) => returns_value(&b.stmts),
+            belsk2_syntax::ast::ArmBody::Expr(_) => false,
+        }),
         _ => false,
     })
 }
 
 /// The return type of a function, `None` if it returns nothing.
 fn ret_type(decl: &FnDecl) -> R<Option<Ty>> {
+    // Constructors and `set` return nothing.
+    if decl.ret.is_none() && matches!(decl.ret_resolved, Ty::Null) {
+        return Ok(None);
+    }
     if decl.ret.is_none() && decl.ret_resolved.is_any() {
         if returns_value(&decl.body.stmts) {
             return Err(Error::compile(format!(
@@ -103,6 +121,20 @@ enum Job {
         ret: Option<Ty>,
     },
     Init(Vec<Init>),
+    /// A method, static method or property accessor of a type.
+    Member {
+        tid: usize,
+        decl: Rc<FnDecl>,
+        kind: objects::Kind,
+        subst: HashMap<String, Ty>,
+        ret: Option<Ty>,
+        returns_this: bool,
+    },
+    /// Creates a value of a type (`new`) or runs its constructor (`init`).
+    Ctor {
+        tid: usize,
+        new: bool,
+    },
 }
 
 /// What the start function does, in order.
@@ -111,6 +143,8 @@ enum Init {
     Var(usize, VarDecl, u32),
     /// `idb 5 = x` at the top level of a unit.
     Idb(usize, i64, Expr),
+    /// Gives a static field its value: unit, type, value, global, type.
+    Static(usize, usize, Expr, u32, Ty),
 }
 
 struct FuncDef {
@@ -153,6 +187,12 @@ pub struct Ctx {
     pub heap_base: i32,
     /// The id bank's unit and its `bankSet` and `bankGet` (wasi0.2).
     pub bank: Option<(usize, Rc<FnDecl>, Rc<FnDecl>)>,
+    /// The runtime's unit and its number formatting (`rtFormat`).
+    pub runtime: Option<(usize, Rc<FnDecl>)>,
+    /// User-defined types, by type id.
+    classes: HashMap<usize, objects::ClassInfo>,
+    /// `$object`, the struct every user-defined type extends.
+    object: u32,
 }
 
 impl Ctx {
@@ -326,9 +366,18 @@ impl Ctx {
     }
 }
 
+/// The runtime function formatting a number: `(double, single) -> string`.
+pub(crate) fn format_fn(ctx: &mut Ctx) -> R<u32> {
+    let Some((unit, decl)) = ctx.runtime.clone() else {
+        return Err(Error::compile("internal compiler error: no runtime"));
+    };
+    Ok(ctx.user_fn(unit, &decl, &[])?.index)
+}
+
 /// Registers the declarations of every unit: functions, globals and the
 /// start function that initializes the globals.
 pub fn declare(ctx: &mut Ctx, units: &[Unit]) {
+    objects::layout(ctx, units);
     let mut own: Vec<HashMap<String, Item>> = Vec::new();
     let mut inits = Vec::new();
     for (u, unit) in units.iter().enumerate() {
@@ -359,9 +408,26 @@ pub fn declare(ctx: &mut Ctx, units: &[Unit]) {
                     inits.push(Init::Idb(u, *id, value.clone()));
                 }
                 StmtKind::Idb { .. } => ctx.errors.push(no_io("idb", span)),
-                StmtKind::Type(d) => ctx
-                    .errors
-                    .push(unsupported(format!("{}s are", d.kind.keyword()), span)),
+                StmtKind::Type(d) => {
+                    // Static fields get their values in the start function.
+                    let Some(info) = &d.info else { continue };
+                    let tid = info.id();
+                    for m in &d.members {
+                        let belsk2_syntax::ast::MemberKind::Field(f) = &m.kind else {
+                            continue;
+                        };
+                        let (true, Some(value)) = (m.mods.is_static, &f.value) else {
+                            continue;
+                        };
+                        let global = ctx
+                            .classes
+                            .get(&tid)
+                            .and_then(|c| c.statics.get(&f.name).cloned());
+                        if let Some((g, ty)) = global {
+                            inits.push(Init::Static(u, tid, value.clone(), g, ty));
+                        }
+                    }
+                }
                 StmtKind::Using(_) => {}
                 _ => ctx.errors.push(
                     Error::compile("only declarations may appear outside functions").at(span),
@@ -454,17 +520,35 @@ fn generate(ctx: &mut Ctx, job: Job) -> R<Asm> {
                 match init {
                     Init::Var(unit, v, index) => {
                         g.unit = unit;
+                        g.class = None;
                         g.value(&v.value, &v.resolved)?;
                         g.emit(I::GlobalSet(index));
                     }
                     Init::Idb(unit, id, value) => {
                         g.unit = unit;
+                        g.class = None;
                         g.idb(id, &value)?;
+                    }
+                    Init::Static(unit, tid, value, index, ty) => {
+                        g.unit = unit;
+                        g.class = Some(tid);
+                        g.value(&value, &ty)?;
+                        g.emit(I::GlobalSet(index));
+                        g.class = None;
                     }
                 }
             }
             Ok(g.a)
         }
+        Job::Member {
+            tid,
+            decl,
+            kind,
+            subst,
+            ret,
+            returns_this,
+        } => objects::gen_member(ctx, tid, decl, kind, subst, ret, returns_this),
+        Job::Ctor { tid, new } => objects::gen_ctor(ctx, tid, new),
     }
 }
 
@@ -579,6 +663,29 @@ enum Place {
         idx: u32,
         elem: Ty,
     },
+    /// A field of an object (kept in a local).
+    Field {
+        obj: u32,
+        st: u32,
+        index: u32,
+    },
+    /// A field of a struct stored in `inner`: setting it stores a changed
+    /// copy there.
+    StructField {
+        inner: Box<Place>,
+        tid: usize,
+        index: u32,
+        ty: Ty,
+    },
+    /// A property: its `get` and `set`, the value it belongs to (kept in a
+    /// local; none for a static property), and where a struct goes back
+    /// after `set`.
+    Prop {
+        get: objects::MemberRef,
+        set: objects::MemberRef,
+        recv: Option<u32>,
+        inner: Option<Box<Place>>,
+    },
 }
 
 struct FnGen<'c> {
@@ -594,6 +701,12 @@ struct FnGen<'c> {
     /// targets.
     loops: Vec<(u32, u32)>,
     ret: Option<Ty>,
+    /// The type whose method (or field value) is being generated.
+    class: Option<usize>,
+    /// The local holding `this`.
+    this: Option<u32>,
+    /// A method of a struct returns `this` too.
+    returns_this: bool,
 }
 
 impl<'c> FnGen<'c> {
@@ -614,6 +727,9 @@ impl<'c> FnGen<'c> {
             depth: 0,
             loops: Vec::new(),
             ret,
+            class: None,
+            this: None,
+            returns_this: false,
         }
     }
 
@@ -678,8 +794,12 @@ impl<'c> FnGen<'c> {
             StmtKind::Type(d) => {
                 return Err(unsupported(format!("{}s are", d.kind.keyword()), span))
             }
-            StmtKind::Switch { .. } => return Err(unsupported("switch is", span)),
-            StmtKind::Match(_) => return Err(unsupported("match is", span)),
+            StmtKind::Switch {
+                subject,
+                cases,
+                default,
+            } => self.switch_stmt(subject, cases, default.as_ref(), span)?,
+            StmtKind::Match(m) => self.match_code(m, None)?,
             StmtKind::Expr(e) => {
                 if self.expr(e)?.is_some() {
                     self.emit(I::Drop);
@@ -715,6 +835,9 @@ impl<'c> FnGen<'c> {
                     };
                     self.value(e, &ret)?;
                 }
+                if self.returns_this {
+                    self.this_get(span)?;
+                }
                 self.emit(I::Return);
             }
             StmtKind::Break | StmtKind::Continue => {
@@ -726,6 +849,9 @@ impl<'c> FnGen<'c> {
                 } else {
                     cont
                 };
+                if target > self.depth {
+                    return Err(Error::compile("not inside a loop").at(span));
+                }
                 self.emit(I::Br(self.depth - target));
             }
             StmtKind::If {
@@ -903,13 +1029,20 @@ impl<'c> FnGen<'c> {
                     elem,
                 ))
             }
+            ExprKind::Member { object, name } => self.member_place(object, name, target.span),
+            ExprKind::This => match self.this {
+                Some(i) => Ok((Place::Local(i), self.t(&target.ty))),
+                None => Err(Error::compile("'this' outside of a method").at(target.span)),
+            },
             _ => Err(unsupported("assigning to this place is", target.span)),
         }
     }
 
     fn place_begin(&mut self, place: &Place) {
-        if let Place::Elem { arr, idx, .. } = place {
-            self.a.ops([I::LocalGet(*arr), I::LocalGet(*idx)]);
+        match place {
+            Place::Elem { arr, idx, .. } => self.a.ops([I::LocalGet(*arr), I::LocalGet(*idx)]),
+            Place::Field { obj, .. } => self.emit(I::LocalGet(*obj)),
+            _ => {}
         }
     }
 
@@ -921,6 +1054,29 @@ impl<'c> FnGen<'c> {
                 self.a.ops([I::LocalGet(*arr), I::LocalGet(*idx)]);
                 self.helper(Helper::ArrGet(elem.clone()));
             }
+            Place::Field { obj, st, index } => self.a.ops([
+                I::LocalGet(*obj),
+                I::StructGet {
+                    struct_type_index: *st,
+                    field_index: *index,
+                },
+            ]),
+            Place::StructField {
+                inner, tid, index, ..
+            } => {
+                self.place_get(inner);
+                let st = self.ctx.classes.get(tid).and_then(|c| c.st).unwrap_or(0);
+                self.emit(I::StructGet {
+                    struct_type_index: st,
+                    field_index: *index,
+                });
+            }
+            Place::Prop { get, recv, .. } => {
+                if let Some(r) = recv {
+                    self.emit(I::LocalGet(*r));
+                }
+                self.emit(I::Call(get.index));
+            }
         }
     }
 
@@ -929,6 +1085,64 @@ impl<'c> FnGen<'c> {
             Place::Local(i) => self.emit(I::LocalSet(*i)),
             Place::Global(i) => self.emit(I::GlobalSet(*i)),
             Place::Elem { elem, .. } => self.helper(Helper::ArrSet(elem.clone())),
+            Place::Field { st, index, .. } => self.emit(I::StructSet {
+                struct_type_index: *st,
+                field_index: *index,
+            }),
+            Place::StructField {
+                inner,
+                tid,
+                index,
+                ty,
+            } => {
+                // A changed copy of the struct goes where it was.
+                let vt = self.ctx.types.val(ty).unwrap_or(ValType::I32);
+                let v = self.a.local(vt);
+                self.emit(I::LocalSet(v));
+                let svt = self
+                    .ctx
+                    .classes
+                    .get(tid)
+                    .and_then(|c| c.st)
+                    .map(nullable)
+                    .unwrap_or(ValType::I32);
+                let old = self.a.local(svt);
+                self.place_get(inner);
+                self.emit(I::LocalSet(old));
+                self.struct_with(*tid, old, *index, v);
+                let new = self.a.local(svt);
+                self.emit(I::LocalSet(new));
+                self.place_begin(inner);
+                self.emit(I::LocalGet(new));
+                self.place_set(inner);
+            }
+            Place::Prop {
+                set, recv, inner, ..
+            } => {
+                let vt = set
+                    .params
+                    .first()
+                    .and_then(|t| self.ctx.types.val(t))
+                    .unwrap_or(ValType::I32);
+                let v = self.a.local(vt);
+                self.emit(I::LocalSet(v));
+                if let Some(r) = recv {
+                    self.emit(I::LocalGet(*r));
+                }
+                self.emit(I::LocalGet(v));
+                self.emit(I::Call(set.index));
+                if set.returns_this {
+                    match (inner, recv) {
+                        (Some(inner), Some(r)) => {
+                            self.emit(I::LocalSet(*r));
+                            self.place_begin(inner);
+                            self.emit(I::LocalGet(*r));
+                            self.place_set(inner);
+                        }
+                        _ => self.emit(I::Drop),
+                    }
+                }
+            }
         }
     }
 
@@ -1006,6 +1220,8 @@ impl<'c> FnGen<'c> {
                 let want = self.vt(&target, e.span)?;
                 match got {
                     Some(t) if t == want => {}
+                    // A subtype (a `Dog` for an `Animal`); the checker allowed it.
+                    Some(ValType::Ref(_)) if matches!(want, ValType::Ref(_)) => {}
                     Some(_) => {
                         return Err(unsupported(
                             format!("converting {} to {target} is", self.t(&e.ty)),
@@ -1086,13 +1302,15 @@ impl<'c> FnGen<'c> {
             ExprKind::Index { object, index } => self.index_get(object, index, span)?,
             ExprKind::Null => return Err(unsupported("null without a known type is", span)),
             ExprKind::Map(_) => return Err(unsupported("dictionaries are", span)),
-            ExprKind::Member { .. } => return Err(unsupported("members are", span)),
-            ExprKind::This
-            | ExprKind::SelfType
-            | ExprKind::Base
-            | ExprKind::Is { .. }
-            | ExprKind::As { .. } => return Err(unsupported("user-defined types are", span)),
-            ExprKind::Match(_) => return Err(unsupported("match is", span)),
+            ExprKind::Member { object, name } => self.member_get(object, name, span)?,
+            ExprKind::This | ExprKind::Base => self.this_get(span)?,
+            ExprKind::SelfType => return Err(unsupported("a type as a value is", span)),
+            ExprKind::Is { expr, resolved, .. } => self.is_expr(expr, resolved, span)?,
+            ExprKind::As { expr, resolved, .. } => self.as_expr(expr, resolved, span)?,
+            ExprKind::Match(m) => {
+                let ty = self.t(&e.ty);
+                self.match_code(m, Some(&ty))?;
+            }
         }
         self.vt(&e.ty, span).map(Some)
     }
@@ -1162,6 +1380,14 @@ impl<'c> FnGen<'c> {
         inst: &[Ty],
         span: Span,
     ) -> R<Option<ValType>> {
+        match (&callee.kind, self.t(&callee.ty)) {
+            (ExprKind::Member { object, name }, _) => {
+                return self.method_call(object, name, args, inst, span)
+            }
+            (ExprKind::Base, _) => return self.base_ctor_call(args, span),
+            (ExprKind::Ident(_), Ty::Type(t)) => return self.ctor_call(&t, args, span),
+            _ => {}
+        }
         let ExprKind::Ident(name) = &callee.kind else {
             return Err(unsupported("calling this expression is", span));
         };
@@ -1269,6 +1495,11 @@ impl<'c> FnGen<'c> {
                 return Ok(Some(sref));
             }
             "prinb" | "input" | "reab" => return Err(no_io(&format!("{name}()"), span)),
+            // WebAssembly's garbage collector runs on its own.
+            "gc" => {
+                self.emit(I::I32Const(0));
+                return Ok(Some(ValType::I32));
+            }
             "len" => {
                 let a = arg(0)?;
                 let ty = self.t(&a.ty).canonical();
@@ -1378,6 +1609,21 @@ impl<'c> FnGen<'c> {
                     unsigned: k == IntKind::U64,
                 });
             }
+            Ty::Float(k) => {
+                self.expr(e)?;
+                if k == FloatKind::F32 {
+                    self.emit(I::F64PromoteF32);
+                }
+                self.emit(I::I32Const(i32::from(k == FloatKind::F32)));
+                let f = format_fn(self.ctx).map_err(|e2| e2.or_at(e.span))?;
+                self.emit(I::Call(f));
+            }
+            other @ (Ty::Named(_) | Ty::Array(_)) => {
+                let f = objects::show_fn(self.ctx, &other).map_err(|e2| e2.or_at(e.span))?;
+                self.expr(e)?;
+                self.emit(I::I32Const(0));
+                self.emit(I::Call(f));
+            }
             other => {
                 return Err(unsupported(
                     format!("converting {other} to a string is"),
@@ -1401,6 +1647,16 @@ impl<'c> FnGen<'c> {
         let from = self.t(&e.ty);
         if is_text(&to.canonical()) && !is_text(&from) {
             return self.emit_str(e);
+        }
+        // `int(Mode.High)`: the number the case stands for.
+        if let Ty::Named(t) = &from {
+            if let Some(target) = to.num() {
+                self.expr(e)?;
+                let f = objects::enum_value_fn(self.ctx, t);
+                self.emit(I::Call(f));
+                self.num_convert(NumTy::Int(IntKind::I64), target);
+                return Ok(());
+            }
         }
         if self.expr(e)?.is_none() {
             return Err(Error::compile("this expression has no value").at(e.span));
@@ -1635,6 +1891,15 @@ impl<'c> FnGen<'c> {
                 self.expr(lhs)?;
                 self.expr(rhs)?;
                 self.helper(Helper::ArrEq((**a).clone()));
+                if ne {
+                    self.emit(I::I32Eqz);
+                }
+            }
+            (Ty::Named(_), Ty::Named(_)) => {
+                self.expr(lhs)?;
+                self.expr(rhs)?;
+                let eq = objects::eq_instrs(self.ctx, &lt)?;
+                self.a.ops(eq);
                 if ne {
                     self.emit(I::I32Eqz);
                 }

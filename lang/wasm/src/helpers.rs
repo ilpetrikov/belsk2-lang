@@ -2,7 +2,7 @@
 //! only when it is used.
 
 use belsk2_project::WitTy;
-use belsk2_syntax::{Error, FloatKind, Ty};
+use belsk2_syntax::{Error, Ty};
 use wasm_encoder::{BlockType, Instruction as I, ValType};
 
 use crate::codegen::Ctx;
@@ -590,16 +590,7 @@ pub fn build(ctx: &mut Ctx, h: &Helper) -> Result<Asm, Error> {
                 }
                 _ => {
                     a = Asm::new(vec![aref, aref], vec![I32]);
-                    let eq: Vec<I<'static>> = match elem.canonical() {
-                        Ty::String => vec![I::Call(ctx.helper(Helper::StrEq))],
-                        Ty::Array(inner) => {
-                            vec![I::Call(ctx.helper(Helper::ArrEq((*inner).clone())))]
-                        }
-                        Ty::Float(FloatKind::F32) => vec![I::F32Eq],
-                        Ty::Float(FloatKind::F64) => vec![I::F64Eq],
-                        Ty::Int(k) if k.bits() == 64 => vec![I::I64Eq],
-                        _ => vec![I::I32Eq],
-                    };
+                    let eq = crate::codegen::eq_instrs(ctx, elem)?;
                     seq_eq(
                         &mut a,
                         |a, i| {

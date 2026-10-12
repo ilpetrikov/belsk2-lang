@@ -34,8 +34,6 @@ pub enum Def {
     },
 }
 
-// `Rec` and the methods below are for user-defined types (in progress).
-#[allow(dead_code)]
 enum Entry {
     One(Def),
     /// Types that may refer to each other.
@@ -86,7 +84,6 @@ fn array_key(elem: &Ty) -> String {
     format!("{elem:?}")
 }
 
-#[allow(dead_code)]
 impl Types {
     fn add(&mut self, def: Def) -> u32 {
         self.entries.push(Entry::One(def));
@@ -196,11 +193,18 @@ fn sub_type(def: &Def) -> SubType {
     };
     let (inner, sub, last) = match def {
         Def::Func(params, results) => (
-            CompositeInnerType::Func(FuncType::new(params.iter().copied(), results.iter().copied())),
+            CompositeInnerType::Func(FuncType::new(
+                params.iter().copied(),
+                results.iter().copied(),
+            )),
             None,
             true,
         ),
-        Def::Array(elem) => (CompositeInnerType::Array(WasmArray(field(elem))), None, true),
+        Def::Array(elem) => (
+            CompositeInnerType::Array(WasmArray(field(elem))),
+            None,
+            true,
+        ),
         Def::Struct { fields, sub, last } => (
             CompositeInnerType::Struct(StructType {
                 fields: fields.iter().map(field).collect(),

@@ -202,7 +202,6 @@ also be written C#-style (`double x;`) or with `var` (`var count = 0;`).
 Structs are values, as in C#: assigning or passing one copies it, and
 `a.b.x = 1` changes the copy stored in `a`. A field of a temporary value
 (`make().x = 1`) cannot be assigned. A struct cannot contain itself.
-Structs are not yet supported by the WASM backend.
 
 ## Enums
 
@@ -490,8 +489,12 @@ target = "wasi0.2"   # or "wasm32" (the default)
   read in blocks of 4 KiB.
 
 Parameters and returned values need declared types. Strings,
-arrays, generics and all statements are supported; dictionaries, `any` and
-`str()` of floating-point numbers are not yet (see ROADMAP.md).
+arrays, generics, structs, enums (with data too), classes, inheritance,
+interfaces, properties, static members, `is`/`as`, `switch` and `match`
+are supported, and numbers print as in the interpreter (only extremely
+large or small doubles may show more digits). Dictionaries and `any` are
+not supported yet, and destructors are a compile error: WebAssembly's
+garbage collector does not run them.
 
 ### Components
 

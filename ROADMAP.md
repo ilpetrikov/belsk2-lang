@@ -74,7 +74,11 @@
 ### Language
 - [x] `struct`: fields (with values), methods, constructors, `this`, value semantics (copies;
       methods may change the variable they are called on), `==` by fields; interpreter only
-- [ ] WASM: structs, enums and classes in the WASM backend
+- [x] WASM: structs, enums (with data), classes, inheritance, interfaces, properties, statics,
+      `is`/`as`, `switch` and `match` (WasmGC structs in one recursion group, a type tag for
+      virtual and interface calls); `str()` of floating-point numbers. Destructors are a
+      compile error (no finalizers in WasmGC).
+- [ ] WASM: dictionaries and `any`
 - [x] `enum`: typed cases (`Mode.High`) with numbers (`Low = 1`), methods, `int(m)`, dictionary keys
 - [x] Enums with data (`Circle(radius: double)`)
 - [x] `class`: fields, methods, constructors, `this`; reference semantics, `null`

@@ -19,6 +19,7 @@
 mod codegen;
 mod component;
 mod helpers;
+mod runtime;
 mod types;
 mod wasi;
 
@@ -100,10 +101,23 @@ pub fn compile_units(
     target: Target,
 ) -> Result<Vec<u8>, Vec<Error>> {
     let wasi = target == Target::Wasi02;
-    // The id bank comes first: its globals are set before any `idb`.
-    let bank_program = if wasi { Some(bank()?) } else { None };
-    let mut all: Vec<Unit> = Vec::with_capacity(units.len() + 1);
-    let shift = usize::from(bank_program.is_some());
+    // The runtime and the id bank come first: the bank's globals are set
+    // before any `idb`.
+    let runtime_program = prelude(runtime::RUNTIME)?;
+    let bank_program = if wasi {
+        Some(prelude(wasi::BANK)?)
+    } else {
+        None
+    };
+    let mut all: Vec<Unit> = Vec::with_capacity(units.len() + 2);
+    all.push(Unit {
+        name: "#runtime".to_string(),
+        interface: false,
+        program: &runtime_program,
+        uses: Vec::new(),
+    });
+    let bank_unit = all.len();
+    let shift = all.len() + usize::from(bank_program.is_some());
     if let Some(program) = &bank_program {
         all.push(Unit {
             name: "#bank".to_string(),
@@ -125,9 +139,12 @@ pub fn compile_units(
         component::imports(&mut ctx, world, wasi);
     }
     codegen::declare(&mut ctx, units);
+    ctx.runtime = ctx.unit_fn(0, "rtFormat").map(|f| (0, f));
     if bank_program.is_some() {
-        if let (Some(set), Some(get)) = (ctx.unit_fn(0, "bankSet"), ctx.unit_fn(0, "bankGet")) {
-            ctx.bank = Some((0, set, get));
+        let set = ctx.unit_fn(bank_unit, "bankSet");
+        let get = ctx.unit_fn(bank_unit, "bankGet");
+        if let (Some(set), Some(get)) = (set, get) {
+            ctx.bank = Some((bank_unit, set, get));
         }
     }
     if let Some(world) = world {
@@ -203,9 +220,9 @@ pub fn compile_project(loaded: &Loaded, target: Target) -> Result<Vec<u8>, Vec<E
     compile_units(&units, exported, loaded.world.as_deref(), target)
 }
 
-/// The checked id bank of the wasi0.2 target.
-fn bank() -> Result<Program, Vec<Error>> {
-    let mut program = belsk2_syntax::parse(wasi::BANK).map_err(|e| vec![e])?;
+/// A checked part of the runtime written in Belsk2.
+fn prelude(source: &str) -> Result<Program, Vec<Error>> {
+    let mut program = belsk2_syntax::parse(source).map_err(|e| vec![e])?;
     let errors = belsk2_typeck::check(&mut program);
     if errors.is_empty() {
         Ok(program)
