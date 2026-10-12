@@ -541,3 +541,37 @@ fn private_declarations_stay_in_their_module() {
     );
     assert_err(run_project(&dir), "undefined variable 'helper'");
 }
+
+#[test]
+fn partial_types_over_several_files() {
+    let dir = temp_dir("partial_files");
+    write(
+        &dir,
+        &[
+            ("belsk2.toml", MANIFEST),
+            ("src/util.belsk2", "fn twice(n: int): int { return n * 2; }\n"),
+            (
+                "src/player.belsk2",
+                "partial class Player {\n    name: string;\n    fn show(): string { return name + \" \" + str(hp); }\n}\n\nfn helper(): int { return 3; }\n",
+            ),
+            (
+                "src/player_combat.belsk2",
+                "using util;\n\npartial class Player {\n    hp: int = 10;\n    fn hit() { hp -= twice(helper()); }\n}\n",
+            ),
+            (
+                "src/main.belsk2",
+                "using player;\nusing player_combat;\n\nfn main() {\n    var p = Player(\"Ann\");\n    p.hit();\n    prinb(p.show());\n}\n",
+            ),
+        ],
+    );
+    assert_eq!(run_project(&dir).as_deref(), Ok("Ann 4\n"));
+    // A part in the entry file joins it too.
+    write(
+        &dir,
+        &[(
+            "src/main.belsk2",
+            "using player;\n\npartial class Player {\n    fn greet(): string { return \"hi \" + name; }\n}\n\nfn main() {\n    prinb(Player(\"Bob\").greet());\n}\n",
+        )],
+    );
+    assert_eq!(run_project(&dir).as_deref(), Ok("hi Bob\n"));
+}

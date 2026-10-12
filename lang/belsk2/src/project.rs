@@ -30,7 +30,7 @@ use crate::{Array, Error, Interpreter, Native, Result, Value};
 /// Type-checks every loaded module, each after the modules it uses, and
 /// returns all errors.
 pub fn check(loaded: &mut Loaded) -> Vec<Error> {
-    let mut errors = Vec::new();
+    let mut errors = merge_partial_files(loaded);
     let mut exports: Vec<Option<Vec<(String, Ty)>>> = vec![None; loaded.modules.len()];
     let names: Vec<String> = loaded.modules.iter().map(|m| m.name.clone()).collect();
 
@@ -98,6 +98,152 @@ pub fn check(loaded: &mut Loaded) -> Vec<Error> {
             *slot = Some(items);
         }
     }
+    errors
+}
+
+/// The parts of a `partial` type may be in several files of a package.
+/// Such files are joined into one module (the first of them in the
+/// checking order): the type gets the members of every part, and the
+/// files see each other's declarations and the modules each one uses.
+/// The other files stay as empty modules, and every `using` of them
+/// means the joined module.
+pub fn merge_partial_files(loaded: &mut Loaded) -> Vec<Error> {
+    use belsk2_syntax::ast::StmtKind;
+    let mut errors = Vec::new();
+    // Partial types by (package, name): the modules that declare parts.
+    let mut parts: HashMap<(usize, String), Vec<ModuleId>> = HashMap::new();
+    for (id, m) in loaded.modules.iter().enumerate() {
+        for s in &m.program.stmts {
+            if let StmtKind::Type(d) = &s.kind {
+                if d.partial {
+                    let ids = parts.entry((m.package, d.name.clone())).or_default();
+                    if !ids.contains(&id) {
+                        ids.push(id);
+                    }
+                }
+            }
+        }
+    }
+    // Files that share partial types, joined into groups.
+    let n = loaded.modules.len();
+    let mut group: Vec<usize> = (0..n).collect();
+    fn root(group: &[usize], mut x: usize) -> usize {
+        let mut steps = 0;
+        while let Some(&p) = group.get(x) {
+            if p == x || steps > group.len() {
+                break;
+            }
+            x = p;
+            steps += 1;
+        }
+        x
+    }
+    let mut any = false;
+    for ids in parts.values() {
+        let Some((&first, rest)) = ids.split_first() else {
+            continue;
+        };
+        for &other in rest {
+            any = true;
+            let (a, b) = (root(&group, first), root(&group, other));
+            if let Some(slot) = group.get_mut(b) {
+                *slot = a;
+            }
+        }
+    }
+    if !any {
+        return errors;
+    }
+    let position = |id: ModuleId| {
+        loaded
+            .order
+            .iter()
+            .position(|&m| m == id)
+            .unwrap_or(usize::MAX)
+    };
+    // Each group joins into its member that is checked first.
+    let roots: Vec<usize> = (0..n).map(|m| root(&group, m)).collect();
+    let mut owner: Vec<ModuleId> = (0..n).collect();
+    for id in 0..n {
+        let r = roots.get(id).copied();
+        let members = (0..n).filter(|&m| roots.get(m).copied() == r);
+        if let Some(first) = members.min_by_key(|&m| position(m)) {
+            if let Some(slot) = owner.get_mut(id) {
+                *slot = first;
+            }
+        }
+    }
+    for id in 0..n {
+        let Some(&to) = owner.get(id) else { continue };
+        if to == id {
+            continue;
+        }
+        let (stmts, uses) = match loaded.modules.get_mut(id) {
+            Some(m) => (
+                std::mem::take(&mut m.program.stmts),
+                std::mem::take(&mut m.uses),
+            ),
+            None => continue,
+        };
+        if let Some(target) = loaded.modules.get_mut(to) {
+            target.program.stmts.extend(stmts);
+            target.uses.extend(uses);
+        }
+    }
+    // Every `using` of a joined file means its group's module.
+    for (id, m) in loaded.modules.iter_mut().enumerate() {
+        let mut seen = Vec::new();
+        m.uses.retain_mut(|(u, _)| {
+            *u = owner.get(*u).copied().unwrap_or(*u);
+            let keep = *u != id && !seen.contains(u);
+            seen.push(*u);
+            keep
+        });
+    }
+    if let Some(e) = loaded.entry {
+        loaded.entry = owner.get(e).copied();
+    }
+    // Check the modules again in an order where each comes after the
+    // modules it uses.
+    let mut placed = vec![false; n];
+    let mut order = Vec::with_capacity(n);
+    while order.len() < n {
+        let before = order.len();
+        for &id in &loaded.order {
+            let ready = !placed.get(id).copied().unwrap_or(true)
+                && loaded.modules.get(id).is_some_and(|m| {
+                    m.uses
+                        .iter()
+                        .all(|(u, _)| placed.get(*u).copied().unwrap_or(true))
+                });
+            if ready {
+                if let Some(p) = placed.get_mut(id) {
+                    *p = true;
+                }
+                order.push(id);
+            }
+        }
+        if order.len() == before {
+            let first = loaded
+                .order
+                .iter()
+                .find(|&&id| !placed.get(id).copied().unwrap_or(true));
+            let name = first
+                .and_then(|&id| loaded.modules.get(id))
+                .map(|m| m.name.clone())
+                .unwrap_or_default();
+            errors.push(Error::project(format!(
+                "the files that share partial types use each other in a cycle (through module '{name}')"
+            )));
+            for &id in &loaded.order {
+                if !placed.get(id).copied().unwrap_or(true) {
+                    order.push(id);
+                }
+            }
+            break;
+        }
+    }
+    loaded.order = order;
     errors
 }
 

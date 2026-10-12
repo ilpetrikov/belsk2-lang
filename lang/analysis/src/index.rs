@@ -78,7 +78,8 @@ pub(crate) fn index(analysis: &mut Analysis, loaded: &Loaded) {
         }
         let mut ix = Indexer {
             analysis,
-            info: &info,
+            info: info.clone(),
+            top_scopes: Vec::new(),
             module: module.name.clone(),
             builtins: &builtin_ids,
             frames: vec![imports.clone()],
@@ -86,6 +87,7 @@ pub(crate) fn index(analysis: &mut Analysis, loaded: &Loaded) {
             fn_stack: Vec::new(),
         };
         let top = ix.open_scope(Pos::new(0, 0), Pos::MAX);
+        ix.top_scopes.push(top);
         for &symbol in imports.values() {
             ix.add_entry(top, symbol, Pos::new(0, 0));
         }
@@ -149,7 +151,11 @@ fn wit_symbol(analysis: &mut Analysis, f: &belsk2::project::WitFunc, from: &str)
 
 struct Indexer<'a> {
     analysis: &'a mut Analysis,
-    info: &'a FileInfo,
+    /// The file being indexed. A module joined from several files (they
+    /// share `partial` types) switches between them.
+    info: FileInfo,
+    /// The top-level completion scope of each file of the module.
+    top_scopes: Vec<usize>,
     module: String,
     builtins: &'a HashMap<String, usize>,
     /// Names in scope, innermost last.
@@ -253,10 +259,64 @@ impl Indexer<'_> {
         if let Some(frame) = self.frames.last_mut() {
             frame.insert(name, id);
         }
-        if let Some(&scope) = self.scope_stack.last() {
+        if top && self.frames.len() == 2 {
+            // Top-level names are visible in every file of the module.
+            for scope in self.top_scopes.clone() {
+                self.add_entry(scope, id, Pos::new(0, 0));
+            }
+        } else if let Some(&scope) = self.scope_stack.last() {
             self.add_entry(scope, id, if top { Pos::new(0, 0) } else { from });
         }
         id
+    }
+
+    /// Reads names and positions from `file` (only the file, not the
+    /// completion scope).
+    fn use_file(&mut self, file: FileId) {
+        if self.info.id != file {
+            if let Some(info) = self.analysis.files.iter().find(|f| f.id == file).cloned() {
+                self.info = info;
+            }
+        }
+    }
+
+    /// Switches to the file a top-level statement comes from.
+    fn enter_file(&mut self, file: FileId) {
+        if self.info.id == file {
+            return;
+        }
+        let Some(info) = self.analysis.files.iter().find(|f| f.id == file).cloned() else {
+            return;
+        };
+        self.info = info;
+        let existing = self
+            .top_scopes
+            .iter()
+            .copied()
+            .find(|&s| self.analysis.scopes.get(s).is_some_and(|s| s.file == file));
+        let scope = match existing {
+            Some(s) => s,
+            None => {
+                let entries = self
+                    .top_scopes
+                    .first()
+                    .and_then(|&s| self.analysis.scopes.get(s))
+                    .map(|s| s.entries.clone())
+                    .unwrap_or_default();
+                let id = self.analysis.scopes.len();
+                self.analysis.scopes.push(Scope {
+                    file,
+                    start: Pos::new(0, 0),
+                    end: Pos::MAX,
+                    entries,
+                });
+                self.top_scopes.push(id);
+                id
+            }
+        };
+        if let Some(top) = self.scope_stack.first_mut() {
+            *top = scope;
+        }
     }
 
     fn lookup(&self, name: &str) -> Option<usize> {
@@ -294,7 +354,11 @@ impl Indexer<'_> {
 
     fn stmts(&mut self, stmts: &[Stmt]) {
         // Functions and types can be used before they are declared.
+        let top_level = self.frames.len() == 2;
         for stmt in stmts {
+            if top_level {
+                self.enter_file(stmt.span.file);
+            }
             if let StmtKind::Type(decl) = &stmt.kind {
                 self.declare_type(decl, stmt.span);
             }
@@ -320,6 +384,9 @@ impl Indexer<'_> {
             }
         }
         for stmt in stmts {
+            if top_level {
+                self.enter_file(stmt.span.file);
+            }
             stacker::maybe_grow(64 * 1024, 1024 * 1024, || self.stmt(stmt));
         }
     }
@@ -367,7 +434,10 @@ impl Indexer<'_> {
             return;
         };
         self.analysis.types.push(std::rc::Rc::clone(info));
+        let home = self.info.id;
         for m in &decl.members {
+            // Members of a partial type may come from another file.
+            self.use_file(m.span.file);
             let mut mods = String::new();
             if let Some(access) = m
                 .mods
@@ -467,6 +537,7 @@ impl Indexer<'_> {
             self.analysis.symbols.push(sym);
             self.analysis.members.insert((info.id(), name), id);
         }
+        self.use_file(home);
     }
 
     /// Walks a function body with its parameters (and `this` for a
@@ -562,7 +633,9 @@ impl Indexer<'_> {
             }
             StmtKind::Type(decl) => {
                 let this = decl.info.as_ref().map(|i| Ty::Named(i.reference()));
+                let home = self.info.id;
                 for m in &decl.members {
+                    self.use_file(m.span.file);
                     match &m.kind {
                         MemberKind::Field(f) => {
                             if let Some(v) = &f.value {
@@ -595,6 +668,7 @@ impl Indexer<'_> {
                         }
                     }
                 }
+                self.use_file(home);
             }
             StmtKind::Return(e) => {
                 if let Some(e) = e {

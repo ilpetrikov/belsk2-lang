@@ -394,9 +394,12 @@ Without `: base(...)`, the base class's the constructor is called without argume
 `x` as a `T` or `null`.
 
 A `partial class` (or `partial struct`, `partial interface`) may be written
-in several parts in the same file; they are joined into one type, with the
-members and base types of every part. Splitting one type over several
-files is not supported yet.
+in several parts, in one file or in several files of a package; they are
+joined into one type, with the members and base types of every part. Files
+that share a partial type act as one module: each sees the declarations of
+the others and what they `using`, and `using` any of them gives all of
+them. Every file of the project with a part is included, even if nothing
+uses it.
 
 ## Destructors and the garbage collector
 

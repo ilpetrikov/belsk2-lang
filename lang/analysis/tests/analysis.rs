@@ -291,3 +291,44 @@ fn main() {
     let hover = a.hover(f, Pos::new(1, 6)).map(|h| h.1).unwrap_or_default();
     assert!(hover.contains("enum Mode"), "{hover}");
 }
+
+#[test]
+fn partial_types_over_files() {
+    let dir = std::env::temp_dir()
+        .join("belsk2-analysis-tests")
+        .join("partial");
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::create_dir_all(dir.join("src"));
+    let _ = std::fs::write(
+        dir.join("belsk2.toml"),
+        "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n",
+    );
+    let combat = dir.join("src/combat.belsk2");
+    let _ = std::fs::write(
+        &combat,
+        "partial class Player {\n    hp: int = 10;\n    fn hit() { hp -= 1; }\n}\n",
+    );
+    let main = dir.join("src/main.belsk2");
+    let _ = std::fs::write(
+        &main,
+        "partial class Player {\n    name: string;\n}\n\nfn main() {\n    var p = Player(\"a\");\n    p.hit();\n    prinb(p.hp);\n}\n",
+    );
+    let a = analyze_path(&main, &HashMap::new());
+    assert!(a.diagnostics.is_empty(), "{:?}", a.diagnostics);
+    let f = a.file_id(&main).unwrap_or_default();
+    let c = a.file_id(&combat).unwrap_or_default();
+    // `p.hp` in main.belsk2 is the field declared in combat.belsk2.
+    let def = a.definition(f, Pos::new(8, 13));
+    assert_eq!(
+        def.map(|d| (d.file, d.range.start)),
+        Some((c, Pos::new(2, 5)))
+    );
+    let hover = a.hover(c, Pos::new(3, 16)).map(|h| h.1).unwrap_or_default();
+    assert!(hover.contains("Player.hp: int"), "{hover}");
+    let labels: Vec<String> = a
+        .completions(c, Pos::new(3, 16))
+        .into_iter()
+        .map(|c| c.label)
+        .collect();
+    assert!(labels.contains(&"Player".to_string()), "{labels:?}");
+}

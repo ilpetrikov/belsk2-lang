@@ -254,12 +254,16 @@ fn start_project(root: &Path, mode: Mode, options: &Options) -> (Loader, Option<
             };
             loader.errors.push(Error::project(msg));
         }
-        Mode::Run => {}
-        Mode::All => {
+        Mode::Run | Mode::All => {
             let mut files = Vec::new();
             collect_files(&src, &mut files);
             files.sort();
             for file in files {
+                // A run needs what the entry uses, and every file with a
+                // part of a `partial` type (they join into one type).
+                if mode == Mode::Run && !has_partial(&loader, &file) {
+                    continue;
+                }
                 let name = file
                     .strip_prefix(&src)
                     .unwrap_or(&file)
@@ -270,6 +274,9 @@ fn start_project(root: &Path, mode: Mode, options: &Options) -> (Loader, Option<
                     .join(".");
                 loader.load_module(pkg, name, &file);
             }
+            if mode == Mode::Run {
+                return (loader, entry);
+            }
             if loader.modules.is_empty() {
                 loader.errors.push(Error::project(format!(
                     "no .belsk2 files in {}",
@@ -279,6 +286,16 @@ fn start_project(root: &Path, mode: Mode, options: &Options) -> (Loader, Option<
         }
     }
     (loader, entry)
+}
+
+/// Whether a file (or its unsaved editor contents) may declare part of a
+/// `partial` type.
+fn has_partial(loader: &Loader, file: &Path) -> bool {
+    let text = match loader.overlays.get(&canonical(file)) {
+        Some(t) => t.clone(),
+        None => std::fs::read_to_string(file).unwrap_or_default(),
+    };
+    text.contains("partial")
 }
 
 /// Loads a single file as a program. Modules it uses are looked up next to
