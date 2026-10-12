@@ -80,7 +80,7 @@
       compile error (no finalizers in WasmGC).
 - [x] WASM: dictionaries (insertion order, hash index from 8 entries), `KeyValuePair`
 - [x] WASM: `any` (an `eqref`; numbers, bools, chars and enums boxed with their kind)
-- [ ] WASM: arithmetic directly on `any`, parsing strings in `int(any)`
+- [x] WASM: operators directly on `any` and parsing strings in `int(any)` (runtime in Belsk2)
 - [x] `enum`: typed cases (`Mode.High`) with numbers (`Low = 1`), methods, `int(m)`, dictionary keys
 - [x] Enums with data (`Circle(radius: double)`)
 - [x] `class`: fields, methods, constructors, `this`; reference semantics, `null`

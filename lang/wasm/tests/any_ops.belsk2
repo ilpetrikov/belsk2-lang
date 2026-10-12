@@ -1,0 +1,87 @@
+fn sum(xs: any[]): any {
+    any total = 0;
+    for x in xs {
+        total += x;
+    }
+    return total;
+}
+
+fn main() {
+    any a = 7;
+    any b = 2;
+    prinb(a + b);
+    prinb(a - b);
+    prinb(a * b);
+    prinb(a / b);
+    prinb(a % b);
+    prinb(a & b);
+    prinb(a | b);
+    prinb(a ^ b);
+    prinb(a << b);
+    prinb(a >> b);
+    prinb(-a);
+    prinb(~a);
+    prinb(a + 1);
+    prinb(1.5 + a);
+    prinb(a * 2L);
+    prinb(a / 2.0);
+    any f = 2.5f;
+    prinb(f * 2);
+    prinb(f + 0.25);
+    any u = uint(4000000000);
+    prinb(u + 1);
+    prinb(u + uint(1));
+    prinb(u - 1);
+    any big = ulong(18000000000000000000);
+    prinb(big + ulong(1));
+    prinb(big > 5);
+    prinb(-1 < big);
+    any by = byte(200);
+    prinb(by + by);
+    any c = 'a';
+    prinb(c + 1);
+    prinb(c + 'b');
+    prinb(c < 'b');
+    prinb(a + " apples");
+    prinb("n = " + a);
+    any s = "x";
+    prinb(s + a);
+    prinb(s + s);
+    prinb(a > b);
+    prinb(a <= 7);
+    prinb(a < 7.5);
+    prinb(s < "y");
+    prinb(true & a == 7);
+    any t = true;
+    any ff = false;
+    prinb(t | ff);
+    prinb(t & ff);
+    prinb(t ^ t);
+    prinb(sum([1, 2, 3]));
+    prinb(sum([1, 2.5, 3L]));
+    prinb(sum(["a", 1, 2]));
+    any n = 0.0 / 0.0;
+    prinb(n < 1);
+    prinb(n >= 1);
+    any x = 10;
+    x -= 3;
+    x *= 2.0;
+    prinb(x);
+    int i = 5;
+    i += a;
+    prinb(i);
+    double d = 0.5;
+    d *= a;
+    prinb(d);
+    any text = " 42 ";
+    prinb(int(text) + 1);
+    any frac = "3.75";
+    prinb(double(frac) * 2);
+    prinb(int(frac));
+    any sci = "1.5e3";
+    prinb(double(sci));
+    any small = "-2.5E-3";
+    prinb(double(small));
+    any neg = "-8";
+    prinb(long(neg) * 3L);
+}

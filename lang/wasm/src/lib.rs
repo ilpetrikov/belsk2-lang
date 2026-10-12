@@ -139,7 +139,6 @@ pub fn compile_units(
         component::imports(&mut ctx, world, wasi);
     }
     codegen::declare(&mut ctx, units);
-    ctx.runtime = ctx.unit_fn(0, "rtFormat").map(|f| (0, f));
     if bank_program.is_some() {
         let set = ctx.unit_fn(bank_unit, "bankSet");
         let get = ctx.unit_fn(bank_unit, "bankGet");

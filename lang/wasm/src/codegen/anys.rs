@@ -5,11 +5,12 @@
 //! without data are boxed in a struct `{ kind, value }` (see
 //! [`crate::types::Boxes`]), where `kind` tells the Belsk2 type.
 
+use belsk2_syntax::ast::{BinOp, Expr, UnaryOp};
 use belsk2_syntax::{FloatKind, IntKind, NumTy, Span, Ty, TypeKind};
 use wasm_encoder::{BlockType, HeapType, Instruction as I, ValType};
 
 use super::objects::{self, obj_fn};
-use super::{unsupported, Ctx, FnGen, R};
+use super::{runtime_fn, unsupported, Ctx, FnGen, R};
 use crate::helpers::{Asm, Helper};
 use crate::types::{any_type, nullable, Boxes};
 
@@ -134,6 +135,19 @@ impl FnGen<'_> {
             ]);
             return Ok(());
         };
+        // A string holding a number is parsed first.
+        let string = self.ctx.types.string();
+        let parse = runtime_fn(self.ctx, "rtParse")?;
+        self.a.ops([
+            I::LocalGet(v),
+            I::RefTestNonNull(HeapType::Concrete(string)),
+            I::If(BlockType::Empty),
+            I::LocalGet(v),
+            I::RefCastNullable(HeapType::Concrete(string)),
+            I::Call(parse),
+            I::LocalSet(v),
+            I::End,
+        ]);
         // A number of any type converts to the number wanted.
         self.emit(I::Block(BlockType::Result(want)));
         self.depth += 1;
@@ -195,6 +209,56 @@ impl FnGen<'_> {
         self.emit(I::Unreachable);
         self.emit(I::End);
         self.depth -= 1;
+        Ok(())
+    }
+
+    /// A binary operator with an `any` operand, checked at run time.
+    pub(super) fn any_binary(&mut self, op: BinOp, lhs: &Expr, rhs: &Expr, span: Span) -> R<()> {
+        self.value(lhs, &Ty::Any)?;
+        self.value(rhs, &Ty::Any)?;
+        self.any_op(op, span)
+    }
+
+    /// Applies `op` to the two `any` values on the stack.
+    pub(super) fn any_op(&mut self, op: BinOp, span: Span) -> R<()> {
+        use BinOp::*;
+        let (name, code) = match op {
+            Add => ("rtAnyOp", 0),
+            Sub => ("rtAnyOp", 1),
+            Mul => ("rtAnyOp", 2),
+            Div => ("rtAnyOp", 3),
+            Rem => ("rtAnyOp", 4),
+            BitAnd => ("rtAnyOp", 5),
+            BitOr => ("rtAnyOp", 6),
+            BitXor => ("rtAnyOp", 7),
+            Shl => ("rtAnyOp", 8),
+            Shr => ("rtAnyOp", 9),
+            Lt => ("rtAnyCmp", 0),
+            Gt => ("rtAnyCmp", 1),
+            Le => ("rtAnyCmp", 2),
+            Ge => ("rtAnyCmp", 3),
+            _ => {
+                return Err(unsupported(
+                    format!("'{}' on an any is", op.symbol()),
+                    span,
+                ))
+            }
+        };
+        let f = runtime_fn(self.ctx, name)?;
+        self.a.ops([I::I32Const(code), I::Call(f)]);
+        Ok(())
+    }
+
+    /// `-x` and `~x` for an `any`.
+    pub(super) fn any_unary(&mut self, op: UnaryOp, inner: &Expr, span: Span) -> R<()> {
+        let name = match op {
+            UnaryOp::Neg => "rtAnyNeg",
+            UnaryOp::BitNot => "rtAnyBitNot",
+            UnaryOp::Not => return Err(unsupported("'!' on an any is".to_string(), span)),
+        };
+        self.value(inner, &Ty::Any)?;
+        let f = runtime_fn(self.ctx, name)?;
+        self.emit(I::Call(f));
         Ok(())
     }
 

@@ -501,8 +501,9 @@ are supported, and numbers print as in the interpreter (only extremely
 large or small doubles may show more digits). Dictionaries keep their
 insertion order and use a hash index once they grow. Values of type `any`
 can be stored, printed, compared, tested (`is`, `as`, `match`) and
-converted back (`int y = x;`, `int(x)`); arithmetic directly on `any` needs
-a conversion first, and a string in an `any` is not parsed as a number.
+converted back (`int y = x;`, `int(x)`, which also parses a string), and
+operators on them work as in the interpreter (`x + 1`, `x < y`, `-x`,
+`total += x`); only `!x` needs a `bool` first.
 Destructors are a compile error: WebAssembly's garbage collector does not
 run them.
 

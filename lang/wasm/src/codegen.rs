@@ -189,8 +189,6 @@ pub struct Ctx {
     pub heap_base: i32,
     /// The id bank's unit and its `bankSet` and `bankGet` (wasi0.2).
     pub bank: Option<(usize, Rc<FnDecl>, Rc<FnDecl>)>,
-    /// The runtime's unit and its number formatting (`rtFormat`).
-    pub runtime: Option<(usize, Rc<FnDecl>)>,
     /// User-defined types, by type id.
     classes: HashMap<usize, objects::ClassInfo>,
     /// `$object`, the struct every user-defined type extends.
@@ -370,12 +368,19 @@ impl Ctx {
     }
 }
 
+/// A function of the runtime written in Belsk2 (the first unit).
+pub(crate) fn runtime_fn(ctx: &mut Ctx, name: &str) -> R<u32> {
+    let Some(decl) = ctx.unit_fn(0, name) else {
+        return Err(Error::compile(format!(
+            "internal compiler error: no runtime function {name}"
+        )));
+    };
+    Ok(ctx.user_fn(0, &decl, &[])?.index)
+}
+
 /// The runtime function formatting a number: `(double, single) -> string`.
 pub(crate) fn format_fn(ctx: &mut Ctx) -> R<u32> {
-    let Some((unit, decl)) = ctx.runtime.clone() else {
-        return Err(Error::compile("internal compiler error: no runtime"));
-    };
-    Ok(ctx.user_fn(unit, &decl, &[])?.index)
+    runtime_fn(ctx, "rtFormat")
 }
 
 /// Registers the declarations of every unit: functions, globals and the
@@ -1282,6 +1287,17 @@ impl<'c> FnGen<'c> {
             return Ok(());
         }
         let value_ty = self.t(&value.ty);
+        if ty.is_any() || value_ty.is_any() {
+            self.place_get(&place);
+            self.box_value(&ty, span)?;
+            self.value(value, &Ty::Any)?;
+            self.any_op(op, span)?;
+            if !ty.is_any() {
+                self.unbox(&ty, span)?;
+            }
+            self.place_set(&place);
+            return Ok(());
+        }
         let shift = matches!(op, BinOp::Shl | BinOp::Shr);
         let op_ty = if matches!((&ty, &value_ty), (Ty::Bool, Ty::Bool)) {
             Ty::Bool
@@ -1944,6 +1960,9 @@ impl<'c> FnGen<'c> {
 
     fn unary(&mut self, op: UnaryOp, inner: &Expr, ty: &Ty, span: Span) -> R<()> {
         let inner_ty = self.t(&inner.ty);
+        if inner_ty.is_any() && op != UnaryOp::Not {
+            return self.any_unary(op, inner, span);
+        }
         match op {
             UnaryOp::Not => {
                 self.cond(inner)?;
@@ -2017,6 +2036,9 @@ impl<'c> FnGen<'c> {
             }
             Eq | Ne => return self.equality(op, lhs, rhs, span),
             _ => {}
+        }
+        if self.t(&lhs.ty).is_any() || self.t(&rhs.ty).is_any() {
+            return self.any_binary(op, lhs, rhs, span);
         }
         let lt = self.t(&lhs.ty).canonical();
         if matches!(op, Lt | Gt | Le | Ge) {

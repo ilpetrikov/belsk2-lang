@@ -314,6 +314,7 @@ fn dictionaries() {
 #[test]
 fn any_values() {
     same(include_str!("any.belsk2"));
+    same(include_str!("any_ops.belsk2"));
 }
 
 #[test]
