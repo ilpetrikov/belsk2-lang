@@ -126,3 +126,28 @@ fn inheritance_errors() {
     assert_error("class A { } class B : A, A {}", "must come first");
     assert_error("interface I { fn f() { } }", "has no body");
 }
+
+#[test]
+fn partial_types_are_joined() {
+    let src = "interface IShow { fn show(): string; }
+    class Base { id: int = 1; }
+    partial class Player : IShow {
+        name: string;
+        fn show(): string { return name + \" \" + str(hp) + \" \" + str(id); }
+    }
+    partial class Player : Base {
+        hp: int = 100;
+        fn hit(n: int) { hp -= n; }
+    }
+    fn main() { var p = Player(\"Ann\"); p.hit(5); prinb(p.show()); Base b = p; }";
+    assert_eq!(run(src), "Ann 95 1\n");
+    assert_error(
+        "partial class A { x: int; } partial class A { x: int; }",
+        "already has a member 'x'",
+    );
+    assert_error("class C {} class C {}", "already declared");
+    assert_error(
+        "partial class D {} partial struct D {}",
+        "must all be the same kind",
+    );
+}

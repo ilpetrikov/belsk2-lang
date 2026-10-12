@@ -81,6 +81,9 @@ pub struct TypeDecl {
     pub access: Access,
     /// `abstract class`: cannot be created, may have abstract methods.
     pub is_abstract: bool,
+    /// `partial class`: the type may be declared in several parts (in one
+    /// file), which the checker joins into the first.
+    pub partial: bool,
     /// The base class and the implemented interfaces, after `:`.
     pub bases: Vec<TypeExpr>,
     pub members: Vec<Member>,

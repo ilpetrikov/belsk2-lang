@@ -266,6 +266,7 @@ impl Checker {
     /// Like [`Checker::check_program`], also returning the types of the
     /// program's top-level declarations, which other modules can import.
     pub fn check_module(mut self, program: &mut Program) -> (Vec<Error>, Vec<(String, Ty)>) {
+        self.merge_partials(&mut program.stmts);
         // The program gets its own scope so it may shadow predeclared globals.
         self.scopes.push(HashMap::new());
         if !self.allow_statements {
@@ -316,6 +317,71 @@ impl Checker {
             })
             .unwrap_or_default();
         (self.errors, exports)
+    }
+
+    /// Joins the parts of each `partial` type into its first part.
+    fn merge_partials(&mut self, stmts: &mut Vec<Stmt>) {
+        let mut first: HashMap<String, usize> = HashMap::new();
+        let mut i = 0;
+        while i < stmts.len() {
+            let Some(Stmt {
+                kind: StmtKind::Type(decl),
+                span,
+            }) = stmts.get(i)
+            else {
+                i += 1;
+                continue;
+            };
+            let span = *span;
+            let Some(&at) = first.get(&decl.name) else {
+                first.insert(decl.name.clone(), i);
+                i += 1;
+                continue;
+            };
+            let part = Rc::clone(decl);
+            let Some(StmtKind::Type(main)) = stmts.get_mut(at).map(|s| &mut s.kind) else {
+                i += 1;
+                continue;
+            };
+            if !(main.partial && part.partial) {
+                // Reported as a duplicate declaration later.
+                i += 1;
+                continue;
+            }
+            if main.kind != part.kind {
+                self.type_error(
+                    format!(
+                        "the parts of '{}' must all be the same kind ({})",
+                        part.name,
+                        main.kind.keyword()
+                    ),
+                    span,
+                );
+            } else if let Some(main) = Rc::get_mut(main) {
+                main.is_abstract |= part.is_abstract;
+                if part.access != main.access && part.access != Access::Public {
+                    if main.access == Access::Public {
+                        main.access = part.access;
+                    } else {
+                        self.type_error(
+                            format!(
+                                "the parts of '{}' have different access modifiers",
+                                part.name
+                            ),
+                            span,
+                        );
+                    }
+                }
+                for b in &part.bases {
+                    if !main.bases.iter().any(|x| x.to_string() == b.to_string()) {
+                        main.bases.push(b.clone());
+                    }
+                }
+                main.members.extend(part.members.iter().cloned());
+            }
+            drop(part);
+            stmts.remove(i);
+        }
     }
 
     fn error(&mut self, e: Error) {
@@ -605,7 +671,13 @@ impl Checker {
             };
             match t.kind {
                 TypeKind::Interface => body.interfaces.push(t),
-                TypeKind::Class if decl.kind == TypeKind::Class && i == 0 => body.base = Some(t),
+                TypeKind::Class
+                    if decl.kind == TypeKind::Class
+                        && (i == 0 || decl.partial)
+                        && body.base.is_none() =>
+                {
+                    body.base = Some(t)
+                }
                 TypeKind::Class if decl.kind == TypeKind::Class => self.type_error(
                     format!(
                         "the base class {} must come first, before the interfaces",

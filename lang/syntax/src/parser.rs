@@ -44,6 +44,7 @@ pub const KEYWORDS: &[&str] = &[
     "abstract",
     "is",
     "as",
+    "partial",
 ];
 
 /// Parses a whole program.
@@ -232,9 +233,9 @@ impl Parser {
                 "var" => return self.parse_var_decl(),
                 "fn" => return self.parse_fn_decl(),
                 "struct" | "enum" | "class" | "interface" => {
-                    return self.parse_type_decl(Access::Public, false)
+                    return self.parse_type_decl(Access::Public, false, false)
                 }
-                "public" | "private" | "protected" | "static" | "abstract" => {
+                "public" | "private" | "protected" | "static" | "abstract" | "partial" => {
                     return self.parse_declaration(span)
                 }
                 "if" => return self.parse_if(),
@@ -517,6 +518,13 @@ impl Parser {
         if access == Access::Protected {
             return Err(Error::syntax("'protected' is for members of a type", span));
         }
+        let partial = self.at_word("partial");
+        if partial {
+            self.bump();
+            if !(self.at_word("class") || self.at_word("struct") || self.at_word("interface")) {
+                return Err(self.unexpected("'class', 'struct' or 'interface' after 'partial'"));
+            }
+        }
         let is_abstract = mods.virt == Virt::Abstract;
         if matches!(mods.virt, Virt::Virtual | Virt::Override)
             || (is_abstract && !self.at_word("class"))
@@ -534,7 +542,7 @@ impl Parser {
         };
         let mut stmt = match word {
             "struct" | "enum" | "class" | "interface" => {
-                return self.parse_type_decl(access, is_abstract)
+                return self.parse_type_decl(access, is_abstract, partial)
             }
             "fn" => self.parse_fn_decl()?,
             "var" => self.parse_var_decl()?,
@@ -706,7 +714,12 @@ impl Parser {
 
     /// `struct Point { x: double; fn len(): double { ... } }`,
     /// `enum Mode { Low, High = 10 }`, `class Player { ... }`
-    fn parse_type_decl(&mut self, access: Access, is_abstract: bool) -> Result<Stmt> {
+    fn parse_type_decl(
+        &mut self,
+        access: Access,
+        is_abstract: bool,
+        partial: bool,
+    ) -> Result<Stmt> {
         let kw = self.bump();
         let span = kw.span;
         let kind = match kw.text.as_str() {
@@ -770,6 +783,7 @@ impl Parser {
                 kind,
                 access,
                 is_abstract,
+                partial,
                 bases,
                 members,
                 span,

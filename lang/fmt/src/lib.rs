@@ -45,6 +45,7 @@ const KEYWORDS: &[&str] = &[
     "base",
     "is",
     "as",
+    "partial",
 ];
 
 /// Keywords after which an expression starts.
