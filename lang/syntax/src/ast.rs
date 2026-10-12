@@ -1,7 +1,7 @@
 use std::rc::Rc;
 
 use crate::span::Span;
-use crate::types::{FloatKind, IntKind, Ty, TypeExpr};
+use crate::types::{FloatKind, IntKind, Ty, TypeExpr, TypeInfo, TypeKind};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Program {
@@ -47,6 +47,8 @@ pub enum StmtKind {
         cast: Ty,
     },
     FnDecl(Rc<FnDecl>),
+    /// `struct Point { ... }`
+    Type(Rc<TypeDecl>),
     Return(Option<Expr>),
     Break,
     Continue,
@@ -68,6 +70,42 @@ pub enum StmtKind {
         body: Block,
     },
     Block(Block),
+}
+
+/// `struct Point { x: double; fn len(): double { ... } }`
+#[derive(Debug, Clone, PartialEq)]
+pub struct TypeDecl {
+    pub name: String,
+    pub kind: TypeKind,
+    pub members: Vec<Member>,
+    pub span: Span,
+    /// The type, created by the checker. The declaration owns it.
+    pub info: Option<Rc<TypeInfo>>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Member {
+    pub kind: MemberKind,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum MemberKind {
+    /// `x: int;`, `x: int = 1;`, `var x = 1;`, `int x;`
+    Field(Box<FieldDecl>),
+    /// `fn name(...) { ... }`
+    Method(Rc<FnDecl>),
+    /// `init(...) { ... }`, the constructor.
+    Init(Rc<FnDecl>),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct FieldDecl {
+    pub name: String,
+    pub ty: Option<TypeExpr>,
+    pub value: Option<Expr>,
+    /// Filled in by the checker.
+    pub resolved: Ty,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -158,6 +196,8 @@ pub enum ExprKind {
         expr: Box<Expr>,
         to: Ty,
     },
+    /// `this`, the value a method runs on.
+    This,
 }
 
 impl Expr {
@@ -168,7 +208,8 @@ impl Expr {
             | ExprKind::String(_)
             | ExprKind::Bool(_)
             | ExprKind::Null
-            | ExprKind::Ident(_) => 0,
+            | ExprKind::Ident(_)
+            | ExprKind::This => 0,
             ExprKind::Array(items) => max_depth(items.iter()),
             ExprKind::Map(entries) => max_depth(entries.iter().flat_map(|(k, v)| [k, v])),
             ExprKind::Unary { expr, .. } => expr.depth,
@@ -190,7 +231,7 @@ impl Expr {
     pub fn is_place(&self) -> bool {
         matches!(
             self.kind,
-            ExprKind::Ident(_) | ExprKind::Index { .. } | ExprKind::Member { .. }
+            ExprKind::Ident(_) | ExprKind::Index { .. } | ExprKind::Member { .. } | ExprKind::This
         )
     }
 }

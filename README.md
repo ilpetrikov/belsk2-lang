@@ -170,6 +170,39 @@ Variables declared with `var` take the type of their initial value, as in C#.
 Use `any` (`var x: any = 1;`) for a variable that may hold different types;
 such values are checked at run time.
 
+## Structs
+
+```belsk2
+struct Point {
+    x: double;
+    y: double;
+    label: string = "";              // a field with a value
+
+    fn len2(): double { return x * x + y * y; }
+    fn moveBy(dx: double, dy: double) { x += dx; y += dy; }
+}
+
+fn main() {
+    var p = Point(3, 4);             // the fields without a value, in order
+    p.moveBy(1, 1);                  // methods may change the struct
+    var q = p;                       // a copy: structs are values
+    q.x = 0;
+    prinb(p);                        // Point { x: 4, y: 5, label:  }
+    prinb(p == Point(4, 5));         // true: fields are compared
+}
+```
+
+Inside a method the fields and other methods can be used directly or
+through `this` (`this.x`). A struct may declare a constructor instead of
+the field-by-field one: `init(x: double) { this.x = x; }` (fields not set
+there keep their value or the default: `0`, `false`, `null`). Fields can
+also be written C#-style (`double x;`) or with `var` (`var count = 0;`).
+
+Structs are values, as in C#: assigning or passing one copies it, and
+`a.b.x = 1` changes the copy stored in `a`. A field of a temporary value
+(`make().x = 1`) cannot be assigned. A struct cannot contain itself.
+Structs are not yet supported by the WASM backend.
+
 ## Using belsk2 from Rust
 
 ```rust

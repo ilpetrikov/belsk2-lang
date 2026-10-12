@@ -1,8 +1,10 @@
 //! The type model shared by the checker, the interpreter and (later) the
 //! compiler.
 
+use std::cell::OnceCell;
 use std::fmt;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::span::Span;
 
@@ -248,6 +250,12 @@ pub enum Ty {
     Param(Rc<str>),
     /// A function; the signature is known for named declarations.
     Fn(Option<Rc<Sig>>),
+    /// A value of a user-defined type (`struct`, `enum`, `class`,
+    /// `interface`).
+    Named(TypeRef),
+    /// A user-defined type used as a value: `Point` in `Point(1, 2)` or
+    /// `Color` in `Color.Red`.
+    Type(TypeRef),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -350,10 +358,25 @@ impl Ty {
     /// Whether `null` is a valid value of this type. Numbers, `bool` and
     /// `char` are value types and are never null, as in C#.
     pub fn nullable(&self) -> bool {
-        matches!(
-            self,
-            Ty::Any | Ty::Null | Ty::String | Ty::Array(_) | Ty::Map(..) | Ty::Fn(_) | Ty::Param(_)
-        )
+        match self {
+            Ty::Any
+            | Ty::Null
+            | Ty::String
+            | Ty::Array(_)
+            | Ty::Map(..)
+            | Ty::Fn(_)
+            | Ty::Param(_) => true,
+            Ty::Named(t) => t.kind.is_reference(),
+            _ => false,
+        }
+    }
+
+    /// The user-defined type of a value, if it has one.
+    pub fn named(&self) -> Option<&TypeRef> {
+        match self {
+            Ty::Named(t) => Some(t),
+            _ => None,
+        }
     }
 }
 
@@ -373,6 +396,8 @@ impl fmt::Display for Ty {
             Ty::Map(k, v) => write!(f, "Dictionary<{k}, {v}>"),
             Ty::Param(name) => f.write_str(name),
             Ty::Fn(_) => f.write_str("fn"),
+            Ty::Named(t) => f.write_str(&t.name),
+            Ty::Type(t) => write!(f, "type {}", t.name),
         }
     }
 }
@@ -410,6 +435,388 @@ impl fmt::Display for TypeExpr {
                 Ok(())
             }
             TypeExprKind::Array(elem) => write!(f, "{elem}[]"),
+        }
+    }
+}
+
+/// The kind of a user-defined type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TypeKind {
+    Struct,
+    Enum,
+    Class,
+    Interface,
+}
+
+impl TypeKind {
+    pub fn keyword(self) -> &'static str {
+        match self {
+            TypeKind::Struct => "struct",
+            TypeKind::Enum => "enum",
+            TypeKind::Class => "class",
+            TypeKind::Interface => "interface",
+        }
+    }
+
+    /// Classes and interfaces are reference types: copies share the
+    /// object, and the value may be `null`. Structs and enums are values.
+    pub fn is_reference(self) -> bool {
+        matches!(self, TypeKind::Class | TypeKind::Interface)
+    }
+}
+
+/// Who may use a declaration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum Access {
+    #[default]
+    Public,
+    /// The type and the types derived from it.
+    Protected,
+    /// The type only (for top-level declarations: the module only).
+    Private,
+}
+
+impl Access {
+    pub fn keyword(self) -> &'static str {
+        match self {
+            Access::Public => "public",
+            Access::Protected => "protected",
+            Access::Private => "private",
+        }
+    }
+}
+
+/// How a method takes part in inheritance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum Virt {
+    #[default]
+    None,
+    Virtual,
+    Override,
+    Abstract,
+}
+
+/// A field of a user-defined type (an auto-property is a field too).
+#[derive(Debug, Clone, PartialEq)]
+pub struct FieldInfo {
+    pub name: String,
+    pub ty: Ty,
+    pub access: Access,
+    /// Who may assign the field; `None` for a read-only field (assigned
+    /// only by its initializer and `init`).
+    pub set: Option<Access>,
+    pub is_static: bool,
+    /// Whether the declaration gives a value (`x: int = 1`).
+    pub has_value: bool,
+    pub span: Span,
+}
+
+/// A computed property (`Area: double { get { ... } }`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct PropInfo {
+    pub name: String,
+    pub ty: Ty,
+    pub access: Access,
+    pub get: Option<Access>,
+    pub set: Option<Access>,
+    pub is_static: bool,
+    pub virt: Virt,
+    pub span: Span,
+}
+
+/// A method.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MethodInfo {
+    pub sig: Rc<Sig>,
+    pub access: Access,
+    pub is_static: bool,
+    pub virt: Virt,
+    pub span: Span,
+}
+
+/// A case of an enum: `Red` or `Circle(radius: double)`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct VariantInfo {
+    pub name: String,
+    pub fields: Vec<(String, Ty)>,
+    pub span: Span,
+}
+
+/// The members of a user-defined type, known once the checker has
+/// resolved its declaration.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct TypeBody {
+    pub base: Option<TypeRef>,
+    pub interfaces: Vec<TypeRef>,
+    /// Instance fields declared by this type (not inherited ones).
+    pub fields: Vec<FieldInfo>,
+    pub statics: Vec<FieldInfo>,
+    pub props: Vec<PropInfo>,
+    pub methods: Vec<MethodInfo>,
+    pub variants: Vec<VariantInfo>,
+    /// The parameters of the constructor (`init`, or one parameter per
+    /// field without a value).
+    pub ctor: Vec<(String, Ty)>,
+    /// Whether the constructor is declared with `init`.
+    pub explicit_ctor: bool,
+    pub ctor_access: Access,
+}
+
+/// A user-defined type. Its body is set once, when the checker resolves
+/// the declaration.
+#[derive(Debug)]
+pub struct TypeInfo {
+    pub name: String,
+    pub kind: TypeKind,
+    pub is_abstract: bool,
+    pub span: Span,
+    id: usize,
+    body: OnceCell<TypeBody>,
+}
+
+impl PartialEq for TypeInfo {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+
+static NEXT_TYPE_ID: AtomicUsize = AtomicUsize::new(1);
+
+impl TypeInfo {
+    pub fn new(name: &str, kind: TypeKind, is_abstract: bool, span: Span) -> Rc<TypeInfo> {
+        Rc::new(TypeInfo {
+            name: name.to_string(),
+            kind,
+            is_abstract,
+            span,
+            id: NEXT_TYPE_ID.fetch_add(1, Ordering::Relaxed),
+            body: OnceCell::new(),
+        })
+    }
+
+    pub fn id(&self) -> usize {
+        self.id
+    }
+
+    /// Sets the members; only the first call has an effect.
+    pub fn set_body(&self, body: TypeBody) {
+        let _ = self.body.set(body);
+    }
+
+    pub fn body(&self) -> Option<&TypeBody> {
+        self.body.get()
+    }
+
+    pub fn reference(self: &Rc<Self>) -> TypeRef {
+        TypeRef {
+            name: Rc::from(self.name.as_str()),
+            kind: self.kind,
+            id: self.id,
+            info: Rc::downgrade(self),
+        }
+    }
+}
+
+/// A reference to a user-defined type, as used inside [`Ty`]. It does not
+/// keep the type alive (types may refer to themselves); the declaration in
+/// the syntax tree owns the [`TypeInfo`].
+#[derive(Clone)]
+pub struct TypeRef {
+    pub name: Rc<str>,
+    pub kind: TypeKind,
+    id: usize,
+    info: Weak<TypeInfo>,
+}
+
+impl PartialEq for TypeRef {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+
+impl Eq for TypeRef {}
+
+impl std::hash::Hash for TypeRef {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.id.hash(state);
+    }
+}
+
+impl fmt::Debug for TypeRef {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}#{}", self.name, self.id)
+    }
+}
+
+/// A member of a user-defined type.
+#[derive(Debug, Clone, PartialEq)]
+pub enum MemberInfo {
+    Field(FieldInfo),
+    Prop(PropInfo),
+    Method(MethodInfo),
+    Variant(VariantInfo),
+}
+
+/// Inheritance chains longer than this are treated as cycles.
+const MAX_DEPTH: usize = 64;
+
+impl TypeRef {
+    pub fn id(&self) -> usize {
+        self.id
+    }
+
+    pub fn info(&self) -> Option<Rc<TypeInfo>> {
+        self.info.upgrade()
+    }
+
+    /// Runs `f` on the members, if they are known.
+    pub fn with_body<R>(&self, f: impl FnOnce(&TypeBody) -> R) -> Option<R> {
+        let info = self.info.upgrade()?;
+        info.body().map(f)
+    }
+
+    pub fn is_abstract(&self) -> bool {
+        self.info().is_some_and(|i| i.is_abstract)
+    }
+
+    pub fn base(&self) -> Option<TypeRef> {
+        self.with_body(|b| b.base.clone()).flatten()
+    }
+
+    /// The base class and the implemented (or extended) interfaces.
+    pub fn parents(&self) -> Vec<TypeRef> {
+        self.with_body(|b| {
+            let mut v: Vec<TypeRef> = b.base.iter().cloned().collect();
+            v.extend(b.interfaces.iter().cloned());
+            v
+        })
+        .unwrap_or_default()
+    }
+
+    /// This type and its base classes, nearest first.
+    pub fn chain(&self) -> Vec<TypeRef> {
+        let mut out = vec![self.clone()];
+        let mut cur = self.base();
+        while let Some(t) = cur {
+            if out.len() >= MAX_DEPTH || out.contains(&t) {
+                break;
+            }
+            cur = t.base();
+            out.push(t);
+        }
+        out
+    }
+
+    /// Whether a value of this type can be used as `other`: the same
+    /// type, a base class, or an implemented interface.
+    pub fn is_subtype_of(&self, other: &TypeRef) -> bool {
+        let mut seen = Vec::new();
+        self.subtype(other, &mut seen)
+    }
+
+    fn subtype(&self, other: &TypeRef, seen: &mut Vec<usize>) -> bool {
+        if self == other {
+            return true;
+        }
+        if seen.contains(&self.id) || seen.len() >= MAX_DEPTH {
+            return false;
+        }
+        seen.push(self.id);
+        self.parents().iter().any(|p| p.subtype(other, seen))
+    }
+
+    /// Every instance field, inherited ones first.
+    pub fn all_fields(&self) -> Vec<FieldInfo> {
+        let mut out = Vec::new();
+        for t in self.chain().iter().rev() {
+            if let Some(fields) = t.with_body(|b| b.fields.clone()) {
+                out.extend(fields);
+            }
+        }
+        out
+    }
+
+    /// Finds a member by name in this type, its base classes and the
+    /// interfaces it implements. Returns the declaring type too.
+    pub fn member(&self, name: &str) -> Option<(TypeRef, MemberInfo)> {
+        self.members()
+            .into_iter()
+            .find(|(_, n, _)| n == name)
+            .map(|(t, _, m)| (t, m))
+    }
+
+    /// Every member (declaring type, name, member), nearest first; a
+    /// member hides those with the same name further up.
+    pub fn members(&self) -> Vec<(TypeRef, String, MemberInfo)> {
+        let mut out = Vec::new();
+        let mut seen = Vec::new();
+        self.collect_members(&mut out, &mut seen);
+        out
+    }
+
+    fn collect_members(&self, out: &mut Vec<(TypeRef, String, MemberInfo)>, seen: &mut Vec<usize>) {
+        if seen.contains(&self.id) || seen.len() >= MAX_DEPTH {
+            return;
+        }
+        seen.push(self.id);
+        let own = self
+            .with_body(|b| {
+                let mut v = Vec::new();
+                for f in b.fields.iter().chain(&b.statics) {
+                    v.push((f.name.clone(), MemberInfo::Field(f.clone())));
+                }
+                for p in &b.props {
+                    v.push((p.name.clone(), MemberInfo::Prop(p.clone())));
+                }
+                for m in &b.methods {
+                    v.push((m.sig.name.clone(), MemberInfo::Method(m.clone())));
+                }
+                for c in &b.variants {
+                    v.push((c.name.clone(), MemberInfo::Variant(c.clone())));
+                }
+                v
+            })
+            .unwrap_or_default();
+        for (name, m) in own {
+            if !out.iter().any(|(_, n, _)| *n == name) {
+                out.push((self.clone(), name, m));
+            }
+        }
+        for p in self.parents() {
+            p.collect_members(out, seen);
+        }
+    }
+
+    pub fn variants(&self) -> Vec<VariantInfo> {
+        self.with_body(|b| b.variants.clone()).unwrap_or_default()
+    }
+}
+
+impl MemberInfo {
+    pub fn is_static(&self) -> bool {
+        match self {
+            MemberInfo::Field(f) => f.is_static,
+            MemberInfo::Prop(p) => p.is_static,
+            MemberInfo::Method(m) => m.is_static,
+            MemberInfo::Variant(_) => true,
+        }
+    }
+
+    pub fn access(&self) -> Access {
+        match self {
+            MemberInfo::Field(f) => f.access,
+            MemberInfo::Prop(p) => p.access,
+            MemberInfo::Method(m) => m.access,
+            MemberInfo::Variant(_) => Access::Public,
+        }
+    }
+
+    pub fn span(&self) -> Span {
+        match self {
+            MemberInfo::Field(f) => f.span,
+            MemberInfo::Prop(p) => p.span,
+            MemberInfo::Method(m) => m.span,
+            MemberInfo::Variant(v) => v.span,
         }
     }
 }

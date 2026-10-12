@@ -71,7 +71,9 @@
 - [ ] Rust dependencies (crates.io / git) in `belsk2.toml`
 
 ### Language
-- [ ] `struct`
+- [x] `struct`: fields (with values), methods, `init`, `this`, value semantics (copies;
+      methods may change the variable they are called on), `==` by fields; interpreter only
+- [ ] WASM: structs (and later enums/classes) in the WASM backend
 - [ ] `enum` (including enums with data)
 - [ ] `class`: fields, methods, constructors, `this`
 - [ ] Inheritance, `virtual`/`override`, `base`
@@ -110,6 +112,6 @@
       lock file is machine-specific. Fine for remote URLs.
 - [ ] Two git URLs that are spelled differently but mean the same repository count as
       different sources.
-- [ ] Analysis: completion after `.` is empty (no members yet; add with structs/classes);
-      a file that does not parse only gets keyword/builtin/word completions.
+- [ ] Analysis: a file that does not parse only gets keyword/builtin/word completions (except
+      for an unfinished `p.`, which is repaired to complete the members of `p`).
 - [ ] Publish the VS Code extension to the Marketplace / Open VSX.

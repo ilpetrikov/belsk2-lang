@@ -12,7 +12,7 @@ use crate::collections::{Array, Map};
 use crate::env::{self, Env, EnvRef};
 use crate::num::{self, coerce, convert};
 use crate::trace::{self, Trace};
-use crate::value::{Function, Value};
+use crate::value::{Class, Function, StructValue, Value};
 
 /// Default limit for nested function calls.
 pub const DEFAULT_MAX_CALL_DEPTH: usize = 10_000;
@@ -61,6 +61,9 @@ pub struct Interpreter {
     trace: Option<Rc<RefCell<Trace>>>,
     /// Module scopes, kept while tracing so their variables can be shown.
     module_envs: Vec<EnvRef>,
+    /// Every user-defined type declared so far, by type id (for default
+    /// values of fields).
+    classes: HashMap<usize, Rc<Class>>,
 }
 
 impl Default for Interpreter {
@@ -85,6 +88,7 @@ impl Interpreter {
             call_depth: 0,
             max_call_depth: DEFAULT_MAX_CALL_DEPTH,
             type_env: Vec::new(),
+            classes: HashMap::new(),
         }
     }
 
@@ -223,7 +227,7 @@ impl Interpreter {
     pub fn run_program(&mut self, program: &Program, out: &mut dyn Write) -> Result<()> {
         let globals = Rc::clone(&self.globals);
         self.call_depth = 0;
-        hoist_functions(&program.stmts, &globals);
+        self.hoist(&program.stmts, &globals);
         for stmt in &program.stmts {
             match self.exec(stmt, &globals, out)? {
                 Flow::Normal => {}
@@ -257,7 +261,7 @@ impl Interpreter {
             self.module_envs.push(module_env.clone());
         }
         self.call_depth = 0;
-        hoist_functions(&program.stmts, &module_env);
+        self.hoist(&program.stmts, &module_env);
         for stmt in &program.stmts {
             match self.exec(stmt, &module_env, out)? {
                 Flow::Normal => {}
@@ -333,7 +337,7 @@ impl Interpreter {
 
     fn exec_block(&mut self, block: &Block, env: &EnvRef, out: &mut dyn Write) -> Result<Flow> {
         let scope = Env::child(env);
-        hoist_functions(&block.stmts, &scope);
+        self.hoist(&block.stmts, &scope);
         for stmt in &block.stmts {
             match self.exec(stmt, &scope, out)? {
                 Flow::Normal => {}
@@ -392,8 +396,8 @@ impl Interpreter {
                     }
                 }
             }
-            // Defined by `hoist_functions` when the block was entered.
-            StmtKind::FnDecl(_) => {}
+            // Defined by `hoist` when the block was entered.
+            StmtKind::FnDecl(_) | StmtKind::Type(_) => {}
             StmtKind::Return(value) => {
                 let v = match value {
                     Some(e) => self.eval(e, env, out)?,
@@ -479,9 +483,26 @@ impl Interpreter {
                 let idx = self.eval(index, env, out)?;
                 set_index(&obj, &idx, value).map_err(|e| e.or_at(target.span))
             }
-            ExprKind::Member { name, .. } => {
-                Err(Error::runtime(format!("cannot assign to member '{name}'")).at(target.span))
+            ExprKind::Member { object, name } => {
+                let obj = self.eval(object, env, out)?;
+                let Value::Struct(s) = &obj else {
+                    return Err(Error::runtime(format!(
+                        "{} has no field '{name}'",
+                        obj.type_name()
+                    ))
+                    .at(target.span));
+                };
+                let (i, ty) = field_of(&s.class, name).map_err(|e| e.or_at(target.span))?;
+                let value = coerce(&ty, value, &format!("field '{name}'"))?;
+                // A struct is a value: build the changed copy and store it
+                // where the old one was.
+                let mut new = (**s).clone();
+                if let Some(slot) = new.fields.get_mut(i) {
+                    *slot = value;
+                }
+                self.assign(object, Value::Struct(Rc::new(new)), env, out)
             }
+            ExprKind::This => env::assign(env, "this", value).map_err(|e| e.or_at(target.span)),
             _ => Err(Error::runtime("invalid assignment target").at(target.span)),
         }
     }
@@ -608,10 +629,22 @@ impl Interpreter {
             }
             ExprKind::Member { object, name } => {
                 let obj = self.eval(object, env, out)?;
+                if let Value::Struct(s) = &obj {
+                    if let Some(i) = s.class.field_index(name) {
+                        return s
+                            .fields
+                            .get(i)
+                            .cloned()
+                            .ok_or_else(|| Error::runtime("missing field"));
+                    }
+                }
                 Err(Error::runtime(format!(
                     "{} has no member '{name}'",
                     obj.type_name()
                 )))
+            }
+            ExprKind::This => {
+                env::lookup(env, "this").ok_or_else(|| Error::runtime("'this' outside of a method"))
             }
             ExprKind::Index { object, index } => {
                 let obj = self.eval(object, env, out)?;
@@ -637,8 +670,32 @@ impl Interpreter {
                 return builtins::call(self, name, values, out);
             }
         }
+        if let ExprKind::Member { object, name } = &callee.kind {
+            let obj = self.eval(object, env, out)?;
+            if let Value::Struct(s) = &obj {
+                if let Some(decl) = s.class.method(name).cloned() {
+                    let class = Rc::clone(&s.class);
+                    let values = self.eval_args(args, env, out)?;
+                    let this = Some((obj.clone(), Ty::Named(class.ty.clone())));
+                    let (result, this) =
+                        self.call_decl(&decl, &class.env, values, inst, span, this, out)?;
+                    // The method may have changed `this`: store the changed
+                    // struct back where it came from.
+                    if let Some(this) = this.filter(|t| *t != obj) {
+                        if object.is_place() {
+                            self.assign(object, this, env, out)?;
+                        }
+                    }
+                    return Ok(result);
+                }
+            }
+        }
         let f = match self.eval(callee, env, out)? {
             Value::Function(f) => f,
+            Value::Type(class) => {
+                let values = self.eval_args(args, env, out)?;
+                return self.construct(&class, values, span, out);
+            }
             Value::Native(n) => {
                 let values = self.eval_args(args, env, out)?;
                 return (n.func)(values, out).map_err(|e| e.or_at(span));
@@ -685,8 +742,24 @@ impl Interpreter {
         span: Span,
         out: &mut dyn Write,
     ) -> Result<Value> {
-        let frame = f
-            .decl
+        self.call_decl(&f.decl, &f.env, args, inst, span, None, out)
+            .map(|(v, _)| v)
+    }
+
+    /// Calls a function declared in `env`; for a method, `this` is the
+    /// value it runs on, and its value at the end is returned too.
+    #[allow(clippy::too_many_arguments)]
+    fn call_decl(
+        &mut self,
+        decl: &FnDecl,
+        env: &EnvRef,
+        args: Vec<Value>,
+        inst: &[Ty],
+        span: Span,
+        this: Option<(Value, Ty)>,
+        out: &mut dyn Write,
+    ) -> Result<(Value, Option<Value>)> {
+        let frame = decl
             .type_params
             .iter()
             .enumerate()
@@ -698,19 +771,20 @@ impl Interpreter {
             })
             .collect();
         self.type_env.push(frame);
-        let result = self.call_in_frame(f, args, span, out);
+        let result = self.call_in_frame(decl, env, args, span, this, out);
         self.type_env.pop();
         result
     }
 
     fn call_in_frame(
         &mut self,
-        f: &Function,
+        decl: &FnDecl,
+        env: &EnvRef,
         args: Vec<Value>,
         span: Span,
+        this: Option<(Value, Ty)>,
         out: &mut dyn Write,
-    ) -> Result<Value> {
-        let decl = &f.decl;
+    ) -> Result<(Value, Option<Value>)> {
         if args.len() != decl.params.len() {
             return Err(Error::runtime(format!(
                 "function '{}' expects {} argument{}, got {}",
@@ -729,7 +803,11 @@ impl Interpreter {
             .at(span));
         }
 
-        let scope = Env::child(&f.env);
+        let scope = Env::child(env);
+        let has_this = this.is_some();
+        if let Some((value, ty)) = this {
+            scope.borrow_mut().define("this", value, ty);
+        }
         for (param, arg) in decl.params.iter().zip(args) {
             let what = format!("argument '{}' of '{}'", param.name, decl.name);
             let ty = self.rt(&param.resolved);
@@ -746,7 +824,135 @@ impl Interpreter {
             _ => Value::Null,
         };
         let what = format!("the return value of '{}'", decl.name);
-        coerce(&self.rt(&decl.ret_resolved), result, &what).map_err(|e| e.or_at(span))
+        let result =
+            coerce(&self.rt(&decl.ret_resolved), result, &what).map_err(|e| e.or_at(span))?;
+        let this = if has_this {
+            env::lookup(&scope, "this")
+        } else {
+            None
+        };
+        Ok((result, this))
+    }
+
+    /// Defines the functions and types of a block: they are visible in the
+    /// whole block, before their declaration.
+    fn hoist(&mut self, stmts: &[Stmt], env: &EnvRef) {
+        for stmt in stmts {
+            match &stmt.kind {
+                StmtKind::FnDecl(decl) => {
+                    let f = Function {
+                        decl: Rc::clone(decl),
+                        env: Rc::clone(env),
+                    };
+                    let ty = belsk2_typeck::fn_type(decl);
+                    env.borrow_mut()
+                        .define(&decl.name, Value::Function(Rc::new(f)), ty);
+                }
+                StmtKind::Type(decl) => {
+                    let Some(info) = &decl.info else {
+                        continue;
+                    };
+                    let ty = info.reference();
+                    let class = Rc::new(Class {
+                        decl: Rc::clone(decl),
+                        fields: ty
+                            .all_fields()
+                            .into_iter()
+                            .map(|f| (f.name, f.ty))
+                            .collect(),
+                        ty: ty.clone(),
+                        env: Rc::clone(env),
+                    });
+                    self.classes.insert(ty.id(), Rc::clone(&class));
+                    env.borrow_mut()
+                        .define(&decl.name, Value::Type(class), Ty::Type(ty));
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// `Point(1, 2)`: fields get their declared values (or defaults), then
+    /// `init` runs, or, without one, the arguments go to the fields that
+    /// have no value, in order.
+    fn construct(
+        &mut self,
+        class: &Rc<Class>,
+        args: Vec<Value>,
+        span: Span,
+        out: &mut dyn Write,
+    ) -> Result<Value> {
+        let mut fields = Vec::with_capacity(class.fields.len());
+        let mut takes_arg = Vec::new();
+        for m in &class.decl.members {
+            if let MemberKind::Field(f) = &m.kind {
+                let ty = self.rt(&f.resolved);
+                let value = match &f.value {
+                    Some(e) => {
+                        let v = self.eval(e, &class.env, out)?;
+                        coerce(&ty, v, &format!("field '{}'", f.name))?
+                    }
+                    None => {
+                        takes_arg.push(fields.len());
+                        self.default_value(&ty, 0)
+                    }
+                };
+                fields.push(value);
+            }
+        }
+        let mut value = StructValue {
+            class: Rc::clone(class),
+            fields,
+        };
+        if let Some(init) = class.init().cloned() {
+            let this = Some((Value::Struct(Rc::new(value)), Ty::Named(class.ty.clone())));
+            let (_, this) = self.call_decl(&init, &class.env, args, &[], span, this, out)?;
+            return this.ok_or_else(|| Error::runtime("init lost 'this'").at(span));
+        }
+        if args.len() != takes_arg.len() {
+            return Err(Error::runtime(format!(
+                "'{}' expects {} argument{}, got {}",
+                class.ty.name,
+                takes_arg.len(),
+                if takes_arg.len() == 1 { "" } else { "s" },
+                args.len()
+            ))
+            .at(span));
+        }
+        for (i, arg) in takes_arg.into_iter().zip(args) {
+            let (name, ty) = class
+                .fields
+                .get(i)
+                .cloned()
+                .unwrap_or_else(|| (String::new(), Ty::Any));
+            if let Some(slot) = value.fields.get_mut(i) {
+                *slot = coerce(&ty, arg, &format!("field '{name}'")).map_err(|e| e.or_at(span))?;
+            }
+        }
+        Ok(Value::Struct(Rc::new(value)))
+    }
+
+    /// The value a field has before it is assigned: `0`, `false`, `null`,
+    /// or a struct whose fields have their default values.
+    fn default_value(&self, ty: &Ty, depth: usize) -> Value {
+        match ty.canonical() {
+            Ty::Bool => Value::Bool(false),
+            Ty::Int(k) => Value::Int(0, k),
+            Ty::Float(k) => Value::Float(0.0, k),
+            Ty::Char => Value::Char('\0'),
+            Ty::Named(t) if depth < 32 => match self.classes.get(&t.id()) {
+                Some(class) => Value::Struct(Rc::new(StructValue {
+                    class: Rc::clone(class),
+                    fields: class
+                        .fields
+                        .iter()
+                        .map(|(_, ty)| self.default_value(ty, depth + 1))
+                        .collect(),
+                })),
+                None => Value::Null,
+            },
+            _ => Value::Null,
+        }
     }
 }
 
@@ -766,19 +972,14 @@ fn host_arg(v: Value) -> Value {
     }
 }
 
-/// Functions are visible in their whole block, before their declaration.
-fn hoist_functions(stmts: &[Stmt], env: &EnvRef) {
-    for stmt in stmts {
-        if let StmtKind::FnDecl(decl) = &stmt.kind {
-            let f = Function {
-                decl: Rc::clone(decl),
-                env: Rc::clone(env),
-            };
-            let ty = belsk2_typeck::fn_type(decl);
-            env.borrow_mut()
-                .define(&decl.name, Value::Function(Rc::new(f)), ty);
-        }
-    }
+/// The index and type of field `name`.
+fn field_of(class: &Class, name: &str) -> Result<(usize, Ty)> {
+    class
+        .fields
+        .iter()
+        .position(|(n, _)| n == name)
+        .and_then(|i| class.fields.get(i).map(|(_, t)| (i, t.clone())))
+        .ok_or_else(|| Error::runtime(format!("{} has no field '{name}'", class.ty.name)))
 }
 
 /// Converts an index value to a position, rejecting non-integers and

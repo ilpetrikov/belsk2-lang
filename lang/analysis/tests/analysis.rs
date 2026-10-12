@@ -225,3 +225,43 @@ fn wit_functions_have_hover_and_completion() {
         "{labels:?}"
     );
 }
+
+#[test]
+fn struct_members_hover_and_completion() {
+    let src = "struct Point {
+    x: double;
+    y: double;
+    fn len2(): double { return x * x + y; }
+}
+
+fn main() {
+    var p = Point(1, 2);
+    prinb(p.x);
+    p.
+}
+";
+    let a = analyze_source("s.belsk2", src);
+    let f = a.files.first().map(|f| f.id).unwrap_or_default();
+    // The unfinished `p.` is reported, but the rest is still analyzed.
+    assert!(
+        a.diagnostics
+            .iter()
+            .any(|d| d.message.contains("expected a member name")),
+        "{:?}",
+        a.diagnostics
+    );
+    let hover = a.hover(f, Pos::new(9, 13)).map(|h| h.1).unwrap_or_default();
+    assert!(hover.contains("Point.x: double"), "{hover}");
+    let hover = a.hover(f, Pos::new(4, 32)).map(|h| h.1).unwrap_or_default();
+    assert!(hover.contains("Point.x: double"), "{hover}");
+    let def = a.definition(f, Pos::new(9, 13));
+    assert_eq!(def.map(|d| d.range.start), Some(Pos::new(2, 5)));
+    let hover = a.hover(f, Pos::new(8, 13)).map(|h| h.1).unwrap_or_default();
+    assert!(hover.contains("struct Point"), "{hover}");
+
+    let items = a.completions(f, Pos::new(10, 7));
+    let labels: Vec<&str> = items.iter().map(|c| c.label.as_str()).collect();
+    assert_eq!(labels, ["x", "y", "len2"]);
+    assert!(items.iter().any(|c| c.kind == CompletionKind::Method
+        && c.detail.as_deref() == Some("fn Point.len2(): double")));
+}

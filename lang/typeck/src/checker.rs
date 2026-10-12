@@ -2,13 +2,25 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use belsk2_syntax::ast::*;
-use belsk2_syntax::{Error, IntKind, NumTy, Sig, Span, Ty, TypeExpr, TypeExprKind};
+use belsk2_syntax::{
+    Access, Error, FieldInfo, IntKind, MemberInfo, MethodInfo, NumTy, Sig, Span, Ty, TypeBody,
+    TypeExpr, TypeExprKind, TypeInfo, TypeKind, TypeRef, Virt,
+};
 
 use crate::builtins;
 
 struct FnCtx {
     name: String,
     ret: Ty,
+}
+
+/// A method (or `init`) being checked: its members can be used without
+/// `this.`.
+struct TypeCtx {
+    ty: TypeRef,
+    /// The index in `scopes` of the method's parameters: names declared
+    /// from there on are locals and hide the members.
+    depth: usize,
 }
 
 /// Walks a program, infers and records types, inserts implicit conversions
@@ -23,6 +35,7 @@ pub struct Checker {
     /// Type parameters of the generic functions being checked.
     type_params: Vec<Vec<Rc<str>>>,
     fns: Vec<FnCtx>,
+    types: Vec<TypeCtx>,
     errors: Vec<Error>,
 }
 
@@ -212,6 +225,7 @@ impl Checker {
             allow_statements: false,
             type_params: Vec::new(),
             fns: Vec::new(),
+            types: Vec::new(),
             errors: Vec::new(),
         }
     }
@@ -254,6 +268,7 @@ impl Checker {
                     stmt.kind,
                     StmtKind::Using(_)
                         | StmtKind::FnDecl(_)
+                        | StmtKind::Type(_)
                         | StmtKind::VarDecl(_)
                         | StmtKind::Idb { .. }
                 );
@@ -318,6 +333,7 @@ impl Checker {
     }
 
     fn resolve(&mut self, t: &TypeExpr) -> Ty {
+        let t_span = t.span;
         match &t.kind {
             TypeExprKind::Array(elem) => Ty::array(self.resolve(elem)),
             TypeExprKind::Named { name, args } => {
@@ -330,6 +346,13 @@ impl Checker {
                         );
                     }
                     return Ty::Param(p);
+                }
+                if let Some(Ty::Type(t)) = self.lookup(name) {
+                    let named = Ty::Named(t.clone());
+                    if !args.is_empty() {
+                        self.type_error(format!("'{name}' does not take type arguments"), t_span);
+                    }
+                    return named;
                 }
                 let expected = match name.as_str() {
                     "List" => 1,
@@ -440,6 +463,7 @@ impl Checker {
     /// Functions are visible in their whole block, so their signatures are
     /// resolved and declared before any statement is checked.
     fn check_stmts(&mut self, stmts: &mut [Stmt]) {
+        self.declare_types(stmts);
         for stmt in stmts.iter_mut() {
             let span = stmt.span;
             if let StmtKind::FnDecl(decl) = &mut stmt.kind {
@@ -447,23 +471,7 @@ impl Checker {
                     self.type_error("internal error: function is shared before checking", span);
                     continue;
                 };
-                self.type_params.push(
-                    decl.type_params
-                        .iter()
-                        .map(|t| Rc::from(t.as_str()))
-                        .collect(),
-                );
-                for p in &mut decl.params {
-                    p.resolved = match &p.ty {
-                        Some(t) => self.resolve(t),
-                        None => Ty::Any,
-                    };
-                }
-                decl.ret_resolved = match &decl.ret {
-                    Some(t) => self.resolve(t),
-                    None => Ty::Any,
-                };
-                self.type_params.pop();
+                self.resolve_signature(decl);
                 if builtins::is_builtin(&decl.name) {
                     self.type_error(
                         format!(
@@ -479,6 +487,264 @@ impl Checker {
         }
         for stmt in stmts.iter_mut() {
             with_stack(|| self.check_stmt(stmt));
+        }
+    }
+
+    /// Resolves the parameter and return types of a function.
+    fn resolve_signature(&mut self, decl: &mut FnDecl) {
+        self.type_params.push(
+            decl.type_params
+                .iter()
+                .map(|t| Rc::from(t.as_str()))
+                .collect(),
+        );
+        for p in &mut decl.params {
+            p.resolved = match &p.ty {
+                Some(t) => self.resolve(t),
+                None => Ty::Any,
+            };
+        }
+        decl.ret_resolved = match &decl.ret {
+            Some(t) => self.resolve(t),
+            None => Ty::Any,
+        };
+        self.type_params.pop();
+    }
+
+    /// Types are visible in their whole block, like functions: first every
+    /// name is declared, then the members are resolved (they may mention
+    /// any of the types).
+    fn declare_types(&mut self, stmts: &mut [Stmt]) {
+        let mut any = false;
+        for stmt in stmts.iter_mut() {
+            let span = stmt.span;
+            if let StmtKind::Type(decl) = &mut stmt.kind {
+                let Some(decl) = Rc::get_mut(decl) else {
+                    self.type_error("internal error: type is shared before checking", span);
+                    continue;
+                };
+                let info = TypeInfo::new(&decl.name, decl.kind, false, span);
+                if builtins::is_builtin(&decl.name) || Ty::from_name(&decl.name).is_some() {
+                    self.type_error(
+                        format!(
+                            "'{}' is a built-in name and cannot be a type name",
+                            decl.name
+                        ),
+                        span,
+                    );
+                }
+                self.declare(&decl.name, Ty::Type(info.reference()), span);
+                decl.info = Some(info);
+                any = true;
+            }
+        }
+        if !any {
+            return;
+        }
+        for stmt in stmts.iter_mut() {
+            if let StmtKind::Type(decl) = &mut stmt.kind {
+                if let Some(decl) = Rc::get_mut(decl) {
+                    self.resolve_members(decl);
+                }
+            }
+        }
+        for stmt in stmts.iter() {
+            if let StmtKind::Type(decl) = &stmt.kind {
+                if let Some(info) = &decl.info {
+                    let t = info.reference();
+                    if t.kind == TypeKind::Struct && contains_struct(&t, &t, 0) {
+                        self.type_error(
+                            format!(
+                                "struct '{}' contains itself, so it would be infinitely large; use an array or a nullable type for the field",
+                                decl.name
+                            ),
+                            decl.span,
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Resolves the fields, methods and constructor of a type.
+    fn resolve_members(&mut self, decl: &mut TypeDecl) {
+        let Some(info) = decl.info.clone() else {
+            return;
+        };
+        let mut body = TypeBody::default();
+        let mut names: Vec<String> = Vec::new();
+        for m in &mut decl.members {
+            let span = m.span;
+            let name = match &m.kind {
+                MemberKind::Field(f) => f.name.clone(),
+                MemberKind::Method(d) => d.name.clone(),
+                MemberKind::Init(_) => "init".to_string(),
+            };
+            if names.contains(&name) {
+                let what = if name == "init" {
+                    format!("'{}' already has an init", decl.name)
+                } else {
+                    format!("'{}' already has a member '{name}'", decl.name)
+                };
+                self.type_error(what, span);
+                continue;
+            }
+            names.push(name.clone());
+            match &mut m.kind {
+                MemberKind::Field(f) => {
+                    f.resolved = match (&f.ty, &mut f.value) {
+                        (Some(t), _) => self.resolve(t),
+                        (None, Some(value)) => {
+                            let ty = self.expr(value);
+                            if matches!(ty, Ty::Null | Ty::Type(_)) {
+                                self.type_error(
+                                    format!("cannot infer the type of field '{name}'; write it as `{name}: type`"),
+                                    span,
+                                );
+                                Ty::Any
+                            } else {
+                                ty
+                            }
+                        }
+                        (None, None) => Ty::Any,
+                    };
+                    body.fields.push(FieldInfo {
+                        name,
+                        ty: f.resolved.clone(),
+                        access: Access::Public,
+                        set: Some(Access::Public),
+                        is_static: false,
+                        has_value: f.value.is_some(),
+                        span,
+                    });
+                }
+                MemberKind::Method(d) => {
+                    let Some(d) = Rc::get_mut(d) else {
+                        continue;
+                    };
+                    self.resolve_signature(d);
+                    body.methods.push(MethodInfo {
+                        sig: Rc::new(sig_of(d)),
+                        access: Access::Public,
+                        is_static: false,
+                        virt: Virt::None,
+                        span,
+                    });
+                }
+                MemberKind::Init(d) => {
+                    let Some(d) = Rc::get_mut(d) else {
+                        continue;
+                    };
+                    self.resolve_signature(d);
+                    d.ret_resolved = Ty::Null;
+                    body.ctor = d
+                        .params
+                        .iter()
+                        .map(|p| (p.name.clone(), p.resolved.clone()))
+                        .collect();
+                    body.explicit_ctor = true;
+                }
+            }
+        }
+        if !body.explicit_ctor {
+            body.ctor = body
+                .fields
+                .iter()
+                .filter(|f| !f.has_value)
+                .map(|f| (f.name.clone(), f.ty.clone()))
+                .collect();
+        }
+        info.set_body(body);
+    }
+
+    /// Checks field values and method bodies.
+    fn check_type(&mut self, decl: &mut TypeDecl) {
+        let Some(info) = decl.info.clone() else {
+            return;
+        };
+        let ty = info.reference();
+        for m in &mut decl.members {
+            let span = m.span;
+            match &mut m.kind {
+                MemberKind::Field(f) => {
+                    if let (Some(_), Some(value)) = (&f.ty, &mut f.value) {
+                        self.expr(value);
+                        let name = f.name.clone();
+                        self.coerce(value, &f.resolved, &|| format!("field '{name}'"));
+                    }
+                }
+                MemberKind::Method(d) | MemberKind::Init(d) => match Rc::get_mut(d) {
+                    Some(d) => {
+                        self.types.push(TypeCtx {
+                            ty: ty.clone(),
+                            depth: self.scopes.len(),
+                        });
+                        self.check_fn(d);
+                        self.types.pop();
+                    }
+                    None => {
+                        self.type_error("internal error: method is shared before checking", span)
+                    }
+                },
+            }
+        }
+    }
+
+    /// Whether `name`, used inside a method, means a member of `this`:
+    /// it is not a local variable and the type has such a member.
+    fn is_member_of_this(&self, name: &str) -> bool {
+        let Some(ctx) = self.types.last() else {
+            return false;
+        };
+        let local = self
+            .scopes
+            .iter()
+            .skip(ctx.depth)
+            .any(|s| s.contains_key(name));
+        !local && ctx.ty.member(name).is_some()
+    }
+
+    /// Turns `x` into `this.x` when `x` is a member of `this`.
+    fn qualify(&self, e: &mut Expr) {
+        if let ExprKind::Ident(name) = &e.kind {
+            if self.is_member_of_this(name) {
+                let name = name.clone();
+                let this = Expr::new(ExprKind::This, e.span);
+                e.kind = ExprKind::Member {
+                    object: Box::new(this),
+                    name,
+                };
+            }
+        }
+    }
+
+    /// The type of `object.name`; `call` allows methods.
+    fn member_type(&mut self, obj: &Ty, name: &str, span: Span, call: bool) -> Ty {
+        match obj {
+            Ty::Any => Ty::Any,
+            Ty::Named(t) => match t.member(name) {
+                Some((_, MemberInfo::Field(f))) => f.ty,
+                Some((_, MemberInfo::Method(m))) if call => Ty::Fn(Some(m.sig)),
+                Some((_, MemberInfo::Method(_))) => {
+                    self.type_error(
+                        format!("method '{name}' can only be called: {name}(...)"),
+                        span,
+                    );
+                    Ty::Any
+                }
+                Some(_) => {
+                    self.type_error(format!("'{name}' of {} is not supported yet", t.name), span);
+                    Ty::Any
+                }
+                None => {
+                    self.type_error(format!("{obj} has no member '{name}'"), span);
+                    Ty::Any
+                }
+            },
+            other => {
+                self.type_error(format!("{other} has no member '{name}'"), span);
+                Ty::Any
+            }
         }
     }
 
@@ -505,6 +771,16 @@ impl Checker {
                     }
                     // `var x = null` has no useful type.
                     None if matches!(d.value.ty, Ty::Null) => Ty::Any,
+                    None if matches!(d.value.ty, Ty::Type(_)) => {
+                        self.type_error(
+                            format!(
+                                "'{}' is a type, not a value; call it to make one",
+                                d.value.ty.to_string().trim_start_matches("type ")
+                            ),
+                            d.value.span,
+                        );
+                        Ty::Any
+                    }
                     None => d.value.ty.clone(),
                 };
                 self.declare(&d.name, d.resolved.clone(), span);
@@ -551,6 +827,10 @@ impl Checker {
             StmtKind::FnDecl(decl) => match Rc::get_mut(decl) {
                 Some(decl) => self.check_fn(decl),
                 None => self.type_error("internal error: function is shared before checking", span),
+            },
+            StmtKind::Type(decl) => match Rc::get_mut(decl) {
+                Some(decl) => self.check_type(decl),
+                None => self.type_error("internal error: type is shared before checking", span),
             },
             StmtKind::Return(value) => {
                 let Some(ctx) = self.fns.last() else {
@@ -668,6 +948,7 @@ impl Checker {
     /// Checks an assignment target and returns the type it holds.
     fn place(&mut self, target: &mut Expr) -> Option<Ty> {
         let span = target.span;
+        self.qualify(target);
         let ty = match &mut target.kind {
             ExprKind::Ident(name) => {
                 match self.lookup(name).cloned() {
@@ -698,9 +979,44 @@ impl Checker {
             ExprKind::Member { object, name } => {
                 let name = name.clone();
                 let obj = self.expr(object);
-                self.type_error(format!("{obj} has no member '{name}'"), span);
-                None
+                match &obj {
+                    Ty::Named(t) => match t.member(&name) {
+                        Some((_, MemberInfo::Field(f))) => {
+                            let variable = object.is_place();
+                            if t.kind == TypeKind::Struct && !variable {
+                                self.type_error(
+                                    format!("cannot change a field of a temporary {} value; store it in a variable first", t.name),
+                                    span,
+                                );
+                            }
+                            Some(f.ty)
+                        }
+                        Some(_) => {
+                            self.type_error(
+                                format!("cannot assign to '{name}': it is not a field"),
+                                span,
+                            );
+                            None
+                        }
+                        None => {
+                            self.type_error(format!("{obj} has no member '{name}'"), span);
+                            None
+                        }
+                    },
+                    Ty::Any => Some(Ty::Any),
+                    other => {
+                        self.type_error(format!("{other} has no member '{name}'"), span);
+                        None
+                    }
+                }
             }
+            ExprKind::This => match self.types.last() {
+                Some(ctx) => Some(Ty::Named(ctx.ty.clone())),
+                None => {
+                    self.type_error("'this' can only be used in methods and init", span);
+                    None
+                }
+            },
             _ => {
                 self.type_error("invalid assignment target", span);
                 None
@@ -725,6 +1041,7 @@ impl Checker {
 
     fn expr_inner(&mut self, e: &mut Expr) -> Ty {
         let span = e.span;
+        self.qualify(e);
         match &mut e.kind {
             ExprKind::Int(_, k) => Ty::Int(*k),
             ExprKind::Float(_, k) => Ty::Float(*k),
@@ -794,9 +1111,15 @@ impl Checker {
             ExprKind::Member { object, name } => {
                 let name = name.clone();
                 let obj = self.expr(object);
-                self.type_error(format!("{obj} has no member '{name}'"), span);
-                Ty::Any
+                self.member_type(&obj, &name, span, false)
             }
+            ExprKind::This => match self.types.last() {
+                Some(ctx) => Ty::Named(ctx.ty.clone()),
+                None => {
+                    self.type_error("'this' can only be used in methods and init", span);
+                    Ty::Any
+                }
+            },
             ExprKind::Index { object, index } => {
                 let obj = self.expr(object);
                 self.index(&obj, index, span).unwrap_or(Ty::Any)
@@ -1047,7 +1370,31 @@ impl Checker {
             }
         }
 
-        match self.expr(callee) {
+        self.qualify(callee);
+        let callee_ty = match &mut callee.kind {
+            ExprKind::Member { object, name } => {
+                let name = name.clone();
+                let obj = self.expr(object);
+                let ty = self.member_type(&obj, &name, callee.span, true);
+                callee.ty = ty.clone();
+                ty
+            }
+            _ => self.expr(callee),
+        };
+        // `Point(1, 2)` calls the constructor.
+        let callee_ty = match callee_ty {
+            Ty::Type(t) => {
+                let params = t.with_body(|b| b.ctor.clone()).unwrap_or_default();
+                Ty::Fn(Some(Rc::new(Sig {
+                    name: t.name.to_string(),
+                    type_params: Vec::new(),
+                    params: params.into_iter().map(|(_, ty)| ty).collect(),
+                    ret: Ty::Named(t),
+                })))
+            }
+            other => other,
+        };
+        match callee_ty {
             Ty::Fn(Some(sig)) => {
                 let n = sig.params.len();
                 if args.len() != n {
@@ -1172,9 +1519,24 @@ fn bind_type_params(params: &[Rc<str>], param: &Ty, arg: &Ty, bound: &mut HashMa
     }
 }
 
+/// Whether struct `t` holds a `target` by value, directly or through
+/// other structs.
+fn contains_struct(t: &TypeRef, target: &TypeRef, depth: usize) -> bool {
+    if depth > 32 {
+        return false;
+    }
+    t.all_fields().iter().any(|f| match &f.ty {
+        Ty::Named(n) if n.kind == TypeKind::Struct => {
+            n == target || contains_struct(n, target, depth + 1)
+        }
+        _ => false,
+    })
+}
+
 fn describe_place(target: &Expr) -> String {
     match &target.kind {
         ExprKind::Ident(name) => format!("'{name}'"),
+        ExprKind::Member { name, .. } => format!("field '{name}'"),
         _ => "the element".to_string(),
     }
 }

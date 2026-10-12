@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 
 use belsk2::project::Loaded;
-use belsk2::syntax::ast::{Block, Expr, ExprKind, FnDecl, Stmt, StmtKind};
+use belsk2::syntax::ast::{Block, Expr, ExprKind, FnDecl, MemberKind, Stmt, StmtKind, TypeDecl};
 use belsk2::syntax::token::TokenKind;
 use belsk2::syntax::{FileId, Span};
 use belsk2::Ty;
@@ -279,8 +279,11 @@ impl Indexer<'_> {
     }
 
     fn stmts(&mut self, stmts: &[Stmt]) {
-        // Functions can be used before they are declared.
+        // Functions and types can be used before they are declared.
         for stmt in stmts {
+            if let StmtKind::Type(decl) = &stmt.kind {
+                self.declare_type(decl, stmt.span);
+            }
             if let StmtKind::FnDecl(decl) = &stmt.kind {
                 let range = self.name_range(stmt.span, &decl.name);
                 let mut sym = self.symbol(
@@ -304,6 +307,124 @@ impl Indexer<'_> {
         }
         for stmt in stmts {
             stacker::maybe_grow(64 * 1024, 1024 * 1024, || self.stmt(stmt));
+        }
+    }
+
+    /// Makes the newest entry of the current scope visible in the whole
+    /// scope.
+    fn visible_in_whole_scope(&mut self) {
+        if let Some(&scope) = self.scope_stack.last() {
+            if let Some(s) = self.analysis.scopes.get_mut(scope) {
+                if let Some(e) = s.entries.last_mut() {
+                    e.1 = s.start;
+                }
+            }
+        }
+    }
+
+    /// The symbol of a struct and of its fields and methods.
+    fn declare_type(&mut self, decl: &TypeDecl, span: Span) {
+        let range = self.name_range(span, &decl.name);
+        let ty = decl
+            .info
+            .as_ref()
+            .map(|i| Ty::Type(i.reference()))
+            .unwrap_or(Ty::Any);
+        let sym = self.symbol(
+            &decl.name,
+            SymbolKind::Type,
+            ty,
+            format!("{} {}", decl.kind.keyword(), decl.name),
+            range,
+        );
+        self.declare(sym);
+        self.visible_in_whole_scope();
+        let Some(info) = &decl.info else {
+            return;
+        };
+        self.analysis.types.push(std::rc::Rc::clone(info));
+        for m in &decl.members {
+            let (name, kind, ty, signature) = match &m.kind {
+                MemberKind::Field(f) => (
+                    f.name.clone(),
+                    SymbolKind::Field,
+                    f.resolved.clone(),
+                    format!("{}.{}: {}", decl.name, f.name, f.resolved),
+                ),
+                MemberKind::Method(d) => {
+                    let sig = fn_signature(d);
+                    let sig = sig.strip_prefix("fn ").unwrap_or(&sig);
+                    (
+                        d.name.clone(),
+                        SymbolKind::Method,
+                        belsk2::typeck::fn_type(d),
+                        format!("fn {}.{sig}", decl.name),
+                    )
+                }
+                MemberKind::Init(_) => continue,
+            };
+            let range = self.name_range(m.span, &name);
+            let mut sym = self.symbol(&name, kind, ty, signature, range);
+            sym.top_level = false;
+            sym.module = None;
+            if let MemberKind::Method(d) = &m.kind {
+                sym.params = d.params.iter().map(|p| p.name.clone()).collect();
+            }
+            let id = self.analysis.symbols.len();
+            self.analysis.symbols.push(sym);
+            self.analysis.members.insert((info.id(), name), id);
+        }
+    }
+
+    /// Walks a function body with its parameters (and `this` for a
+    /// method) in scope.
+    fn walk_fn(&mut self, decl: &FnDecl, symbol: Option<usize>, this: Option<Ty>) {
+        if let Some(symbol) = symbol {
+            self.fn_stack.push(self.analysis.functions.len());
+            self.analysis.functions.push(FnInfo {
+                symbol,
+                file: self.file(),
+                locals: Vec::new(),
+                uses: Vec::new(),
+            });
+        }
+        let pushed = self.fn_stack.len();
+        self.block(&decl.body, |ix| {
+            if let Some(ty) = this {
+                let range = ix.name_range(decl.span, &decl.name);
+                let mut sym = ix.symbol(
+                    "this",
+                    SymbolKind::Parameter,
+                    ty.clone(),
+                    format!("this: {ty}"),
+                    range,
+                );
+                sym.def = None;
+                ix.declare(sym);
+            }
+            for p in &decl.params {
+                let range = ix.name_range(p.span, &p.name);
+                let sym = ix.symbol(
+                    &p.name,
+                    SymbolKind::Parameter,
+                    p.resolved.clone(),
+                    format!("(parameter) {}: {}", p.name, p.resolved),
+                    range,
+                );
+                ix.declare(sym);
+            }
+            // Parameters are visible in the whole body.
+            if let Some(&scope) = ix.scope_stack.last() {
+                if let Some(s) = ix.analysis.scopes.get_mut(scope) {
+                    let start = s.start;
+                    for e in &mut s.entries {
+                        e.1 = start;
+                    }
+                }
+            }
+        });
+        if pushed > 0 && symbol.is_some() && self.fn_stack.len() == pushed {
+            self.fn_stack.pop();
         }
     }
 
@@ -343,40 +464,29 @@ impl Indexer<'_> {
                 self.expr(value);
             }
             StmtKind::FnDecl(decl) => {
-                if let Some(symbol) = self.lookup(&decl.name) {
-                    self.fn_stack.push(self.analysis.functions.len());
-                    self.analysis.functions.push(FnInfo {
-                        symbol,
-                        file: self.file(),
-                        locals: Vec::new(),
-                        uses: Vec::new(),
-                    });
-                }
-                let pushed = self.fn_stack.len();
-                self.block(&decl.body, |ix| {
-                    for p in &decl.params {
-                        let range = ix.name_range(p.span, &p.name);
-                        let sym = ix.symbol(
-                            &p.name,
-                            SymbolKind::Parameter,
-                            p.resolved.clone(),
-                            format!("(parameter) {}: {}", p.name, p.resolved),
-                            range,
-                        );
-                        ix.declare(sym);
-                    }
-                    // Parameters are visible in the whole body.
-                    if let Some(&scope) = ix.scope_stack.last() {
-                        if let Some(s) = ix.analysis.scopes.get_mut(scope) {
-                            let start = s.start;
-                            for e in &mut s.entries {
-                                e.1 = start;
+                let symbol = self.lookup(&decl.name);
+                self.walk_fn(decl, symbol, None);
+            }
+            StmtKind::Type(decl) => {
+                let this = decl.info.as_ref().map(|i| Ty::Named(i.reference()));
+                for m in &decl.members {
+                    match &m.kind {
+                        MemberKind::Field(f) => {
+                            if let Some(v) = &f.value {
+                                self.expr(v);
                             }
                         }
+                        MemberKind::Method(d) => {
+                            let symbol = decl.info.as_ref().and_then(|i| {
+                                self.analysis
+                                    .members
+                                    .get(&(i.id(), d.name.clone()))
+                                    .copied()
+                            });
+                            self.walk_fn(d, symbol, this.clone());
+                        }
+                        MemberKind::Init(d) => self.walk_fn(d, None, this.clone()),
                     }
-                });
-                if pushed > 0 && self.fn_stack.len() == pushed {
-                    self.fn_stack.pop();
                 }
             }
             StmtKind::Return(e) => {
@@ -440,6 +550,37 @@ impl Indexer<'_> {
         });
     }
 
+    /// Records a use of `name` at `span`.
+    fn reference(&mut self, name: &str, span: Span) {
+        if let Some(symbol) = self.lookup(name) {
+            let start = Pos::of(span);
+            let range = Range {
+                start,
+                end: start.right(name.chars().count()),
+            };
+            self.use_symbol(symbol, range);
+        }
+    }
+
+    fn use_symbol(&mut self, symbol: usize, range: Range) {
+        if let Some(f) = self
+            .fn_stack
+            .last()
+            .and_then(|&f| self.analysis.functions.get_mut(f))
+        {
+            if !f.uses.contains(&symbol) {
+                f.uses.push(symbol);
+            }
+        }
+        self.analysis.refs.push(Ref {
+            loc: Location {
+                file: self.file(),
+                range,
+            },
+            symbol,
+        });
+    }
+
     fn expr(&mut self, e: &Expr) {
         stacker::maybe_grow(64 * 1024, 1024 * 1024, || self.expr_inner(e));
     }
@@ -451,30 +592,8 @@ impl Indexer<'_> {
             | ExprKind::String(_)
             | ExprKind::Bool(_)
             | ExprKind::Null => {}
-            ExprKind::Ident(name) => {
-                if let Some(symbol) = self.lookup(name) {
-                    if let Some(f) = self
-                        .fn_stack
-                        .last()
-                        .and_then(|&f| self.analysis.functions.get_mut(f))
-                    {
-                        if !f.uses.contains(&symbol) {
-                            f.uses.push(symbol);
-                        }
-                    }
-                    let start = Pos::of(e.span);
-                    self.analysis.refs.push(Ref {
-                        loc: Location {
-                            file: self.file(),
-                            range: Range {
-                                start,
-                                end: start.right(name.chars().count()),
-                            },
-                        },
-                        symbol,
-                    });
-                }
-            }
+            ExprKind::This => self.reference("this", e.span),
+            ExprKind::Ident(name) => self.reference(name, e.span),
             ExprKind::Array(items) => items.iter().for_each(|i| self.expr(i)),
             ExprKind::Map(entries) => {
                 for (k, v) in entries {
@@ -504,7 +623,25 @@ impl Indexer<'_> {
                     }
                 }
             }
-            ExprKind::Member { object, .. } => self.expr(object),
+            ExprKind::Member { object, name } => {
+                // `x` inside a method is `this.x` with no `this` written.
+                let implicit = matches!(object.kind, ExprKind::This) && object.span == e.span;
+                if !implicit {
+                    self.expr(object);
+                }
+                if let Ty::Named(t) = &object.ty {
+                    let symbol = t.member(name).and_then(|(owner, _)| {
+                        self.analysis
+                            .members
+                            .get(&(owner.id(), name.clone()))
+                            .copied()
+                    });
+                    if let Some(symbol) = symbol {
+                        let range = self.name_range(e.span, name);
+                        self.use_symbol(symbol, range);
+                    }
+                }
+            }
             ExprKind::Index { object, index } => {
                 self.expr(object);
                 self.expr(index);

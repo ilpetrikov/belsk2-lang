@@ -5,7 +5,7 @@ use crate::error::{Error, Result};
 use crate::lexer::{tokenize, tokenize_file};
 use crate::span::{FileId, Span};
 use crate::token::{Token, TokenKind};
-use crate::types::{FloatKind, IntKind, Ty, TypeExpr, TypeExprKind};
+use crate::types::{FloatKind, IntKind, Ty, TypeExpr, TypeExprKind, TypeKind};
 
 /// Maximum height of a single expression tree.
 pub const MAX_EXPR_DEPTH: u32 = 512;
@@ -15,7 +15,7 @@ pub const MAX_NESTING: usize = 256;
 /// Words that cannot be used as names.
 pub const KEYWORDS: &[&str] = &[
     "using", "var", "fn", "if", "else", "while", "for", "in", "return", "break", "continue", "idb",
-    "true", "false", "null",
+    "true", "false", "null", "struct", "this",
 ];
 
 /// Parses a whole program.
@@ -197,6 +197,7 @@ impl Parser {
             match t.text.as_str() {
                 "var" => return self.parse_var_decl(),
                 "fn" => return self.parse_fn_decl(),
+                "struct" => return self.parse_type_decl(),
                 "if" => return self.parse_if(),
                 "while" => return self.parse_while(),
                 "for" => return self.parse_for(),
@@ -450,6 +451,16 @@ impl Parser {
     }
 
     fn parse_fn_decl(&mut self) -> Result<Stmt> {
+        let decl = self.parse_fn()?;
+        let span = decl.span;
+        Ok(Stmt {
+            kind: StmtKind::FnDecl(decl),
+            span,
+        })
+    }
+
+    /// `fn name<T>(params): ret { body }`
+    fn parse_fn(&mut self) -> Result<Rc<FnDecl>> {
         let span = self.bump().span;
         let name = self.expect_name("a function name")?;
         let mut type_params: Vec<String> = Vec::new();
@@ -471,6 +482,26 @@ impl Parser {
             self.expect(TokenKind::Gt)?;
         }
         self.expect(TokenKind::LParen)?;
+        let params = self.parse_params()?;
+        let ret = if self.eat(TokenKind::Colon) || self.eat(TokenKind::Arrow) {
+            Some(self.parse_type()?)
+        } else {
+            None
+        };
+        let body = self.parse_body()?;
+        Ok(Rc::new(FnDecl {
+            name,
+            type_params,
+            params,
+            ret,
+            ret_resolved: Ty::Any,
+            body,
+            span,
+        }))
+    }
+
+    /// `(a: int, b)` after the `(`, including the `)`.
+    fn parse_params(&mut self) -> Result<Vec<Param>> {
         let mut params: Vec<Param> = Vec::new();
         if self.kind() != TokenKind::RParen {
             loop {
@@ -499,31 +530,131 @@ impl Parser {
             }
         }
         self.expect(TokenKind::RParen)?;
-        let ret = if self.eat(TokenKind::Colon) || self.eat(TokenKind::Arrow) {
-            Some(self.parse_type()?)
-        } else {
-            None
-        };
+        Ok(params)
+    }
 
+    /// A function body, outside of any loop.
+    fn parse_body(&mut self) -> Result<Block> {
         let saved_loops = std::mem::replace(&mut self.loop_depth, 0);
         self.fn_depth += 1;
         let body = self.parse_block();
         self.fn_depth -= 1;
         self.loop_depth = saved_loops;
-        let body = body?;
+        body
+    }
 
-        Ok(Stmt {
-            kind: StmtKind::FnDecl(Rc::new(FnDecl {
-                name,
-                type_params,
-                params,
-                ret,
-                ret_resolved: Ty::Any,
-                body,
+    /// `struct Point { x: double; y: double; fn len(): double { ... } }`
+    fn parse_type_decl(&mut self) -> Result<Stmt> {
+        let span = self.bump().span;
+        if self.nesting != 1 || self.fn_depth > 0 {
+            return Err(Error::syntax(
+                "a struct must be declared at the top level of a file",
                 span,
+            ));
+        }
+        let name = self.expect_name("a type name")?;
+        if self.kind() == TokenKind::Lt {
+            return Err(Error::syntax(
+                "generic structs are not supported yet",
+                self.span(),
+            ));
+        }
+        self.expect(TokenKind::LBrace)?;
+        let mut members = Vec::new();
+        while !self.eat(TokenKind::RBrace) {
+            if self.kind() == TokenKind::Eof {
+                return Err(self.unexpected("'}'"));
+            }
+            if self.eat(TokenKind::Semicolon) {
+                continue;
+            }
+            members.push(self.parse_member()?);
+        }
+        Ok(Stmt {
+            kind: StmtKind::Type(Rc::new(TypeDecl {
+                name,
+                kind: TypeKind::Struct,
+                members,
+                span,
+                info: None,
             })),
             span,
         })
+    }
+
+    /// A field, `fn` or `init` in a type body.
+    fn parse_member(&mut self) -> Result<Member> {
+        let t = self.peek().clone();
+        let span = t.span;
+        if t.kind != TokenKind::Ident {
+            return Err(self.unexpected("a field, `fn` or `init`"));
+        }
+        let kind = match t.text.as_str() {
+            "fn" => MemberKind::Method(self.parse_fn()?),
+            "init" if self.peek_at(1).kind == TokenKind::LParen => {
+                self.bump();
+                self.bump();
+                let params = self.parse_params()?;
+                let body = self.parse_body()?;
+                MemberKind::Init(Rc::new(FnDecl {
+                    name: "init".to_string(),
+                    type_params: Vec::new(),
+                    params,
+                    ret: None,
+                    ret_resolved: Ty::Any,
+                    body,
+                    span,
+                }))
+            }
+            "struct" => return Err(Error::syntax("nested types are not supported", span)),
+            "var" => {
+                self.bump();
+                let name = self.expect_name("a field name")?;
+                let ty = if self.eat(TokenKind::Colon) {
+                    Some(self.parse_type()?)
+                } else {
+                    None
+                };
+                let value = if ty.is_none() || self.kind() == TokenKind::Eq {
+                    self.expect(TokenKind::Eq)?;
+                    Some(self.parse_expr()?)
+                } else {
+                    None
+                };
+                MemberKind::Field(Box::new(FieldDecl {
+                    name,
+                    ty,
+                    value,
+                    resolved: Ty::Any,
+                }))
+            }
+            _ => {
+                // `x: int`, or `int x` as in C#.
+                let (name, ty) = if self.peek_at(1).kind == TokenKind::Colon {
+                    let name = self.expect_name("a field name")?;
+                    self.bump();
+                    (name, self.parse_type()?)
+                } else {
+                    let ty = self.parse_type()?;
+                    (self.expect_name("a field name")?, ty)
+                };
+                let value = if self.eat(TokenKind::Eq) {
+                    Some(self.parse_expr()?)
+                } else {
+                    None
+                };
+                MemberKind::Field(Box::new(FieldDecl {
+                    name,
+                    ty: Some(ty),
+                    value,
+                    resolved: Ty::Any,
+                }))
+            }
+        };
+        if matches!(kind, MemberKind::Field(_)) {
+            self.end_stmt();
+        }
+        Ok(Member { kind, span })
     }
 
     fn parse_if(&mut self) -> Result<Stmt> {
@@ -848,6 +979,7 @@ impl Parser {
                     "true" => ExprKind::Bool(true),
                     "false" => ExprKind::Bool(false),
                     "null" => ExprKind::Null,
+                    "this" => ExprKind::This,
                     word if KEYWORDS.contains(&word) => {
                         return Err(self.unexpected("an expression"))
                     }

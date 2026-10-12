@@ -81,6 +81,12 @@ pub enum SymbolKind {
     Variable,
     Parameter,
     Builtin,
+    /// A `struct`.
+    Type,
+    /// A field of a struct.
+    Field,
+    /// A method of a struct.
+    Method,
 }
 
 /// A declared name.
@@ -139,6 +145,8 @@ pub enum CompletionKind {
     Function,
     Variable,
     Parameter,
+    Field,
+    Method,
     Keyword,
     Type,
     Module,
@@ -227,13 +235,20 @@ pub struct Analysis {
     pub root: Option<PathBuf>,
     refs: Vec<Ref>,
     scopes: Vec<Scope>,
+    /// The symbols of fields and methods, by type id and name.
+    members: HashMap<(usize, String), usize>,
+    /// Keeps the user-defined types alive once the syntax trees that own
+    /// them are gone (types in symbols only refer to them).
+    types: Vec<std::rc::Rc<belsk2::syntax::TypeInfo>>,
 }
 
 /// Analyzes source text that is not on disk.
 pub fn analyze_source(name: &str, text: &str) -> Analysis {
+    let mut errors = Vec::new();
+    let repaired = repair(text);
+    let text = repaired.as_deref().unwrap_or(text);
     let mut sources = SourceMap::new();
     let file = sources.add(name, text);
-    let mut errors = Vec::new();
     let program = belsk2::syntax::parse_file(text, file).unwrap_or_else(|e| {
         errors.push(e);
         Program { stmts: Vec::new() }
@@ -268,10 +283,14 @@ pub fn analyze_source(name: &str, text: &str) -> Analysis {
 /// uses. `overlays` holds unsaved editor contents by path. Never touches
 /// the network or `belsk2.lock`.
 pub fn analyze_path(path: &Path, overlays: &HashMap<PathBuf, String>) -> Analysis {
+    let overlays = overlays
+        .iter()
+        .map(|(p, text)| (p.clone(), repair(text).unwrap_or_else(|| text.clone())))
+        .collect();
     let options = Options {
         offline: true,
         write_lock: false,
-        overlays: overlays.clone(),
+        overlays,
         ..Options::default()
     };
     if let Some(root) = path.parent().and_then(project::find_root) {
@@ -283,6 +302,39 @@ pub fn analyze_path(path: &Path, overlays: &HashMap<PathBuf, String>) -> Analysi
     }
     let (loaded, errors) = project::load_file_lenient(path, &options);
     build(loaded, errors, None)
+}
+
+/// Stands in for the member name being typed after a `.`.
+const PLACEHOLDER: &str = "__member__";
+
+/// While a member name is being typed (`p.` at the end of a line), the
+/// file does not parse, and nothing would be known about `p`. If inserting
+/// a placeholder name after such dots makes it parse, that text is
+/// analyzed instead (errors about the placeholder become "expected a
+/// member name").
+fn repair(text: &str) -> Option<String> {
+    if belsk2::syntax::parse(text).is_ok() {
+        return None;
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len() + 16);
+    let mut changed = false;
+    for (i, &c) in chars.iter().enumerate() {
+        out.push(c);
+        if c != '.' {
+            continue;
+        }
+        let prev = i.checked_sub(1).and_then(|j| chars.get(j)).copied();
+        let next = chars.get(i + 1).copied();
+        let after_value =
+            prev.is_some_and(|p| p.is_alphanumeric() || p == '_' || p == ')' || p == ']');
+        let dangling = !next.is_some_and(|n| n.is_alphanumeric() || n == '_');
+        if after_value && dangling && !prev.is_some_and(|p| p.is_ascii_digit()) {
+            out.push_str(PLACEHOLDER);
+            changed = true;
+        }
+    }
+    (changed && belsk2::syntax::parse(&out).is_ok()).then_some(out)
 }
 
 fn canonical(path: &Path) -> PathBuf {
@@ -321,7 +373,10 @@ fn build(mut loaded: Loaded, mut errors: Vec<Error>, root: Option<PathBuf>) -> A
         !(e.message.contains("has no `fn main()`")
             && e.span.is_some_and(|s| broken.contains(&s.file)))
     });
-    for e in errors {
+    for mut e in errors {
+        if e.message.contains(PLACEHOLDER) {
+            e.message = "expected a member name after '.'".to_string();
+        }
         let range = match e.span {
             Some(span) => analysis.token_range(span),
             None => Range::default(),
@@ -509,8 +564,8 @@ impl Analysis {
             .unwrap_or("");
         let before: String = line.chars().take(pos.col.saturating_sub(1)).collect();
         let word_start = before.trim_end_matches(|c: char| c.is_alphanumeric() || c == '_');
-        if word_start.ends_with('.') {
-            return Vec::new();
+        if let Some(receiver) = word_start.strip_suffix('.') {
+            return self.member_completions(file, pos, receiver);
         }
         let mut out: Vec<Completion> = Vec::new();
         let mut seen = std::collections::HashSet::new();
@@ -599,6 +654,61 @@ impl Analysis {
     }
 }
 
+impl Analysis {
+    /// Completions after `receiver.`: the fields and methods of the type
+    /// of the variable `receiver`.
+    fn member_completions(&self, file: FileId, pos: Pos, receiver: &str) -> Vec<Completion> {
+        let name: String = receiver
+            .chars()
+            .rev()
+            .take_while(|c| c.is_alphanumeric() || *c == '_')
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+        if name.is_empty() {
+            return Vec::new();
+        }
+        let mut scopes: Vec<&Scope> = self
+            .scopes
+            .iter()
+            .filter(|s| s.file == file && s.start <= pos && pos <= s.end)
+            .collect();
+        scopes.sort_by_key(|s| std::cmp::Reverse(s.start));
+        let ty = scopes.iter().find_map(|scope| {
+            scope
+                .entries
+                .iter()
+                .rev()
+                .filter(|(_, from)| *from <= pos)
+                .filter_map(|(id, _)| self.symbols.get(*id))
+                .find(|s| s.name == name)
+                .map(|s| s.ty.clone())
+        });
+        let Some(Ty::Named(t)) = ty else {
+            return Vec::new();
+        };
+        t.members()
+            .into_iter()
+            .map(|(owner, name, _)| {
+                let symbol = self
+                    .members
+                    .get(&(owner.id(), name.clone()))
+                    .and_then(|&id| self.symbols.get(id));
+                match symbol {
+                    Some(s) => symbol_completion(s),
+                    None => Completion {
+                        label: name,
+                        kind: CompletionKind::Field,
+                        detail: None,
+                        doc: None,
+                    },
+                }
+            })
+            .collect()
+    }
+}
+
 fn symbol_completion(s: &Symbol) -> Completion {
     Completion {
         label: s.name.clone(),
@@ -606,6 +716,9 @@ fn symbol_completion(s: &Symbol) -> Completion {
             SymbolKind::Function | SymbolKind::Builtin => CompletionKind::Function,
             SymbolKind::Variable => CompletionKind::Variable,
             SymbolKind::Parameter => CompletionKind::Parameter,
+            SymbolKind::Type => CompletionKind::Type,
+            SymbolKind::Field => CompletionKind::Field,
+            SymbolKind::Method => CompletionKind::Method,
         },
         detail: Some(s.signature.clone()),
         doc: s.doc.clone(),

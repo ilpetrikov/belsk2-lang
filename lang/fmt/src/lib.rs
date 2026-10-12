@@ -20,6 +20,7 @@ use belsk2_syntax::{tokenize_raw, Error, RawKind, RawToken};
 
 const KEYWORDS: &[&str] = &[
     "using", "var", "fn", "if", "else", "while", "for", "in", "return", "break", "continue", "idb",
+    "struct",
 ];
 
 /// Keywords after which an expression starts.

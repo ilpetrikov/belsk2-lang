@@ -386,6 +386,8 @@ impl Server<'_> {
                                 CompletionKind::Function => CompletionItemKind::FUNCTION,
                                 CompletionKind::Variable => CompletionItemKind::VARIABLE,
                                 CompletionKind::Parameter => CompletionItemKind::VARIABLE,
+                                CompletionKind::Field => CompletionItemKind::FIELD,
+                                CompletionKind::Method => CompletionItemKind::METHOD,
                                 CompletionKind::Keyword => CompletionItemKind::KEYWORD,
                                 CompletionKind::Type => CompletionItemKind::CLASS,
                                 CompletionKind::Module => CompletionItemKind::MODULE,
@@ -394,7 +396,10 @@ impl Server<'_> {
                             sort_text: Some(format!(
                                 "{}{}",
                                 match c.kind {
-                                    CompletionKind::Variable | CompletionKind::Parameter => 0,
+                                    CompletionKind::Variable
+                                    | CompletionKind::Parameter
+                                    | CompletionKind::Field
+                                    | CompletionKind::Method => 0,
                                     CompletionKind::Function | CompletionKind::Module => 1,
                                     CompletionKind::Keyword | CompletionKind::Type => 2,
                                     CompletionKind::Text => 3,
@@ -458,6 +463,7 @@ impl Server<'_> {
                                         SymbolKind::Function | SymbolKind::Builtin => {
                                             lsp_types::SymbolKind::FUNCTION
                                         }
+                                        SymbolKind::Type => lsp_types::SymbolKind::STRUCT,
                                         _ => lsp_types::SymbolKind::VARIABLE,
                                     },
                                     tags: None,

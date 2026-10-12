@@ -25,7 +25,7 @@ monaco.languages.setLanguageConfiguration(LANG, {
   surroundingPairs: [{ open: "{", close: "}" }, { open: "(", close: ")" }, { open: '"', close: '"' }],
 });
 monaco.languages.setMonarchTokensProvider(LANG, {
-  keywords: ["using", "var", "fn", "if", "else", "while", "for", "in", "return", "break", "continue", "idb"],
+  keywords: ["using", "var", "fn", "if", "else", "while", "for", "in", "return", "break", "continue", "idb", "struct", "this", "init"],
   constants: ["true", "false", "null"],
   types: ["any", "bool", "char", "string", "sbyte", "byte", "short", "ushort", "int", "uint", "long", "ulong", "float", "double", "bel", "ster"],
   builtins: ["prinb", "reab", "input", "len", "str", "num", "push", "pop", "substr", "type", "has", "remove", "keys", "values"],

@@ -493,3 +493,26 @@ fn interpreted_component_uses_stub_imports() {
     );
     assert!(result.is_ok_and(|v| v == belsk2::Value::int(8)));
 }
+
+#[test]
+fn structs_are_shared_between_modules() {
+    let dir = temp_dir("struct_modules");
+    write(
+        &dir,
+        &[
+            ("belsk2.toml", MANIFEST),
+            (
+                "src/geo.belsk2",
+                "struct Point { x: int; y: int; fn sum(): int { return x + y; } }\nvar origin = Point(0, 0);\n",
+            ),
+            (
+                "src/main.belsk2",
+                "using geo;\n\nfn main() {\n    var p = Point(2, 3);\n    p.x += origin.x + 1;\n    prinb(p.sum());\n    prinb(p);\n}\n",
+            ),
+        ],
+    );
+    assert_eq!(
+        run_project(&dir).as_deref(),
+        Ok("6\nPoint { x: 3, y: 3 }\n")
+    );
+}

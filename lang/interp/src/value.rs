@@ -1,8 +1,8 @@
 use std::fmt;
 use std::rc::Rc;
 
-use belsk2_syntax::ast::FnDecl;
-use belsk2_syntax::{FloatKind, IntKind, Ty};
+use belsk2_syntax::ast::{FnDecl, MemberKind, TypeDecl};
+use belsk2_syntax::{FloatKind, IntKind, Ty, TypeRef};
 
 pub use crate::collections::{Array, Map};
 use crate::env::EnvRef;
@@ -24,6 +24,49 @@ pub enum Value {
     /// A function implemented in Rust (for example a stub for a function
     /// the host of a component provides).
     Native(Rc<Native>),
+    /// A user-defined type used as a value: `Point` in `Point(1, 2)`.
+    Type(Rc<Class>),
+    /// A struct value. Structs are values: assigning one copies it, so
+    /// the fields are never changed in place (a field assignment builds a
+    /// new value).
+    Struct(Rc<StructValue>),
+}
+
+/// A user-defined type at run time.
+pub struct Class {
+    pub decl: Rc<TypeDecl>,
+    pub ty: TypeRef,
+    /// Where its methods and field values are evaluated.
+    pub env: EnvRef,
+    /// The instance fields, in order.
+    pub fields: Vec<(String, Ty)>,
+}
+
+impl Class {
+    pub fn field_index(&self, name: &str) -> Option<usize> {
+        self.fields.iter().position(|(n, _)| n == name)
+    }
+
+    pub fn method(&self, name: &str) -> Option<&Rc<FnDecl>> {
+        self.decl.members.iter().find_map(|m| match &m.kind {
+            MemberKind::Method(d) if d.name == name => Some(d),
+            _ => None,
+        })
+    }
+
+    pub fn init(&self) -> Option<&Rc<FnDecl>> {
+        self.decl.members.iter().find_map(|m| match &m.kind {
+            MemberKind::Init(d) => Some(d),
+            _ => None,
+        })
+    }
+}
+
+/// The fields of a struct value.
+#[derive(Clone)]
+pub struct StructValue {
+    pub class: Rc<Class>,
+    pub fields: Vec<Value>,
 }
 
 /// The Rust implementation of a [`Value::Native`].
@@ -77,6 +120,8 @@ impl Value {
             Value::Map(m) => Ty::map(m.key_ty().clone(), m.value_ty().clone()),
             Value::Function(f) => belsk2_typeck::fn_type(&f.decl),
             Value::Native(n) => n.ty.clone(),
+            Value::Type(c) => Ty::Type(c.ty.clone()),
+            Value::Struct(s) => Ty::Named(s.class.ty.clone()),
         }
     }
 
@@ -98,7 +143,7 @@ impl Value {
             Value::String(s) => !s.is_empty(),
             Value::Array(a) => !a.is_empty(),
             Value::Map(m) => !m.is_empty(),
-            Value::Function(_) | Value::Native(_) => true,
+            Value::Function(_) | Value::Native(_) | Value::Type(_) | Value::Struct(_) => true,
         }
     }
 
@@ -149,6 +194,8 @@ impl Value {
                 (k.is_any() || *m.key_ty() == *k) && (v.is_any() || *m.value_ty() == *v)
             }
             (Ty::Fn(_), Value::Function(_) | Value::Native(_)) => true,
+            (Ty::Named(t), Value::Struct(s)) => s.class.ty == t,
+            (Ty::Type(t), Value::Type(c)) => c.ty == t,
             _ => false,
         }
     }
@@ -163,6 +210,19 @@ impl Value {
             Value::String(s) => f.write_str(s),
             Value::Function(func) => write!(f, "<fn {}>", func.decl.name),
             Value::Native(n) => write!(f, "<fn {}>", n.name),
+            Value::Type(c) => write!(f, "<type {}>", c.ty.name),
+            Value::Struct(s) => {
+                if depth >= MAX_NESTING {
+                    return write!(f, "{} {{...}}", s.class.ty.name);
+                }
+                write!(f, "{} {{", s.class.ty.name)?;
+                for (i, ((name, _), v)) in s.class.fields.iter().zip(&s.fields).enumerate() {
+                    f.write_str(if i > 0 { ", " } else { " " })?;
+                    write!(f, "{name}: ")?;
+                    v.fmt_nested(f, depth + 1)?;
+                }
+                f.write_str(if s.fields.is_empty() { "}" } else { " }" })
+            }
             Value::Map(m) => {
                 if depth >= MAX_NESTING {
                     return f.write_str("{...}");
@@ -246,6 +306,19 @@ fn values_equal(a: &Value, b: &Value, depth: usize) -> bool {
         }
         (Value::Function(x), Value::Function(y)) => Rc::ptr_eq(x, y),
         (Value::Native(x), Value::Native(y)) => Rc::ptr_eq(x, y),
+        (Value::Type(x), Value::Type(y)) => x.ty == y.ty,
+        (Value::Struct(x), Value::Struct(y)) => {
+            if Rc::ptr_eq(x, y) {
+                return true;
+            }
+            if depth >= MAX_NESTING || x.class.ty != y.class.ty {
+                return false;
+            }
+            x.fields
+                .iter()
+                .zip(&y.fields)
+                .all(|(a, b)| values_equal(a, b, depth + 1))
+        }
         (Value::Map(x), Value::Map(y)) => {
             if x.ptr_eq(y) {
                 return true;
