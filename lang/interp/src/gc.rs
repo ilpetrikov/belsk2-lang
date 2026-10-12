@@ -98,6 +98,7 @@ fn children(v: &Value, out: &mut Vec<Value>) {
             }
         }
         Value::Struct(s) => out.extend(s.fields.iter().cloned()),
+        Value::Enum(_, _, data) => out.extend(data.iter().cloned()),
         Value::Object(o) => {
             if let Ok(fields) = o.fields.try_borrow() {
                 out.extend(fields.iter().cloned());
@@ -114,6 +115,7 @@ fn unique(v: &Value) -> bool {
         Value::Array(a) => a.is_unique(),
         Value::Map(m) => m.is_unique(),
         Value::Struct(s) => Rc::strong_count(s) == 1,
+        Value::Enum(_, _, data) => !data.is_empty() && Rc::strong_count(data) == 1,
         _ => false,
     }
 }
@@ -181,6 +183,11 @@ pub(crate) fn find_garbage() -> Vec<Rc<Object>> {
                         visit(v, &mut inner, &mut internal);
                     }
                 }
+                Value::Enum(_, _, data) => {
+                    for v in data.iter() {
+                        visit(v, &mut inner, &mut internal);
+                    }
+                }
                 _ => {}
             }
             work.extend(inner);
@@ -212,7 +219,10 @@ pub(crate) fn find_garbage() -> Vec<Rc<Object>> {
                     None => {}
                 }
                 work.push(c);
-            } else if matches!(c, Value::Array(_) | Value::Map(_) | Value::Struct(_)) {
+            } else if matches!(
+                c,
+                Value::Array(_) | Value::Map(_) | Value::Struct(_) | Value::Enum(..)
+            ) {
                 // Shared containers may be reached many times; the limit
                 // keeps cyclic arrays from looping forever.
                 seen_containers += 1;

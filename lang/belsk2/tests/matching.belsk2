@@ -1,0 +1,77 @@
+enum Shape {
+    Circle(radius: double),
+    Rect(w: double, h: double),
+    Empty,
+
+    fn area(): double {
+        return match this {
+            Circle(r) => 3 * r * r,
+            Rect(w, h) => w * h,
+            Empty => 0,
+        };
+    }
+}
+
+enum Mode { Low, Medium, High }
+
+enum Expr {
+    Num(value: int),
+    Add(a: Expr, b: Expr),
+    Neg(e: Expr),
+}
+
+fn eval(e: Expr): int {
+    return match e {
+        Expr.Num(v) => v,
+        Expr.Add(a, b) => eval(a) + eval(b),
+        Expr.Neg(x) => -eval(x),
+    };
+}
+
+class Animal { }
+class Dog : Animal { fn bark(): string { return "woof"; } }
+class Cat : Animal { }
+
+fn describe(a: Animal): string {
+    return match a {
+        Dog d => d.bark(),
+        Cat => "a cat",
+        _ => "something",
+    };
+}
+
+fn main() {
+    Shape[] shapes = [Shape.Circle(1), Shape.Rect(2, 3), Shape.Empty];
+    for s in shapes {
+        prinb(s);
+        prinb(s.area());
+    }
+    var m = Mode.Medium;
+    switch m {
+        case Mode.Low:
+            prinb("low");
+        case Mode.Medium, Mode.High:
+            prinb("not low");
+    }
+    var n = 7;
+    switch n {
+        case 1, 2:
+            prinb("small");
+        default:
+            prinb("big");
+            if n > 5 { break; }
+            prinb("unreachable");
+    }
+    match n {
+        0 => prinb("zero"),
+        x if x % 2 == 1 => { prinb("odd " + str(x)); }
+        _ => prinb("even"),
+    }
+    prinb(eval(Expr.Add(Expr.Num(2), Expr.Neg(Expr.Num(5)))));
+    prinb(describe(Dog()));
+    prinb(describe(Cat()));
+    prinb(describe(Animal()));
+    var label = match true { true => "yes", false => "no" };
+    prinb(label);
+    prinb(Shape.Rect(1, 2) == Shape.Rect(1, 2));
+}

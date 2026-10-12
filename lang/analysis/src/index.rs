@@ -434,18 +434,25 @@ impl Indexer<'_> {
                 }
                 MemberKind::Init(_) | MemberKind::Drop(_) => continue,
                 MemberKind::Case { name, .. } => {
-                    let value = info
+                    let variant = info
                         .reference()
                         .variants()
                         .into_iter()
-                        .find(|v| v.name == *name)
-                        .map(|v| v.value)
-                        .unwrap_or(0);
+                        .find(|v| v.name == *name);
+                    let shape = match &variant {
+                        Some(v) if !v.fields.is_empty() => {
+                            let fields: Vec<String> =
+                                v.fields.iter().map(|(n, t)| format!("{n}: {t}")).collect();
+                            format!("({})", fields.join(", "))
+                        }
+                        Some(v) => format!(" = {}", v.value),
+                        None => String::new(),
+                    };
                     (
                         name.clone(),
                         SymbolKind::Field,
                         Ty::Named(info.reference()),
-                        format!("{}.{name} = {value}", decl.name),
+                        format!("{}.{name}{shape}", decl.name),
                     )
                 }
             };
@@ -638,6 +645,21 @@ impl Indexer<'_> {
                 self.hint(range.end, format!(": {var_ty}"), HintKind::Type);
             }
             StmtKind::Block(b) => self.block(b, |_| {}),
+            StmtKind::Switch {
+                subject,
+                cases,
+                default,
+            } => {
+                self.expr(subject);
+                for c in cases {
+                    c.values.iter().for_each(|v| self.expr(v));
+                    self.block(&c.body, |_| {});
+                }
+                if let Some(d) = default {
+                    self.block(d, |_| {});
+                }
+            }
+            StmtKind::Match(m) => self.walk_match(m),
         }
     }
 
@@ -648,6 +670,52 @@ impl Indexer<'_> {
             label,
             kind,
         });
+    }
+
+    /// A `match`: each arm's variables are visible in its condition and
+    /// body.
+    fn walk_match(&mut self, m: &belsk2::syntax::ast::Match) {
+        self.expr(&m.subject);
+        for arm in &m.arms {
+            self.frames.push(HashMap::new());
+            self.pattern(&arm.pattern);
+            if let Some(g) = &arm.guard {
+                self.expr(g);
+            }
+            match &arm.body {
+                belsk2::syntax::ast::ArmBody::Expr(e) => self.expr(e),
+                belsk2::syntax::ast::ArmBody::Block(b) => self.block(b, |_| {}),
+            }
+            self.frames.pop();
+        }
+    }
+
+    /// The variables a pattern binds, and the literals in it.
+    fn pattern(&mut self, p: &belsk2::syntax::ast::Pattern) {
+        use belsk2::syntax::ast::{PatternKind, PatternRes};
+        match (&p.kind, &p.resolved) {
+            (PatternKind::Name(name), PatternRes::Bind(ty))
+            | (
+                PatternKind::Type {
+                    bind: Some(name), ..
+                },
+                PatternRes::Type(ty),
+            ) => {
+                let range = self.name_range(p.span, name);
+                let sym = self.symbol(
+                    name,
+                    SymbolKind::Variable,
+                    ty.clone(),
+                    format!("var {name}: {ty}"),
+                    range,
+                );
+                self.declare(sym);
+            }
+            (PatternKind::Literal(e), _) => self.expr(e),
+            (PatternKind::Variant { args, .. }, _) => args.iter().for_each(|a| self.pattern(a)),
+            (PatternKind::Or(alts), _) => alts.iter().for_each(|a| self.pattern(a)),
+            _ => {}
+        }
     }
 
     /// Records a use of `name` at `span`.
@@ -695,6 +763,7 @@ impl Indexer<'_> {
             ExprKind::This => self.reference("this", e.span),
             ExprKind::SelfType | ExprKind::Base => {}
             ExprKind::Is { expr, .. } | ExprKind::As { expr, .. } => self.expr(expr),
+            ExprKind::Match(m) => self.walk_match(m),
             ExprKind::Ident(name) => self.reference(name, e.span),
             ExprKind::Array(items) => items.iter().for_each(|i| self.expr(i)),
             ExprKind::Map(entries) => {

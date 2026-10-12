@@ -67,6 +67,8 @@ struct Tok {
     unary: bool,
     /// A `{` (or its `}`) that starts a dictionary literal, not a block.
     literal: bool,
+    /// The `{` (or `}`) of the arms of a `match`.
+    arms: bool,
     /// The `:` before base types (`class Dog : Animal`) or `base(...)`,
     /// written with spaces around it.
     spaced: bool,
@@ -164,6 +166,7 @@ fn tokens(source: &str) -> Result<Vec<Tok>, Error> {
                 unary: false,
                 literal: false,
                 spaced: false,
+                arms: false,
             }
         })
         .collect();
@@ -243,7 +246,34 @@ fn tokens(source: &str) -> Result<Vec<Tok>, Error> {
         }
     }
 
-    // `class Dog : Animal`, `init(...) : base(...)`.
+    // The `{` after `match subject` holds arms, one per line.
+    let mut after_match = false;
+    let mut depth = 0usize;
+    let mut arm_braces: Vec<bool> = Vec::new();
+    for t in toks.iter_mut().filter(|t| !t.is_comment()) {
+        if t.is(K::Ident) && t.text == "match" {
+            after_match = true;
+            depth = 0;
+        } else if t.is(K::LParen) || t.is(K::LBracket) {
+            depth += 1;
+        } else if t.is(K::RParen) || t.is(K::RBracket) {
+            depth = depth.saturating_sub(1);
+        } else if t.is(K::Semicolon) {
+            after_match = false;
+        }
+        if t.is(K::LBrace) {
+            let arms = after_match && depth == 0 && !t.literal;
+            t.arms = arms;
+            arm_braces.push(arms);
+            if arms {
+                after_match = false;
+            }
+        } else if t.is(K::RBrace) {
+            t.arms = arm_braces.pop().unwrap_or(false);
+        }
+    }
+
+    // `class Dog : Animal`, `Dog(...) : base(...)`.
     let code: Vec<usize> = (0..toks.len())
         .filter(|&i| toks.get(i).is_some_and(|t| !t.is_comment()))
         .collect();
@@ -366,6 +396,8 @@ fn space(p: &Tok, t: &Tok, config: &Config) -> bool {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Open {
     Block,
+    /// The arms of a `match`: each starts on a new line.
+    Arms,
     Bracket,
 }
 
@@ -385,7 +417,7 @@ impl Writer<'_> {
         let open: usize = self
             .stack
             .iter()
-            .map(|(o, broken)| usize::from(*o == Open::Block || *broken))
+            .map(|(o, broken)| usize::from(*o != Open::Bracket || *broken))
             .sum();
         open + usize::from(self.continued)
     }
@@ -479,14 +511,16 @@ pub fn format(source: &str, config: &Config) -> Result<String, Error> {
         if block_close {
             // Close the block (and anything left open inside it).
             while let Some((open, _)) = w.stack.pop() {
-                if open == Open::Block {
+                if open != Open::Bracket {
                     break;
                 }
             }
             w.continued = false;
             w.new_line(0, false);
             w.push("}", false);
-            pending = true;
+            // `};` after a `match` value, `},` after an arm, `})`.
+            pending =
+                !next.is_some_and(|n| n.is(K::Semicolon) || n.is(K::Comma) || n.is(K::RParen));
             // `} else` stays together (unless braces go on their own line).
             if next.is_some_and(|n| n.is(K::Ident) && n.text == "else")
                 && config.brace_style == BraceStyle::SameLine
@@ -547,7 +581,8 @@ pub fn format(source: &str, config: &Config) -> Result<String, Error> {
                 continue;
             }
             w.push("{", false);
-            w.stack.push((Open::Block, false));
+            let open = if t.arms { Open::Arms } else { Open::Block };
+            w.stack.push((open, false));
             pending = true;
             prev = Some(t);
             continue;
@@ -565,6 +600,10 @@ pub fn format(source: &str, config: &Config) -> Result<String, Error> {
         }
 
         if t.is(K::Semicolon) && !w.stack.last().is_some_and(|(o, _)| *o == Open::Bracket) {
+            w.continued = false;
+            pending = true;
+        }
+        if t.is(K::Comma) && w.stack.last().is_some_and(|(o, _)| *o == Open::Arms) {
             w.continued = false;
             pending = true;
         }

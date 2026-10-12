@@ -196,6 +196,21 @@ fn always_returns(stmts: &[Stmt]) -> bool {
         StmtKind::While { cond, body } => {
             matches!(cond.kind, ExprKind::Bool(true)) && !contains_break(&body.stmts)
         }
+        // A `break` leaves the switch, so a case that breaks does not return.
+        StmtKind::Switch {
+            cases,
+            default: Some(d),
+            ..
+        } => cases
+            .iter()
+            .map(|c| &c.body)
+            .chain(std::iter::once(d))
+            .all(|b| always_returns(&b.stmts) && !contains_break(&b.stmts)),
+        // Every value matches some arm (the checker makes sure of that).
+        StmtKind::Match(m) => m.arms.iter().all(|a| match &a.body {
+            ArmBody::Block(b) => always_returns(&b.stmts),
+            ArmBody::Expr(_) => false,
+        }),
         _ => false,
     })
 }
@@ -867,7 +882,14 @@ impl Checker {
                         d.ret_resolved = Ty::Null;
                     }
                 }
-                MemberKind::Case { value, .. } => {
+                MemberKind::Case { value, fields, .. } => {
+                    let fields: Vec<(String, Ty)> = fields
+                        .iter_mut()
+                        .map(|f| {
+                            f.resolved = f.ty.as_ref().map(|t| self.resolve(t)).unwrap_or(Ty::Any);
+                            (f.name.clone(), f.resolved.clone())
+                        })
+                        .collect();
                     if let Some(e) = value {
                         self.expr(e);
                         match const_of(e) {
@@ -880,13 +902,25 @@ impl Checker {
                     }
                     body.variants.push(VariantInfo {
                         name,
-                        fields: Vec::new(),
+                        fields,
                         value: next_value,
                         span,
                     });
                     next_value = next_value.saturating_add(1);
                 }
             }
+        }
+        // Numbers stand for cases only in enums without data.
+        let has_data = body.variants.iter().any(|v| !v.fields.is_empty());
+        let numbered = decl.members.iter().find_map(|m| match &m.kind {
+            MemberKind::Case { value: Some(_), .. } => Some(m.span),
+            _ => None,
+        });
+        if let (true, Some(span)) = (has_data, numbered) {
+            self.type_error(
+                "an enum with data in its cases cannot give the cases numbers",
+                span,
+            );
         }
         if !body.explicit_ctor {
             body.ctor = body
@@ -1263,7 +1297,20 @@ impl Checker {
             return Ty::Any;
         };
         match m {
-            MemberInfo::Variant(_) => Ty::Named(t),
+            MemberInfo::Variant(v) if v.fields.is_empty() => Ty::Named(t),
+            MemberInfo::Variant(v) if call => Ty::Fn(Some(Rc::new(Sig {
+                name: format!("{}.{}", t.name, v.name),
+                type_params: Vec::new(),
+                params: v.fields.into_iter().map(|(_, t)| t).collect(),
+                ret: Ty::Named(t),
+            }))),
+            MemberInfo::Variant(v) => {
+                self.type_error(
+                    format!("case {} has data: {}.{}(...)", v.name, t.name, v.name),
+                    span,
+                );
+                Ty::Any
+            }
             MemberInfo::Field(f) => f.ty,
             MemberInfo::Prop(p) => {
                 match p.get {
@@ -1405,6 +1452,14 @@ impl Checker {
             }
             StmtKind::Break | StmtKind::Continue => {}
             StmtKind::Block(b) => self.check_block(b),
+            StmtKind::Switch {
+                subject,
+                cases,
+                default,
+            } => self.check_switch(subject, cases, default, span),
+            StmtKind::Match(m) => {
+                self.check_match(m, false);
+            }
             StmtKind::If {
                 cond,
                 then,
@@ -1717,6 +1772,7 @@ impl Checker {
                     }
                 }
             }
+            ExprKind::Match(m) => self.check_match(m, true),
             ExprKind::Is { expr, ty, resolved } => {
                 self.expr(expr);
                 *resolved = self.resolve(ty);
@@ -2274,5 +2330,468 @@ fn describe_place(target: &Expr) -> String {
         ExprKind::Ident(name) => format!("'{name}'"),
         ExprKind::Member { name, .. } => format!("field '{name}'"),
         _ => "the element".to_string(),
+    }
+}
+
+impl Checker {
+    /// `switch subject { case ...: ... default: ... }`: case values are
+    /// constants of the subject's type, and without `default` every
+    /// value must be listed (the cases of an enum, `true` and `false`).
+    fn check_switch(
+        &mut self,
+        subject: &mut Expr,
+        cases: &mut [SwitchCase],
+        default: &mut Option<Block>,
+        span: Span,
+    ) {
+        let ty = self.expr(subject);
+        let mut seen: Vec<String> = Vec::new();
+        for case in cases.iter_mut() {
+            for v in case.values.iter_mut() {
+                self.expr(v);
+                self.coerce(v, &ty, &|| "a case value".to_string());
+                let key = match case_key(v) {
+                    Some(k) => k,
+                    None => {
+                        self.type_error(
+                            "a case value must be a constant: a number, string, bool or enum case",
+                            v.span,
+                        );
+                        continue;
+                    }
+                };
+                if seen.contains(&key) {
+                    self.type_error(format!("duplicate case {key}"), v.span);
+                }
+                seen.push(key);
+            }
+            self.check_block(&mut case.body);
+        }
+        if let Some(t) = ty.named().filter(|t| t.kind == TypeKind::Enum) {
+            if t.variants().iter().any(|v| !v.fields.is_empty()) {
+                self.type_error(
+                    format!(
+                        "{} has cases with data; use `match` to take them apart",
+                        t.name
+                    ),
+                    span,
+                );
+                return;
+            }
+        }
+        if let Some(d) = default {
+            self.check_block(d);
+            return;
+        }
+        let missing: Vec<String> = match ty.canonical() {
+            Ty::Named(t) if t.kind == TypeKind::Enum => t
+                .variants()
+                .iter()
+                .map(|v| v.name.clone())
+                .filter(|n| !seen.contains(n))
+                .map(|n| format!("{}.{n}", t.name))
+                .collect(),
+            Ty::Bool => ["true", "false"]
+                .iter()
+                .filter(|b| !seen.iter().any(|s| s == *b))
+                .map(|b| b.to_string())
+                .collect(),
+            other => {
+                self.type_error(
+                    format!("a switch on {other} needs `default:`, because its values cannot all be listed"),
+                    span,
+                );
+                return;
+            }
+        };
+        if !missing.is_empty() {
+            self.type_error(
+                format!(
+                    "switch does not cover {}; add the missing cases or `default:`",
+                    missing.join(", ")
+                ),
+                span,
+            );
+        }
+    }
+
+    /// Checks a `match`; returns the type of its value (for the expression
+    /// form).
+    fn check_match(&mut self, m: &mut Match, as_expr: bool) -> Ty {
+        let ty = self.expr(&mut m.subject);
+        for arm in m.arms.iter_mut() {
+            let mut binds = Vec::new();
+            self.check_pattern(&mut arm.pattern, &ty, &mut binds);
+            self.scopes.push(HashMap::new());
+            for (i, (name, t, span)) in binds.iter().enumerate() {
+                if binds.iter().take(i).any(|(n, ..)| n == name) {
+                    self.type_error(format!("'{name}' is bound twice in this pattern"), *span);
+                    continue;
+                }
+                self.declare(name, t.clone(), *span);
+            }
+            if let Some(g) = &mut arm.guard {
+                let gt = self.expr(g);
+                if !matches!(gt, Ty::Bool | Ty::Any) {
+                    self.type_error(
+                        format!("the condition after 'if' must be a bool, got {gt}"),
+                        g.span,
+                    );
+                }
+            }
+            match &mut arm.body {
+                ArmBody::Expr(e) => {
+                    self.expr(e);
+                }
+                ArmBody::Block(b) => self.check_block(b),
+            }
+            self.scopes.pop();
+        }
+        // Exhaustiveness: arms with a guard may not match, so they do not
+        // count.
+        let wild = Pattern {
+            kind: PatternKind::Wildcard,
+            span: m.span,
+            resolved: PatternRes::Unresolved,
+        };
+        let rows: Vec<Vec<&Pattern>> = m
+            .arms
+            .iter()
+            .filter(|a| a.guard.is_none())
+            .map(|a| vec![&a.pattern])
+            .collect();
+        if !exhaustive(&rows, std::slice::from_ref(&ty), &wild, 0) {
+            let missing = match ctors(&ty) {
+                Some(cs) => cs
+                    .iter()
+                    .filter_map(|c| {
+                        let spec = specialize(&rows, c, &wild);
+                        if exhaustive(&spec, &c.fields, &wild, 0) {
+                            return None;
+                        }
+                        Some(if spec.is_empty() {
+                            c.name.clone()
+                        } else {
+                            format!("{} (only partly)", c.name)
+                        })
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                None => format!("every value of {ty} (add `_ => ...`)"),
+            };
+            self.type_error(format!("match does not cover {missing}"), m.span);
+        }
+        if !as_expr {
+            return Ty::Null;
+        }
+        let mut values: Vec<&mut Expr> = Vec::new();
+        for arm in m.arms.iter_mut() {
+            if let ArmBody::Expr(e) = &mut arm.body {
+                values.push(e);
+            }
+        }
+        self.common_type(values.into_iter(), "the arms of the match")
+    }
+
+    /// Checks a pattern against values of type `ty`, resolving names, and
+    /// collects the variables it binds.
+    fn check_pattern(&mut self, p: &mut Pattern, ty: &Ty, binds: &mut Vec<(String, Ty, Span)>) {
+        let span = p.span;
+        let enum_ty = ty.named().filter(|t| t.kind == TypeKind::Enum).cloned();
+        match &mut p.kind {
+            PatternKind::Wildcard => {}
+            PatternKind::Name(name) => {
+                let case = enum_ty
+                    .as_ref()
+                    .and_then(|t| t.variants().iter().position(|v| v.name == *name));
+                if let (Some(i), Some(t)) = (case, &enum_ty) {
+                    let has_data = t.variants().get(i).is_some_and(|v| !v.fields.is_empty());
+                    if has_data {
+                        self.type_error(format!("case {name} has data: write {name}(...)"), span);
+                    }
+                    p.resolved = PatternRes::Variant(i);
+                    return;
+                }
+                let as_type = match self.lookup(name) {
+                    Some(Ty::Type(t)) => Some(Ty::Named(t.clone())),
+                    None => Ty::from_name(name).filter(|t| !matches!(t, Ty::Fn(_))),
+                    _ => None,
+                };
+                match as_type {
+                    Some(t) => {
+                        self.check_related(ty, &t, span);
+                        p.resolved = PatternRes::Type(t);
+                    }
+                    None => {
+                        binds.push((name.clone(), ty.clone(), span));
+                        p.resolved = PatternRes::Bind(ty.clone());
+                    }
+                }
+            }
+            PatternKind::Literal(e) => {
+                let lt = self.expr(e);
+                let fits = ty.is_any()
+                    || lt.is_any()
+                    || (matches!(lt, Ty::Null) && ty.nullable())
+                    || (arith(&lt).is_some() && arith(ty).is_some())
+                    || !matches!(conversion(&lt, ty, const_of(e).as_ref()), Conv::No);
+                if !fits {
+                    self.type_error(
+                        format!("a pattern of type {lt} can never match a value of type {ty}"),
+                        span,
+                    );
+                }
+            }
+            PatternKind::Variant { path, args } => {
+                let target = match path.as_slice() {
+                    [case] => enum_ty.clone().map(|t| (t, case.clone())),
+                    [enum_name, case] => match self.lookup(enum_name) {
+                        Some(Ty::Type(t)) if t.kind == TypeKind::Enum => {
+                            Some((t.clone(), case.clone()))
+                        }
+                        _ => {
+                            self.type_error(format!("'{enum_name}' is not an enum"), span);
+                            return;
+                        }
+                    },
+                    _ => None,
+                };
+                let Some((t, case)) = target else {
+                    self.type_error(format!("'{}' is not a case of {ty}", path.join(".")), span);
+                    return;
+                };
+                if !ty.is_any() && enum_ty.as_ref() != Some(&t) {
+                    self.type_error(
+                        format!(
+                            "a pattern of type {} can never match a value of type {ty}",
+                            t.name
+                        ),
+                        span,
+                    );
+                    return;
+                }
+                let variants = t.variants();
+                let Some(i) = variants.iter().position(|v| v.name == case) else {
+                    self.type_error(format!("{} has no case '{case}'", t.name), span);
+                    return;
+                };
+                let fields = variants
+                    .get(i)
+                    .map(|v| v.fields.clone())
+                    .unwrap_or_default();
+                if fields.len() != args.len() {
+                    self.type_error(
+                        format!(
+                            "case {case} has {} field{}, the pattern gives {}",
+                            fields.len(),
+                            if fields.len() == 1 { "" } else { "s" },
+                            args.len()
+                        ),
+                        span,
+                    );
+                }
+                for (a, (_, fty)) in args.iter_mut().zip(&fields) {
+                    self.check_pattern(a, fty, binds);
+                }
+                p.resolved = PatternRes::Variant(i);
+            }
+            PatternKind::Type { ty: texpr, bind } => {
+                let t = self.resolve(texpr);
+                self.check_related(ty, &t, span);
+                if let Some(b) = bind {
+                    binds.push((b.clone(), t.clone(), span));
+                }
+                p.resolved = PatternRes::Type(t);
+            }
+            PatternKind::Or(alts) => {
+                for a in alts.iter_mut() {
+                    let mut inner = Vec::new();
+                    self.check_pattern(a, ty, &mut inner);
+                    if !inner.is_empty() {
+                        self.type_error("patterns joined with | cannot bind names", a.span);
+                    }
+                }
+            }
+        }
+    }
+
+    /// A type test can succeed only for related types.
+    fn check_related(&mut self, value: &Ty, test: &Ty, span: Span) {
+        let related = match (value, test) {
+            (Ty::Any, _) | (_, Ty::Any) => true,
+            (Ty::Named(a), Ty::Named(b)) => {
+                a.is_subtype_of(b)
+                    || b.is_subtype_of(a)
+                    || b.kind == TypeKind::Interface
+                    || a.kind == TypeKind::Interface
+            }
+            (a, b) => a.canonical() == b.canonical(),
+        };
+        if !related {
+            self.type_error(format!("a value of type {value} is never a {test}"), span);
+        }
+    }
+}
+
+/// The text of a constant case value (for duplicates and coverage).
+fn case_key(e: &Expr) -> Option<String> {
+    match &e.kind {
+        ExprKind::Member { object, name } if matches!(object.ty, Ty::Type(_)) => Some(name.clone()),
+        ExprKind::Bool(b) => Some(b.to_string()),
+        ExprKind::Null => Some("null".to_string()),
+        _ => const_of(e).map(|c| match c {
+            Const::Int(v) => v.to_string(),
+            Const::Float(v) => v.to_string(),
+            Const::Str(s) => format!("{s:?}"),
+        }),
+    }
+}
+
+/// A way to build a value of a type with finitely many shapes: a case of
+/// an enum (with the types of its fields), or `true`/`false`.
+struct Ctor {
+    name: String,
+    case: Option<usize>,
+    bool: Option<bool>,
+    fields: Vec<Ty>,
+}
+
+fn ctors(ty: &Ty) -> Option<Vec<Ctor>> {
+    match ty.canonical() {
+        Ty::Named(t) if t.kind == TypeKind::Enum => Some(
+            t.variants()
+                .into_iter()
+                .enumerate()
+                .map(|(i, v)| Ctor {
+                    name: format!("{}.{}", t.name, v.name),
+                    case: Some(i),
+                    bool: None,
+                    fields: v.fields.into_iter().map(|(_, t)| t).collect(),
+                })
+                .collect(),
+        ),
+        Ty::Bool => Some(
+            [true, false]
+                .into_iter()
+                .map(|b| Ctor {
+                    name: b.to_string(),
+                    case: None,
+                    bool: Some(b),
+                    fields: Vec::new(),
+                })
+                .collect(),
+        ),
+        _ => None,
+    }
+}
+
+/// Whether `p` matches every value of type `ty`.
+fn irrefutable(p: &Pattern, ty: &Ty) -> bool {
+    match (&p.kind, &p.resolved) {
+        (PatternKind::Wildcard, _) | (_, PatternRes::Bind(_)) => true,
+        (_, PatternRes::Type(t)) => match (ty, t) {
+            (_, Ty::Any) => true,
+            (Ty::Named(a), Ty::Named(b)) => a.is_subtype_of(b),
+            (a, b) => a.canonical() == b.canonical(),
+        },
+        _ => false,
+    }
+}
+
+/// Splits `|` patterns in the first column into rows of their own.
+fn expand<'a>(rows: &[Vec<&'a Pattern>]) -> Vec<Vec<&'a Pattern>> {
+    let mut out = Vec::new();
+    for row in rows {
+        let Some((first, rest)) = row.split_first() else {
+            out.push(row.clone());
+            continue;
+        };
+        match &first.kind {
+            PatternKind::Or(alts) => {
+                let split: Vec<Vec<&Pattern>> = alts
+                    .iter()
+                    .map(|a| {
+                        let mut r = vec![a];
+                        r.extend(rest.iter().copied());
+                        r
+                    })
+                    .collect();
+                out.extend(expand(&split));
+            }
+            _ => out.push(row.clone()),
+        }
+    }
+    out
+}
+
+/// The rows that match values built with `c`, with the first column
+/// replaced by the patterns for `c`'s fields.
+fn specialize<'a>(rows: &[Vec<&'a Pattern>], c: &Ctor, wild: &'a Pattern) -> Vec<Vec<&'a Pattern>> {
+    let mut out = Vec::new();
+    for row in expand(rows) {
+        let Some((first, rest)) = row.split_first() else {
+            continue;
+        };
+        let head: Option<Vec<&Pattern>> = match (&first.kind, &first.resolved) {
+            (PatternKind::Wildcard, _) | (_, PatternRes::Bind(_)) => {
+                Some(vec![wild; c.fields.len()])
+            }
+            (PatternKind::Variant { args, .. }, PatternRes::Variant(i)) if c.case == Some(*i) => {
+                Some(args.iter().collect())
+            }
+            (PatternKind::Name(_), PatternRes::Variant(i)) if c.case == Some(*i) => {
+                Some(Vec::new())
+            }
+            (PatternKind::Literal(e), _) => match &e.kind {
+                ExprKind::Bool(b) if c.bool == Some(*b) => Some(Vec::new()),
+                _ => None,
+            },
+            _ => None,
+        };
+        if let Some(mut head) = head {
+            head.extend(rest.iter().copied());
+            out.push(head);
+        }
+    }
+    out
+}
+
+/// Whether the rows of patterns together match every list of values of
+/// types `tys` (the usual pattern-matrix check).
+fn exhaustive(rows: &[Vec<&Pattern>], tys: &[Ty], wild: &Pattern, depth: usize) -> bool {
+    let Some((first_ty, rest)) = tys.split_first() else {
+        return !rows.is_empty();
+    };
+    if depth > 64 {
+        return true;
+    }
+    let rows = expand(rows);
+    // A row that matches anything covers everything.
+    if rows
+        .iter()
+        .any(|r| r.iter().zip(tys).all(|(p, t)| irrefutable(p, t)))
+    {
+        return true;
+    }
+    let has_ctor = rows.iter().any(|r| {
+        r.first().is_some_and(|p| {
+            matches!(p.resolved, PatternRes::Variant(_))
+                || matches!(&p.kind, PatternKind::Literal(e) if matches!(e.kind, ExprKind::Bool(_)))
+        })
+    });
+    match ctors(first_ty) {
+        Some(cs) if has_ctor => cs.iter().all(|c| {
+            let mut t = c.fields.clone();
+            t.extend(rest.iter().cloned());
+            exhaustive(&specialize(&rows, c, wild), &t, wild, depth + 1)
+        }),
+        _ => {
+            let defaults: Vec<Vec<&Pattern>> = rows
+                .iter()
+                .filter(|r| r.first().is_some_and(|p| irrefutable(p, first_ty)))
+                .map(|r| r.iter().skip(1).copied().collect())
+                .collect();
+            exhaustive(&defaults, rest, wild, depth + 1)
+        }
     }
 }

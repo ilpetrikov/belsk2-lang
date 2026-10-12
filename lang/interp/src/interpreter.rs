@@ -457,6 +457,39 @@ impl Interpreter {
             StmtKind::Break => return Ok(Flow::Break),
             StmtKind::Continue => return Ok(Flow::Continue),
             StmtKind::Block(b) => return self.exec_block(b, env, out),
+            StmtKind::Switch {
+                subject,
+                cases,
+                default,
+            } => {
+                let value = self.eval(subject, env, out)?;
+                let mut chosen = None;
+                'cases: for case in cases {
+                    for v in &case.values {
+                        if self.eval(v, env, out)? == value {
+                            chosen = Some(&case.body);
+                            break 'cases;
+                        }
+                    }
+                }
+                if let Some(body) = chosen.or(default.as_ref()) {
+                    // `break` leaves the switch.
+                    return match self.exec_block(body, env, out)? {
+                        Flow::Break => Ok(Flow::Normal),
+                        flow => Ok(flow),
+                    };
+                }
+            }
+            StmtKind::Match(m) => {
+                let (arm, scope) = self.choose_arm(m, env, out)?;
+                match m.arms.get(arm).map(|a| &a.body) {
+                    Some(ArmBody::Block(b)) => return self.exec_block(b, &scope, out),
+                    Some(ArmBody::Expr(e)) => {
+                        self.eval(e, &scope, out)?;
+                    }
+                    None => {}
+                }
+            }
             StmtKind::If {
                 cond,
                 then,
@@ -680,6 +713,13 @@ impl Interpreter {
                 };
                 self.get_member(&obj, name, start, expr.span, out)
             }
+            ExprKind::Match(m) => {
+                let (arm, scope) = self.choose_arm(m, env, out)?;
+                match m.arms.get(arm).map(|a| &a.body) {
+                    Some(ArmBody::Expr(e)) => self.eval(e, &scope, out),
+                    _ => Ok(Value::Null),
+                }
+            }
             ExprKind::Base => {
                 env::lookup(env, "this").ok_or_else(|| Error::runtime("'base' outside of a method"))
             }
@@ -751,10 +791,29 @@ impl Interpreter {
             let (class, this) = match &obj {
                 Value::Struct(s) => (Some(Rc::clone(&s.class)), Some(obj.clone())),
                 Value::Object(o) => (Some(Rc::clone(&o.class)), Some(obj.clone())),
-                Value::Enum(c, _) => (Some(Rc::clone(c)), Some(obj.clone())),
+                Value::Enum(c, ..) => (Some(Rc::clone(c)), Some(obj.clone())),
                 Value::Type(c) => (Some(Rc::clone(c)), None),
                 _ => (None, None),
             };
+            if let Value::Type(c) = &obj {
+                if let Some(i) = c.cases.iter().position(|(n, _)| n == name) {
+                    let fields = c.case_fields.get(i).cloned().unwrap_or_default();
+                    let values = self.eval_args(args, env, out)?;
+                    if values.len() != fields.len() {
+                        return Err(Error::runtime(format!(
+                            "case {name} takes {} value(s), got {}",
+                            fields.len(),
+                            values.len()
+                        ))
+                        .at(span));
+                    }
+                    let mut data = Vec::with_capacity(values.len());
+                    for ((fname, fty), v) in fields.iter().zip(values) {
+                        data.push(coerce(fty, v, &format!("'{fname}' of case {name}"))?);
+                    }
+                    return Ok(Value::Enum(Rc::clone(c), i, Rc::new(data)));
+                }
+            }
             if let Some(class) = start.or(class) {
                 if let Some((owner, decl)) = class.find_method(name) {
                     let values = self.eval_args(args, env, out)?;
@@ -928,6 +987,86 @@ impl Interpreter {
         Ok((result, this))
     }
 
+    /// The first arm of `m` whose pattern (and condition) fits the value,
+    /// and the scope with the variables the pattern binds.
+    fn choose_arm(
+        &mut self,
+        m: &Match,
+        env: &EnvRef,
+        out: &mut dyn Write,
+    ) -> Result<(usize, EnvRef)> {
+        let value = self.eval(&m.subject, env, out)?;
+        for (i, arm) in m.arms.iter().enumerate() {
+            let scope = Env::child(env);
+            if !self.match_pattern(&arm.pattern, &value, &scope, out)? {
+                continue;
+            }
+            if let Some(g) = &arm.guard {
+                if !self.eval(g, &scope, out)?.is_truthy() {
+                    continue;
+                }
+            }
+            return Ok((i, scope));
+        }
+        Err(Error::runtime(format!("no arm of the match fits {value}")).at(m.span))
+    }
+
+    /// Whether `value` fits pattern `p`; binds its variables in `scope`.
+    fn match_pattern(
+        &mut self,
+        p: &Pattern,
+        value: &Value,
+        scope: &EnvRef,
+        out: &mut dyn Write,
+    ) -> Result<bool> {
+        Ok(match (&p.kind, &p.resolved) {
+            (PatternKind::Wildcard, _) => true,
+            (PatternKind::Name(name), PatternRes::Bind(ty)) => {
+                let ty = self.rt(ty);
+                scope.borrow_mut().define(name, value.clone(), ty);
+                true
+            }
+            (PatternKind::Name(_), PatternRes::Variant(i)) => {
+                matches!(value, Value::Enum(_, j, _) if j == i)
+            }
+            (PatternKind::Name(_), PatternRes::Type(t)) => is_a(value, &self.rt(t)),
+            (PatternKind::Variant { args, .. }, PatternRes::Variant(i)) => {
+                let Value::Enum(_, j, data) = value else {
+                    return Ok(false);
+                };
+                if j != i {
+                    return Ok(false);
+                }
+                for (a, v) in args.iter().zip(data.iter()) {
+                    if !self.match_pattern(a, v, scope, out)? {
+                        return Ok(false);
+                    }
+                }
+                true
+            }
+            (PatternKind::Literal(e), _) => self.eval(e, scope, out)? == *value,
+            (PatternKind::Type { bind, .. }, PatternRes::Type(t)) => {
+                let t = self.rt(t);
+                if !is_a(value, &t) {
+                    return Ok(false);
+                }
+                if let Some(b) = bind {
+                    scope.borrow_mut().define(b, value.clone(), t);
+                }
+                true
+            }
+            (PatternKind::Or(alts), _) => {
+                for a in alts {
+                    if self.match_pattern(a, value, scope, out)? {
+                        return Ok(true);
+                    }
+                }
+                false
+            }
+            _ => false,
+        })
+    }
+
     /// Defines the functions and types of a block: they are visible in the
     /// whole block, before their declaration.
     fn hoist(&mut self, stmts: &[Stmt], env: &EnvRef) {
@@ -994,6 +1133,7 @@ impl Interpreter {
                             .into_iter()
                             .map(|v| (v.name, v.value))
                             .collect(),
+                        case_fields: ty.variants().into_iter().map(|v| v.fields).collect(),
                         ty: ty.clone(),
                         env: Rc::clone(env),
                     });
@@ -1113,10 +1253,15 @@ impl Interpreter {
                 }
                 (Rc::clone(&o.class), Some(obj.clone()))
             }
-            Value::Enum(c, _) => (Rc::clone(c), Some(obj.clone())),
+            Value::Enum(c, ..) => (Rc::clone(c), Some(obj.clone())),
             Value::Type(c) => {
                 if let Some(i) = c.cases.iter().position(|(n, _)| n == name) {
-                    return Ok(Value::Enum(Rc::clone(c), i));
+                    if c.case_fields.get(i).is_some_and(|f| !f.is_empty()) {
+                        return Err(Error::runtime(format!(
+                            "case {name} needs its data: {name}(...)"
+                        )));
+                    }
+                    return Ok(Value::Enum(Rc::clone(c), i, Rc::new(Vec::new())));
                 }
                 if let Some(i) = c.static_index(name) {
                     let statics = c
@@ -1200,7 +1345,7 @@ impl Interpreter {
                 }
                 (Rc::clone(c), None)
             }
-            Value::Enum(c, _) => (Rc::clone(c), Some(obj.clone())),
+            Value::Enum(c, ..) => (Rc::clone(c), Some(obj.clone())),
             _ => return Err(missing()),
         };
         let found = start.unwrap_or(class).find_prop(name);
@@ -1344,7 +1489,18 @@ impl Interpreter {
             Ty::Float(k) => Value::Float(0.0, k),
             Ty::Char => Value::Char('\0'),
             Ty::Named(t) if t.kind == TypeKind::Enum => match self.classes.get(&t.id()) {
-                Some(class) => Value::Enum(Rc::clone(class), 0),
+                Some(class) => {
+                    let data = class
+                        .case_fields
+                        .first()
+                        .map(|f| {
+                            f.iter()
+                                .map(|(_, t)| self.default_value(t, depth + 1))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    Value::Enum(Rc::clone(class), 0, Rc::new(data))
+                }
                 None => Value::Null,
             },
             Ty::Named(t) if t.kind == TypeKind::Struct && depth < 32 => {

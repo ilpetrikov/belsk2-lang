@@ -34,6 +34,8 @@ pub enum TokenKind {
     Or,
     Not,
     Arrow,
+    /// `=>` in `match` arms.
+    FatArrow,
     Amp,
     Pipe,
     Caret,
@@ -85,6 +87,7 @@ impl TokenKind {
             TokenKind::Or => "'||'",
             TokenKind::Not => "'!'",
             TokenKind::Arrow => "'->'",
+            TokenKind::FatArrow => "'=>'",
             TokenKind::Amp => "'&'",
             TokenKind::Pipe => "'|'",
             TokenKind::Caret => "'^'",

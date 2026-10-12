@@ -33,8 +33,8 @@ pub enum Value {
     /// An object of a class. Classes are reference types: copies share
     /// the object.
     Object(Rc<Object>),
-    /// A case of an enum (its index in [`Class::cases`]).
-    Enum(Rc<Class>, usize),
+    /// A case of an enum (its index in [`Class::cases`]) and its data.
+    Enum(Rc<Class>, usize, Rc<Vec<Value>>),
 }
 
 /// The fields of a class object.
@@ -76,6 +76,8 @@ pub struct Class {
     pub fields: Vec<(String, Ty)>,
     /// The cases of an enum and the numbers they stand for.
     pub cases: Vec<(String, i128)>,
+    /// The fields of each case's data.
+    pub case_fields: Vec<Vec<(String, Ty)>>,
     /// The static fields and their values.
     pub static_fields: Vec<(String, Ty)>,
     pub statics: std::cell::RefCell<Vec<Value>>,
@@ -237,7 +239,7 @@ impl Value {
             Value::Type(c) => Ty::Type(c.ty.clone()),
             Value::Struct(s) => Ty::Named(s.class.ty.clone()),
             Value::Object(o) => Ty::Named(o.class.ty.clone()),
-            Value::Enum(c, _) => Ty::Named(c.ty.clone()),
+            Value::Enum(c, ..) => Ty::Named(c.ty.clone()),
         }
     }
 
@@ -317,7 +319,7 @@ impl Value {
             (Ty::Fn(_), Value::Function(_) | Value::Native(_)) => true,
             (Ty::Named(t), Value::Struct(s)) => s.class.ty.is_subtype_of(&t),
             (Ty::Named(t), Value::Object(o)) => o.class.ty.is_subtype_of(&t),
-            (Ty::Named(t), Value::Enum(c, _)) => c.ty.is_subtype_of(&t),
+            (Ty::Named(t), Value::Enum(c, ..)) => c.ty.is_subtype_of(&t),
             (Ty::Type(t), Value::Type(c)) => c.ty == t,
             _ => false,
         }
@@ -343,8 +345,22 @@ impl Value {
                 Ok(fields) => fmt_fields(f, &o.class, &fields, depth),
                 Err(_) => write!(f, "{} {{...}}", o.class.ty.name),
             },
-            Value::Enum(c, i) => {
-                f.write_str(c.cases.get(*i).map(|(n, _)| n.as_str()).unwrap_or("?"))
+            Value::Enum(c, i, data) => {
+                f.write_str(c.cases.get(*i).map(|(n, _)| n.as_str()).unwrap_or("?"))?;
+                if data.is_empty() {
+                    return Ok(());
+                }
+                if depth >= MAX_NESTING {
+                    return f.write_str("(...)");
+                }
+                f.write_str("(")?;
+                for (k, v) in data.iter().enumerate() {
+                    if k > 0 {
+                        f.write_str(", ")?;
+                    }
+                    v.fmt_nested(f, depth + 1)?;
+                }
+                f.write_str(")")
             }
             Value::Map(m) => {
                 if depth >= MAX_NESTING {
@@ -450,7 +466,14 @@ fn values_equal(a: &Value, b: &Value, depth: usize) -> bool {
         (Value::Native(x), Value::Native(y)) => Rc::ptr_eq(x, y),
         (Value::Type(x), Value::Type(y)) => x.ty == y.ty,
         (Value::Object(x), Value::Object(y)) => Rc::ptr_eq(x, y),
-        (Value::Enum(x, i), Value::Enum(y, j)) => x.ty == y.ty && i == j,
+        (Value::Enum(x, i, a), Value::Enum(y, j, b)) => {
+            x.ty == y.ty
+                && i == j
+                && depth < MAX_NESTING
+                && a.iter()
+                    .zip(b.iter())
+                    .all(|(a, b)| values_equal(a, b, depth + 1))
+        }
         (Value::Struct(x), Value::Struct(y)) => {
             if Rc::ptr_eq(x, y) {
                 return true;

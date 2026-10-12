@@ -45,6 +45,10 @@ pub const KEYWORDS: &[&str] = &[
     "is",
     "as",
     "partial",
+    "switch",
+    "case",
+    "default",
+    "match",
 ];
 
 /// Parses a whole program.
@@ -65,6 +69,8 @@ pub struct Parser {
     eof: Token,
     nesting: usize,
     loop_depth: usize,
+    /// `switch` statements around the current point (`break` leaves one).
+    switch_depth: usize,
     fn_depth: usize,
 }
 
@@ -82,6 +88,7 @@ impl Parser {
             eof: Token::new(TokenKind::Eof, "", end),
             nesting: 0,
             loop_depth: 0,
+            switch_depth: 0,
             fn_depth: 0,
         }
     }
@@ -244,9 +251,19 @@ impl Parser {
                 "return" => return self.parse_return(),
                 "idb" => return self.parse_idb(),
                 "using" => return self.parse_using(),
+                "switch" => return self.parse_switch(),
+                "match" => {
+                    let m = self.parse_match(true)?;
+                    self.end_stmt();
+                    return Ok(Stmt {
+                        kind: StmtKind::Match(Box::new(m)),
+                        span,
+                    });
+                }
                 "break" | "continue" => {
                     let is_break = t.text == "break";
-                    if self.loop_depth == 0 {
+                    let inside = self.loop_depth > 0 || (is_break && self.switch_depth > 0);
+                    if !inside {
                         return Err(Error::syntax(
                             format!("'{}' outside of a loop", t.text),
                             span,
@@ -705,11 +722,208 @@ impl Parser {
     /// A function body, outside of any loop.
     fn parse_body(&mut self) -> Result<Block> {
         let saved_loops = std::mem::replace(&mut self.loop_depth, 0);
+        let saved_switches = std::mem::replace(&mut self.switch_depth, 0);
         self.fn_depth += 1;
         let body = self.parse_block();
         self.fn_depth -= 1;
         self.loop_depth = saved_loops;
+        self.switch_depth = saved_switches;
         body
+    }
+
+    fn parse_switch(&mut self) -> Result<Stmt> {
+        let span = self.bump().span;
+        let subject = self.parse_expr()?;
+        self.expect(TokenKind::LBrace)?;
+        let mut cases = Vec::new();
+        let mut default: Option<Block> = None;
+        self.switch_depth += 1;
+        let r = self.parse_switch_cases(&mut cases, &mut default);
+        self.switch_depth -= 1;
+        r?;
+        Ok(Stmt {
+            kind: StmtKind::Switch {
+                subject,
+                cases,
+                default,
+            },
+            span,
+        })
+    }
+
+    fn parse_switch_cases(
+        &mut self,
+        cases: &mut Vec<SwitchCase>,
+        default: &mut Option<Block>,
+    ) -> Result<()> {
+        while !self.eat(TokenKind::RBrace) {
+            let t = self.peek().clone();
+            if self.at_word("case") {
+                self.bump();
+                let mut values = vec![self.parse_expr()?];
+                while self.eat(TokenKind::Comma) {
+                    values.push(self.parse_expr()?);
+                }
+                self.expect(TokenKind::Colon)?;
+                let body = self.parse_case_body(t.span)?;
+                cases.push(SwitchCase {
+                    values,
+                    body,
+                    span: t.span,
+                });
+            } else if self.at_word("default") {
+                self.bump();
+                self.expect(TokenKind::Colon)?;
+                if default.is_some() {
+                    return Err(Error::syntax("duplicate 'default'", t.span));
+                }
+                *default = Some(self.parse_case_body(t.span)?);
+            } else {
+                return Err(self.unexpected("'case', 'default' or '}'"));
+            }
+        }
+        Ok(())
+    }
+
+    /// The statements of a `case`, up to the next `case`, `default` or `}`.
+    fn parse_case_body(&mut self, span: Span) -> Result<Block> {
+        let mut stmts = Vec::new();
+        while !(self.at_word("case") || self.at_word("default") || self.kind() == TokenKind::RBrace)
+        {
+            if self.kind() == TokenKind::Eof {
+                return Err(self.unexpected("'}'"));
+            }
+            stmts.push(self.parse_stmt()?);
+        }
+        Ok(Block { stmts, span })
+    }
+
+    /// `match subject { arms }`; `blocks` allows `{ ... }` arms (the
+    /// statement form).
+    fn parse_match(&mut self, blocks: bool) -> Result<Match> {
+        let span = self.bump().span;
+        let subject = self.parse_expr()?;
+        self.expect(TokenKind::LBrace)?;
+        let mut arms = Vec::new();
+        while !self.eat(TokenKind::RBrace) {
+            let arm_span = self.span();
+            let pattern = self.parse_pattern()?;
+            let guard = if self.at_word("if") {
+                self.bump();
+                Some(self.parse_expr()?)
+            } else {
+                None
+            };
+            self.expect(TokenKind::FatArrow)?;
+            let body = if blocks && self.kind() == TokenKind::LBrace {
+                ArmBody::Block(self.parse_block()?)
+            } else {
+                ArmBody::Expr(self.parse_expr()?)
+            };
+            let block = matches!(body, ArmBody::Block(_));
+            arms.push(Arm {
+                pattern,
+                guard,
+                body,
+                span: arm_span,
+            });
+            if !self.eat(TokenKind::Comma) && !block {
+                self.expect(TokenKind::RBrace)?;
+                break;
+            }
+        }
+        Ok(Match {
+            subject,
+            arms,
+            span,
+        })
+    }
+
+    fn parse_pattern(&mut self) -> Result<Pattern> {
+        self.enter()?;
+        let r = with_stack(|| self.parse_pattern_inner());
+        self.leave();
+        r
+    }
+
+    fn parse_pattern_inner(&mut self) -> Result<Pattern> {
+        let span = self.span();
+        let first = self.parse_single_pattern()?;
+        if self.kind() != TokenKind::Pipe {
+            return Ok(first);
+        }
+        let mut alts = vec![first];
+        while self.eat(TokenKind::Pipe) {
+            alts.push(self.parse_single_pattern()?);
+        }
+        Ok(pattern(PatternKind::Or(alts), span))
+    }
+
+    fn parse_single_pattern(&mut self) -> Result<Pattern> {
+        let t = self.peek().clone();
+        let span = t.span;
+        match t.kind {
+            TokenKind::Number | TokenKind::String | TokenKind::Minus => {
+                let e = self.parse_unary()?;
+                return Ok(pattern(PatternKind::Literal(e), span));
+            }
+            TokenKind::Ident => {}
+            _ => return Err(self.unexpected("a pattern")),
+        }
+        match t.text.as_str() {
+            "_" => {
+                self.bump();
+                return Ok(pattern(PatternKind::Wildcard, span));
+            }
+            "true" | "false" | "null" => {
+                let e = self.parse_primary()?;
+                return Ok(pattern(PatternKind::Literal(e), span));
+            }
+            _ => {}
+        }
+        // `Dog d`, `int[] xs`: a type followed by a name.
+        let (pos, nesting) = (self.pos, self.nesting);
+        if let Ok(ty) = self.parse_type() {
+            let next = self.peek();
+            if next.kind == TokenKind::Ident && next.text != "if" {
+                let bind = self.expect_name("a variable name")?;
+                return Ok(pattern(
+                    PatternKind::Type {
+                        ty,
+                        bind: Some(bind),
+                    },
+                    span,
+                ));
+            }
+        }
+        self.pos = pos;
+        self.nesting = nesting;
+        let mut path = vec![self.expect_name("a pattern")?];
+        while self.eat(TokenKind::Dot) {
+            path.push(self.expect_name("a case name")?);
+        }
+        if self.eat(TokenKind::LParen) {
+            let mut args = Vec::new();
+            while self.kind() != TokenKind::RParen {
+                args.push(self.parse_pattern()?);
+                if !self.eat(TokenKind::Comma) {
+                    break;
+                }
+            }
+            self.expect(TokenKind::RParen)?;
+            return Ok(pattern(PatternKind::Variant { path, args }, span));
+        }
+        if path.len() > 1 {
+            return Ok(pattern(
+                PatternKind::Variant {
+                    path,
+                    args: Vec::new(),
+                },
+                span,
+            ));
+        }
+        let name = path.pop().unwrap_or_default();
+        Ok(pattern(PatternKind::Name(name), span))
     }
 
     /// `struct Point { x: double; fn len(): double { ... } }`,
@@ -807,13 +1021,29 @@ impl Parser {
                     t.span,
                 ));
             }
+            let fields = if self.eat(TokenKind::LParen) {
+                let params = self.parse_params()?;
+                if let Some(p) = params.iter().find(|p| p.ty.is_none()) {
+                    return Err(Error::syntax(
+                        format!("the field '{}' of case '{name}' needs a type", p.name),
+                        p.span,
+                    ));
+                }
+                params
+            } else {
+                Vec::new()
+            };
             let value = if self.eat(TokenKind::Eq) {
                 Some(Box::new(self.parse_expr()?))
             } else {
                 None
             };
             members.push(Member {
-                kind: MemberKind::Case { name, value },
+                kind: MemberKind::Case {
+                    name,
+                    value,
+                    fields,
+                },
                 mods: Modifiers::default(),
                 span: t.span,
             });
@@ -1406,6 +1636,10 @@ impl Parser {
                     "false" => ExprKind::Bool(false),
                     "null" => ExprKind::Null,
                     "this" => ExprKind::This,
+                    "match" => {
+                        let m = self.parse_match(false)?;
+                        return self.mk(ExprKind::Match(Box::new(m)), span);
+                    }
                     "base" => ExprKind::Base,
                     word if KEYWORDS.contains(&word) => {
                         return Err(self.unexpected("an expression"))
@@ -1443,6 +1677,14 @@ impl Parser {
             }
             _ => Err(self.unexpected("an expression")),
         }
+    }
+}
+
+fn pattern(kind: PatternKind, span: Span) -> Pattern {
+    Pattern {
+        kind,
+        span,
+        resolved: PatternRes::Unresolved,
     }
 }
 

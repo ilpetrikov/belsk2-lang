@@ -655,6 +655,8 @@ impl<'c> FnGen<'c> {
             StmtKind::Type(d) => {
                 return Err(unsupported(format!("{}s are", d.kind.keyword()), span))
             }
+            StmtKind::Switch { .. } => return Err(unsupported("switch is", span)),
+            StmtKind::Match(_) => return Err(unsupported("match is", span)),
             StmtKind::Expr(e) => {
                 if self.expr(e)?.is_some() {
                     self.emit(I::Drop);
@@ -1048,6 +1050,7 @@ impl<'c> FnGen<'c> {
             | ExprKind::Base
             | ExprKind::Is { .. }
             | ExprKind::As { .. } => return Err(unsupported("user-defined types are", span)),
+            ExprKind::Match(_) => return Err(unsupported("match is", span)),
         }
         self.vt(&e.ty, span).map(Some)
     }

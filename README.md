@@ -226,6 +226,63 @@ compared with `==`, used as dictionary keys and converted to numbers with
 `int(...)`, `long(...)` and so on, but a number is not an enum value. A
 field of an enum type starts as its first case. An enum may have methods.
 
+Cases may also carry data; their values are taken apart with `match`:
+
+```belsk2
+enum Shape {
+    Circle(radius: double),
+    Rect(w: double, h: double),
+    Empty,
+}
+var s = Shape.Rect(2, 3);
+prinb(s);                       // Rect(2, 3)
+```
+
+## switch and match
+
+```belsk2
+switch mode {
+    case Mode.Low:
+        prinb("eco");
+    case Mode.Balanced, Mode.High:   // several values
+        prinb("fast");
+}
+
+switch n {
+    case 1, 2:
+        prinb("small");
+    default:
+        prinb("big");
+}
+
+var area = match s {
+    Shape.Circle(r) => 3.14 * r * r,  // takes the data apart
+    Rect(w, h) => w * h,              // the enum's name may be left out
+    Empty => 0,
+};
+
+match animal {
+    Dog d => prinb(d.bark()),         // a type test that names the value
+    Cat => prinb("a cat"),
+    _ => prinb("something"),          // anything else
+}
+
+var sign = match x { 0 => 0, n if n < 0 => -1, _ => 1 };   // `if` adds a condition
+```
+
+A `switch` runs the first `case` whose value equals the subject (there is
+no falling through; `break` leaves the switch early). Case values are
+constants: numbers, strings, `true`/`false`, enum cases. A `match` tries
+its arms in order; patterns are `_`, a new variable name, a literal, an
+enum case with patterns for its data, a type (`Dog d`), or several
+patterns joined with `|`. As a statement, an arm may be a block.
+
+Both are checked to cover every value: every case of an enum (and inside
+the data of a case), both `true` and `false`, or a `default:`/`_` for types
+whose values cannot all be listed. Arms with an `if` do not count, since
+they may not match. A missing case is a compile error, for example
+`match does not cover Shape.Rect`.
+
 ## Classes
 
 ```belsk2

@@ -70,6 +70,83 @@ pub enum StmtKind {
         body: Block,
     },
     Block(Block),
+    /// `switch x { case 1, 2: ... default: ... }`
+    Switch {
+        subject: Expr,
+        cases: Vec<SwitchCase>,
+        default: Option<Block>,
+    },
+    /// `match x { pattern => ..., }` as a statement: arms may be blocks.
+    Match(Box<Match>),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SwitchCase {
+    pub values: Vec<Expr>,
+    pub body: Block,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Match {
+    pub subject: Expr,
+    pub arms: Vec<Arm>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Arm {
+    pub pattern: Pattern,
+    /// `pattern if cond => ...`
+    pub guard: Option<Expr>,
+    pub body: ArmBody,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ArmBody {
+    Expr(Expr),
+    Block(Block),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Pattern {
+    pub kind: PatternKind,
+    pub span: Span,
+    /// What the pattern turned out to be, filled in by the checker.
+    pub resolved: PatternRes,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum PatternKind {
+    /// `_`
+    Wildcard,
+    /// `n`: binds the value, unless it names a case of the enum being
+    /// matched (`Red`) or a type (`Dog`).
+    Name(String),
+    /// `1`, `-2.5`, `"text"`, `true`, `null`
+    Literal(Expr),
+    /// `Circle(r)`, `Shape.Circle(r)`, `Color.Red`
+    Variant {
+        path: Vec<String>,
+        args: Vec<Pattern>,
+    },
+    /// `Dog d`: the value is a `Dog`; binds it as one.
+    Type { ty: TypeExpr, bind: Option<String> },
+    /// `1 | 2 | 3`
+    Or(Vec<Pattern>),
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub enum PatternRes {
+    #[default]
+    Unresolved,
+    /// Binds the value to a new variable of this type.
+    Bind(Ty),
+    /// The case of an enum with this index.
+    Variant(usize),
+    /// A type test.
+    Type(Ty),
 }
 
 /// `struct Point { x: double; fn len(): double { ... } }`
@@ -130,10 +207,11 @@ pub enum MemberKind {
     Drop(Rc<FnDecl>),
     /// A property with `get`/`set` bodies.
     Prop(Box<PropDecl>),
-    /// A case of an enum: `High` or `High = 10`.
+    /// A case of an enum: `High`, `High = 10` or `Circle(radius: double)`.
     Case {
         name: String,
         value: Option<Box<Expr>>,
+        fields: Vec<Param>,
     },
 }
 
@@ -279,6 +357,8 @@ pub enum ExprKind {
         ty: TypeExpr,
         resolved: Ty,
     },
+    /// `match x { pattern => value, ... }`
+    Match(Box<Match>),
     /// The type whose method is running, inserted by the checker for a
     /// static member used without its type name (`count` for
     /// `Counter.count`).
@@ -307,6 +387,14 @@ impl Expr {
             ExprKind::Convert { expr, .. }
             | ExprKind::Is { expr, .. }
             | ExprKind::As { expr, .. } => expr.depth,
+            ExprKind::Match(m) => {
+                m.subject
+                    .depth
+                    .max(max_depth(m.arms.iter().filter_map(|a| match &a.body {
+                        ArmBody::Expr(e) => Some(e),
+                        ArmBody::Block(_) => None,
+                    })))
+            }
         };
         Expr {
             kind,

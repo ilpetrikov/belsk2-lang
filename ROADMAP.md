@@ -75,7 +75,7 @@
       methods may change the variable they are called on), `==` by fields; interpreter only
 - [ ] WASM: structs, enums and classes in the WASM backend
 - [x] `enum`: typed cases (`Mode.High`) with numbers (`Low = 1`), methods, `int(m)`, dictionary keys
-- [ ] Enums with data (`Circle(radius: double)`) together with `match`
+- [x] Enums with data (`Circle(radius: double)`)
 - [x] `class`: fields, methods, constructors, `this`; reference semantics, `null`
 - [x] Inheritance: one base class, `virtual`/`override`/`abstract`, `abstract class`, `base.m()`,
       `Dog(...) : base(...)`, `protected`, `is`/`as`
@@ -87,8 +87,9 @@
       classes, structs and enums
 - [x] Properties (auto `{ get; private set; }` and with `get`/`set` code), `static` fields,
       properties and methods, `public`/`private`/`protected` (also for top-level declarations)
-- [ ] `switch`/`case`
-- [ ] `match` with patterns
+- [x] `switch`/`case` (no falling through, `break`, several values per case)
+- [x] `match` with patterns (literals, bindings, enum cases with data, types, `|`, `if`
+      conditions), as an expression or a statement; `switch` and `match` must cover every value
 - [ ] Lambdas and closures, function types like `fn(int): bool`
 - [ ] LINQ
 

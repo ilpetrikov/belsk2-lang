@@ -317,6 +317,7 @@ impl Lexer {
                 ('+', Some('=')) => (TokenKind::PlusEq, 2),
                 ('-', Some('=')) => (TokenKind::MinusEq, 2),
                 ('=', Some('=')) => (TokenKind::EqEq, 2),
+                ('=', Some('>')) => (TokenKind::FatArrow, 2),
                 ('<', Some('=')) => (TokenKind::Lte, 2),
                 ('>', Some('=')) => (TokenKind::Gte, 2),
                 ('<', Some('<')) if self.peek_at(2) == Some('=') => (TokenKind::ShlEq, 3),

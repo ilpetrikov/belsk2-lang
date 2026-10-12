@@ -113,3 +113,11 @@ fn inheritance() {
         "abstract class A : I {\n    abstract fn f(): int;\n}\nclass B : A, I {\n    B() : base() {}\n}\nfn g(x: A): bool {\n    return x is B;\n}\n"
     );
 }
+
+#[test]
+fn match_and_switch() {
+    assert_eq!(
+        fmt("fn main(){\nvar a=match s{Circle(r)=>r,_=>0};\nswitch x{\ncase 1,2:\nprinb(1);\ndefault:\nbreak;\n}\n}\n"),
+        "fn main() {\n    var a = match s {\n        Circle(r) => r,\n        _ => 0\n    };\n    switch x {\n        case 1, 2:\n            prinb(1);\n        default:\n            break;\n    }\n}\n"
+    );
+}
