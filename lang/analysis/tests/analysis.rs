@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used, clippy::indexing_slicing)] // a failing test panics
+
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -346,17 +348,18 @@ fn main() {}
 ";
     let a = analyze_source("t.belsk2", src);
     assert!(a.diagnostics.is_empty(), "{:?}", a.diagnostics);
-    let name = |i: usize| a.symbols[a.classes[i].symbol].name.clone();
-    let names: Vec<String> = (0..a.classes.len()).map(name).collect();
+    let sym = |id: usize| a.symbols.get(id).unwrap();
+    let names: Vec<&str> = a.classes.iter().map(|t| sym(t.symbol).name.as_str()).collect();
     assert_eq!(names, ["IShape", "Point", "Circle"]);
-    let circle = &a.classes[2];
-    assert_eq!(circle.bases, [a.classes[0].id]);
+    let ids: Vec<usize> = a.classes.iter().map(|t| t.id).collect();
+    let circle = a.classes.last().unwrap();
+    assert_eq!(circle.bases, ids[..1]);
     // `others: Circle[]` refers to the type itself, which is not a link.
-    assert_eq!(circle.holds, [a.classes[1].id]);
+    assert_eq!(circle.holds, ids[1..2]);
     let members: Vec<&str> = circle
         .members
         .iter()
-        .map(|&m| a.symbols[m].signature.as_str())
+        .map(|&m| sym(m).signature.as_str())
         .collect();
     assert_eq!(
         members,

@@ -126,4 +126,4 @@
       the same repository.
 - [ ] Analysis: a file that does not parse only gets keyword/builtin/word completions (except
       for an unfinished `p.`, which is repaired to complete the members of `p`).
-- [ ] Publish the VS Code extension to the Marketplace / Open VSX.
+- Publishing the VS Code extension to the Marketplace / Open VSX: not planned for now.
