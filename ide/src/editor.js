@@ -192,10 +192,12 @@ const KINDS = {
   parameter: monaco.languages.CompletionItemKind.Variable,
   keyword: monaco.languages.CompletionItemKind.Keyword,
   type: monaco.languages.CompletionItemKind.Class,
+  field: monaco.languages.CompletionItemKind.Field,
+  method: monaco.languages.CompletionItemKind.Method,
   module: monaco.languages.CompletionItemKind.Module,
   text: monaco.languages.CompletionItemKind.Text,
 };
-const ORDER = { variable: 0, parameter: 0, function: 1, module: 1, keyword: 2, type: 2, text: 3 };
+const ORDER = { variable: 0, parameter: 0, field: 0, method: 1, function: 1, module: 1, keyword: 2, type: 2, text: 3 };
 
 monaco.languages.registerCompletionItemProvider(LANG, {
   async provideCompletionItems(model, position) {

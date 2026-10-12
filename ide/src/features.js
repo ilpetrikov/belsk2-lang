@@ -140,17 +140,20 @@ function renderIdb() {
 }
 
 // ---- module map ------------------------------------------------------------------------
-// Three views of the same code: modules and their `using`s; functions (and
-// top-level variables) grouped by module with their calls; and functions
-// with their parameters and variables. Everything can be dragged; positions
-// are remembered per project and view.
+// Four views of the same code: modules and their `using`s; functions (and
+// top-level variables) grouped by module with their calls; functions with
+// their parameters and variables; and user-defined types with their
+// members, bases and the types their fields hold. Everything can be
+// dragged; positions are remembered per project and view.
 
 const NODE_W = 200;
 const COL_GAP = 120;
 const ROW_GAP = 26;
 const PAD = 14;
 const HEAD = 34;
-const MODES = ["modules", "functions", "variables"];
+const MODES = ["modules", "functions", "variables", "classes"];
+const CLASS_W = 260;
+const MAX_MEMBERS = 12;
 let mode = loadJson("mapMode", "modules");
 if (!MODES.includes(mode)) mode = "modules";
 let view = { x: 0, y: 0, w: 1000, h: 600 };
@@ -260,7 +263,6 @@ function moduleGraph(modules) {
 }
 
 function codeGraph(modules, functions, globals, withLocals) {
-  const { level } = moduleLevels(modules);
   // Children of each module: its functions, then its top-level variables.
   const children = modules.map(() => []);
   functions.forEach((f, i) => {
@@ -292,7 +294,19 @@ function codeGraph(modules, functions, globals, withLocals) {
       open: { path: modules[g.module]?.path, line: g.line },
     })
   );
-  const groupW = NODE_W + PAD * 2;
+  const { groups, nodes } = grouped(modules, children, NODE_W);
+  const edges = [];
+  functions.forEach((f, i) => {
+    for (const c of f.calls) if (c !== i) edges.push({ from: `f:${i}`, to: `f:${c}` });
+    for (const g of f.globals) edges.push({ from: `f:${i}`, to: `g:${g}`, data: true });
+  });
+  return { groups, nodes, edges };
+}
+
+/** Places the children of each module in a group box, modules in columns. */
+function grouped(modules, children, width) {
+  const { level } = moduleLevels(modules);
+  const groupW = width + PAD * 2;
   const heights = children.map((c) => HEAD + c.reduce((s, n) => s + n.h + 10, 0) + PAD - 10 + (c.length ? 0 : 20));
   const pos = columns(level, heights, groupW);
   const groups = [];
@@ -317,10 +331,36 @@ function codeGraph(modules, functions, globals, withLocals) {
       y += n.h + 10;
     }
   });
+  return { groups, nodes };
+}
+
+/** Shortens a line to fit a box of width `w`. */
+function fit(line, w) {
+  const max = Math.floor((w - 24) / 7);
+  return line.length > max ? `${line.slice(0, max - 1)}…` : line;
+}
+
+function classGraph(modules, types) {
+  const children = modules.map(() => []);
+  types.forEach((t, i) => {
+    const members = t.members.slice(0, MAX_MEMBERS);
+    if (t.members.length > MAX_MEMBERS) members.push(`+${t.members.length - MAX_MEMBERS} more`);
+    const lines = (members.length ? members : ["(no members)"]).map((l) => fit(l, CLASS_W));
+    children[t.module ?? 0]?.push({
+      key: `t:${i}`,
+      w: CLASS_W,
+      h: 44 + lines.length * 17,
+      title: fit(t.signature, CLASS_W),
+      lines,
+      cls: [t.kind],
+      open: { path: modules[t.module]?.path, line: t.line },
+    });
+  });
+  const { groups, nodes } = grouped(modules, children, CLASS_W);
   const edges = [];
-  functions.forEach((f, i) => {
-    for (const c of f.calls) if (c !== i) edges.push({ from: `f:${i}`, to: `f:${c}` });
-    for (const g of f.globals) edges.push({ from: `f:${i}`, to: `g:${g}`, data: true });
+  types.forEach((t, i) => {
+    for (const b of t.bases) edges.push({ from: `t:${i}`, to: `t:${b}`, inherit: true });
+    for (const h of t.holds) if (!t.bases.includes(h)) edges.push({ from: `t:${i}`, to: `t:${h}`, data: true });
   });
   return { groups, nodes, edges };
 }
@@ -369,7 +409,9 @@ function renderModuleMap() {
   graph =
     mode === "modules"
       ? moduleGraph(modules)
-      : codeGraph(modules, s.functions || [], s.globals || [], mode === "variables");
+      : mode === "classes"
+        ? classGraph(modules, s.types || [])
+        : codeGraph(modules, s.functions || [], s.globals || [], mode === "variables");
   // Positions the user dragged things to.
   const saved = loadJson(posKey(), {});
   for (const item of [...graph.groups, ...graph.nodes]) {
@@ -383,14 +425,16 @@ function renderModuleMap() {
   const counts =
     mode === "modules"
       ? `${modules.length} modules · ${graph.edges.length} using`
-      : `${(s.functions || []).length} functions · ${(s.globals || []).length} globals · ${graph.edges.length} links`;
+      : mode === "classes"
+        ? `${(s.types || []).length} types · ${graph.edges.filter((e) => e.inherit).length} bases · ${graph.edges.filter((e) => e.data).length} fields`
+        : `${(s.functions || []).length} functions · ${(s.globals || []).length} globals · ${graph.edges.length} links`;
   $("#modmap-info").textContent = `${counts} · ${errors ? `${errors} error${errors === 1 ? "" : "s"}` : "no errors"}`;
 
   const marker = (id, cls) =>
     svg("marker", { id, viewBox: "0 0 10 10", refX: "9", refY: "5", markerWidth: "7", markerHeight: "7", orient: "auto-start-reverse" },
       svg("path", { d: "M 0 0 L 10 5 L 0 10 z", class: `arrow-head ${cls}` }));
   canvas.append(
-    svg("defs", {}, marker("arrow", ""), marker("arrow-bad", "bad"), marker("arrow-data", "data")),
+    svg("defs", {}, marker("arrow", ""), marker("arrow-bad", "bad"), marker("arrow-data", "data"), marker("arrow-inherit", "inherit")),
     svg("g", { class: "groups" }),
     svg("g", { class: "edges" }),
     svg("g", { class: "nodes" })
@@ -435,10 +479,16 @@ function renderEdges() {
       .map((e) =>
         svg("path", {
           d: edgePath(byKey.get(e.from), byKey.get(e.to)),
-          class: `edge${e.bad ? " bad" : ""}${e.data ? " data" : ""}`,
+          class: `edge${e.bad ? " bad" : ""}${e.data ? " data" : ""}${e.inherit ? " inherit" : ""}`,
           "data-from": e.from,
           "data-to": e.to,
-          "marker-end": e.bad ? "url(#arrow-bad)" : e.data ? "url(#arrow-data)" : "url(#arrow)",
+          "marker-end": e.bad
+            ? "url(#arrow-bad)"
+            : e.data
+              ? "url(#arrow-data)"
+              : e.inherit
+                ? "url(#arrow-inherit)"
+                : "url(#arrow)",
         })
       )
   );

@@ -332,3 +332,38 @@ fn partial_types_over_files() {
         .collect();
     assert!(labels.contains(&"Player".to_string()), "{labels:?}");
 }
+
+#[test]
+fn types_with_members_bases_and_fields() {
+    let src = "interface IShape { fn area(): double; }
+struct Point { x: double; y: double; }
+class Circle : IShape {
+    center: Point;
+    others: Circle[];
+    fn area(): double { return 1.0; }
+}
+fn main() {}
+";
+    let a = analyze_source("t.belsk2", src);
+    assert!(a.diagnostics.is_empty(), "{:?}", a.diagnostics);
+    let name = |i: usize| a.symbols[a.classes[i].symbol].name.clone();
+    let names: Vec<String> = (0..a.classes.len()).map(name).collect();
+    assert_eq!(names, ["IShape", "Point", "Circle"]);
+    let circle = &a.classes[2];
+    assert_eq!(circle.bases, [a.classes[0].id]);
+    // `others: Circle[]` refers to the type itself, which is not a link.
+    assert_eq!(circle.holds, [a.classes[1].id]);
+    let members: Vec<&str> = circle
+        .members
+        .iter()
+        .map(|&m| a.symbols[m].signature.as_str())
+        .collect();
+    assert_eq!(
+        members,
+        [
+            "Circle.center: Point",
+            "Circle.others: Circle[]",
+            "fn Circle.area(): double"
+        ]
+    );
+}

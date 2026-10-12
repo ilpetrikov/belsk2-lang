@@ -133,6 +133,7 @@ async function analyzeFor(path) {
     state.modules = report.modules;
     state.functions = report.functions;
     state.globals = report.globals;
+    state.types = report.types;
     refreshModuleMap();
   } catch (e) {
     console.error(e);
@@ -608,6 +609,7 @@ async function runAnalysis() {
     state.modules = report.modules;
     state.functions = report.functions;
     state.globals = report.globals;
+    state.types = report.types;
     refreshModuleMap();
   } catch (e) {
     console.error(e);

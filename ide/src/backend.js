@@ -108,6 +108,13 @@ async function demo(cmd, args) {
           { name: "twice", signature: "fn twice(n: int): int", module: 1, line: 1, locals: [{ name: "n", ty: "int", param: true }], calls: [], globals: [0] },
         ],
         globals: [{ name: "factor", ty: "int", module: 1, line: 1 }],
+        types: [
+          { name: "IShape", kind: "interface", signature: "interface IShape", module: 1, line: 3, members: ["fn area(): double"], bases: [], holds: [] },
+          { name: "Shape", kind: "class", signature: "abstract class Shape : IShape", module: 1, line: 6, members: ["Name: string { get; }", "abstract fn area(): double"], bases: [0], holds: [] },
+          { name: "Circle", kind: "class", signature: "class Circle : Shape", module: 1, line: 11, members: ["r: double", "center: Point", "override fn area(): double"], bases: [1], holds: [3] },
+          { name: "Point", kind: "struct", signature: "struct Point", module: 0, line: 9, members: ["x: double", "y: double"], bases: [], holds: [] },
+          { name: "Mode", kind: "enum", signature: "enum Mode", module: 0, line: 12, members: ["Low = 0", "High = 1"], bases: [], holds: [] },
+        ],
       };
     case "format_source":
       return args.text;

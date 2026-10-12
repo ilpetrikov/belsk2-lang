@@ -110,7 +110,7 @@
 - [x] Example projects (`examples/projects`) and `playground/`
 - [x] Themes (Belsk2 Night, Dark, Light, High Contrast), "islands" layout, nesting stripe, settings view
 - [x] Module map (as a tab; modules / functions / variables views; drag and drop), live values, state inspector (module variables + idb)
-- [ ] Module map: a "Classes" view once classes exist
+- [x] Module map: a "Classes" view (types with their members; inheritance and field links)
 - [x] Sessions per project, persistent output, recent projects, shortcuts
 
 ### Docs

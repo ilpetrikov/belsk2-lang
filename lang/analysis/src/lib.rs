@@ -192,6 +192,22 @@ pub struct FnInfo {
     pub uses: Vec<usize>,
 }
 
+/// A user-defined type with its members and what it refers to.
+#[derive(Debug, Clone)]
+pub struct TypeNode {
+    /// The type's symbol.
+    pub symbol: usize,
+    pub file: FileId,
+    /// The type's id (see `belsk2::syntax::TypeRef::id`).
+    pub id: usize,
+    /// Symbols of its fields, properties, methods and cases, in order.
+    pub members: Vec<usize>,
+    /// Ids of its base class and interfaces.
+    pub bases: Vec<usize>,
+    /// Ids of the user-defined types its fields and properties hold.
+    pub holds: Vec<usize>,
+}
+
 /// A source file that was analyzed.
 #[derive(Debug, Clone)]
 pub struct FileInfo {
@@ -231,6 +247,8 @@ pub struct Analysis {
     pub modules: Vec<ModuleNode>,
     /// Every function with its parameters, variables and the names it uses.
     pub functions: Vec<FnInfo>,
+    /// Every user-defined type, for the module map.
+    pub classes: Vec<TypeNode>,
     /// Root directory of the project, if the file belongs to one.
     pub root: Option<PathBuf>,
     refs: Vec<Ref>,

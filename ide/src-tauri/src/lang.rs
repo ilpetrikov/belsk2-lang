@@ -132,6 +132,8 @@ pub struct Report {
     /// Functions and top-level variables, for the module map.
     functions: Vec<FnDto>,
     globals: Vec<GlobalDto>,
+    /// User-defined types, for the "Classes" view of the module map.
+    types: Vec<TypeDto>,
     root: Option<String>,
 }
 
@@ -162,6 +164,60 @@ pub struct GlobalDto {
     ty: String,
     module: Option<usize>,
     line: usize,
+}
+
+#[derive(Serialize)]
+pub struct TypeDto {
+    name: String,
+    /// `class`, `struct`, `enum` or `interface`.
+    kind: String,
+    /// E.g. `abstract class Shape : IShape`.
+    signature: String,
+    module: Option<usize>,
+    line: usize,
+    /// Fields, properties, methods and cases, e.g. `fn area(): double`.
+    members: Vec<String>,
+    /// Indices into `types` of its base class and interfaces.
+    bases: Vec<usize>,
+    /// Indices into `types` of the types its fields hold.
+    holds: Vec<usize>,
+}
+
+fn types(a: &Analysis) -> Vec<TypeDto> {
+    let index: HashMap<usize, usize> = a
+        .classes
+        .iter()
+        .enumerate()
+        .map(|(i, t)| (t.id, i))
+        .collect();
+    let to_indices = |ids: &[usize]| ids.iter().filter_map(|id| index.get(id).copied()).collect();
+    a.classes
+        .iter()
+        .filter_map(|t| {
+            let s = a.symbols.get(t.symbol)?;
+            let prefix = format!("{}.", s.name);
+            Some(TypeDto {
+                name: s.name.clone(),
+                kind: s
+                    .signature
+                    .split_whitespace()
+                    .find(|w| matches!(*w, "class" | "struct" | "enum" | "interface"))
+                    .unwrap_or("class")
+                    .to_string(),
+                signature: s.signature.clone(),
+                module: a.modules.iter().position(|m| m.file == t.file),
+                line: s.def.map(|d| d.range.start.line).unwrap_or(1),
+                members: t
+                    .members
+                    .iter()
+                    .filter_map(|&m| a.symbols.get(m))
+                    .map(|m| m.signature.replacen(&prefix, "", 1))
+                    .collect(),
+                bases: to_indices(&t.bases),
+                holds: to_indices(&t.holds),
+            })
+        })
+        .collect()
 }
 
 fn graph(a: &Analysis) -> (Vec<FnDto>, Vec<GlobalDto>) {
@@ -282,6 +338,7 @@ pub fn analyze(doc: Doc) -> Report {
         modules,
         functions,
         globals,
+        types: types(&a),
         root: a.root.as_deref().map(plain),
     }
 }
@@ -324,6 +381,8 @@ pub fn complete(doc: Doc, pos: P) -> Vec<CompletionDto> {
                 CompletionKind::Parameter => "parameter",
                 CompletionKind::Keyword => "keyword",
                 CompletionKind::Type => "type",
+                CompletionKind::Field => "field",
+                CompletionKind::Method => "method",
                 CompletionKind::Module => "module",
                 CompletionKind::Text => "text",
             },

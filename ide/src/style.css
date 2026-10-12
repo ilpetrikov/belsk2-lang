@@ -1315,6 +1315,32 @@ button.link {
 #modmap-svg .arrow-head.data {
   fill: var(--warn);
 }
+#modmap-svg .edge.inherit {
+  stroke: var(--accent);
+  stroke-dasharray: none;
+  animation: none;
+  opacity: 0.8;
+}
+#modmap-svg .arrow-head.inherit {
+  fill: var(--bg);
+  stroke: var(--accent);
+  stroke-width: 1.2;
+}
+#modmap-svg .node.interface .box {
+  stroke-dasharray: 5 4;
+}
+#modmap-svg .node.interface .stripe {
+  fill: var(--accent);
+  opacity: 0.5;
+}
+#modmap-svg .node.struct .stripe {
+  fill: var(--accent);
+  opacity: 0.8;
+}
+#modmap-svg .node.enum .stripe {
+  fill: var(--warn);
+  opacity: 0.8;
+}
 .state-section {
   margin-bottom: 10px;
 }

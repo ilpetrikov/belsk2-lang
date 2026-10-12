@@ -11,7 +11,7 @@ use belsk2::Ty;
 
 use crate::{
     builtins, Analysis, FileInfo, FnInfo, HintKind, InlayHint, Location, Pos, Range, Ref, Scope,
-    Symbol, SymbolKind,
+    Symbol, SymbolKind, TypeNode,
 };
 
 pub(crate) fn index(analysis: &mut Analysis, loaded: &Loaded) {
@@ -428,13 +428,27 @@ impl Indexer<'_> {
             },
             range,
         );
-        self.declare(sym);
+        let type_symbol = self.declare(sym);
         self.visible_in_whole_scope();
         let Some(info) = &decl.info else {
             return;
         };
         self.analysis.types.push(std::rc::Rc::clone(info));
         let home = self.info.id;
+        let reference = info.reference();
+        let mut node = TypeNode {
+            symbol: type_symbol,
+            file: home,
+            id: info.id(),
+            members: Vec::new(),
+            bases: reference
+                .base()
+                .into_iter()
+                .chain(info.body().map(|b| b.interfaces.clone()).unwrap_or_default())
+                .map(|t| t.id())
+                .collect(),
+            holds: Vec::new(),
+        };
         for m in &decl.members {
             // Members of a partial type may come from another file.
             self.use_file(m.span.file);
@@ -534,9 +548,22 @@ impl Indexer<'_> {
                 sym.params = d.params.iter().map(|p| p.name.clone()).collect();
             }
             let id = self.analysis.symbols.len();
+            if kind == SymbolKind::Field && !matches!(m.kind, MemberKind::Case { .. }) {
+                named_types(&sym.ty, &mut node.holds);
+            }
+            if let MemberKind::Case { .. } = &m.kind {
+                for v in reference.variants().iter().filter(|v| v.name == name) {
+                    for (_, t) in &v.fields {
+                        named_types(t, &mut node.holds);
+                    }
+                }
+            }
             self.analysis.symbols.push(sym);
             self.analysis.members.insert((info.id(), name), id);
+            node.members.push(id);
         }
+        node.holds.retain(|&t| t != node.id);
+        self.analysis.classes.push(node);
         self.use_file(home);
     }
 
@@ -893,5 +920,23 @@ impl Indexer<'_> {
                 self.expr(index);
             }
         }
+    }
+}
+
+/// Adds the ids of the user-defined types in `ty` (also inside arrays and
+/// dictionaries) to `out`.
+fn named_types(ty: &Ty, out: &mut Vec<usize>) {
+    match ty {
+        Ty::Named(t) | Ty::Type(t) => {
+            if !out.contains(&t.id()) {
+                out.push(t.id());
+            }
+        }
+        Ty::Array(e) => named_types(e, out),
+        Ty::Map(k, v) | Ty::KeyValue(k, v) => {
+            named_types(k, out);
+            named_types(v, out);
+        }
+        _ => {}
     }
 }
