@@ -70,6 +70,11 @@ pub enum WitTypeKind {
 }
 
 impl WitType {
+    /// The Belsk2 type, once the declarations are checked.
+    pub fn ty(&self) -> Option<Ty> {
+        self.ty.get().cloned()
+    }
+
     /// The Belsk2 declaration of the type.
     fn source(&self) -> String {
         let mut out = String::new();

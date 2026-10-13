@@ -195,6 +195,8 @@ pub struct Ctx {
     object: u32,
     /// The function printing an `any` (built last).
     show_any: Option<u32>,
+    /// Whether an `any` counts as true (`if x`, `!x`); built last too.
+    truthy_any: Option<u32>,
 }
 
 impl Ctx {
@@ -359,6 +361,11 @@ impl Ctx {
         Ok(f)
     }
 
+    /// The tag, struct and case structs of a user-defined type.
+    pub fn class_layout(&self, id: usize) -> Option<(i32, Option<u32>, Vec<u32>)> {
+        self.classes.get(&id).map(|c| (c.tag, c.st, c.cases.clone()))
+    }
+
     /// Looks up a top-level function declared in a unit.
     pub fn unit_fn(&self, unit: usize, name: &str) -> Option<Rc<FnDecl>> {
         match self.scopes.get(unit)?.get(name)? {
@@ -383,10 +390,15 @@ pub(crate) fn format_fn(ctx: &mut Ctx) -> R<u32> {
     runtime_fn(ctx, "rtFormat")
 }
 
+/// Lays out the user-defined types of every unit (before anything uses
+/// them, such as the glue of a component's imports).
+pub fn layout(ctx: &mut Ctx, units: &[Unit]) {
+    objects::layout(ctx, units);
+}
+
 /// Registers the declarations of every unit: functions, globals and the
 /// start function that initializes the globals.
 pub fn declare(ctx: &mut Ctx, units: &[Unit]) {
-    objects::layout(ctx, units);
     let mut own: Vec<HashMap<String, Item>> = Vec::new();
     let mut inits = Vec::new();
     for (u, unit) in units.iter().enumerate() {
@@ -485,6 +497,17 @@ pub fn finish(mut ctx: Ctx) -> Result<Vec<u8>, Vec<Error>> {
     // Printing an `any` needs every array and dictionary type there is.
     if let Some(index) = ctx.show_any {
         match anys::build_show(&mut ctx) {
+            Ok(asm) => {
+                if let Some(def) = ctx.def_mut(index) {
+                    def.body = Some(asm);
+                }
+            }
+            Err(e) => ctx.errors.push(e),
+        }
+        run_pending(&mut ctx);
+    }
+    if let Some(index) = ctx.truthy_any {
+        match anys::build_truthy(&mut ctx) {
             Ok(asm) => {
                 if let Some(def) = ctx.def_mut(index) {
                     def.body = Some(asm);
@@ -1383,6 +1406,12 @@ impl<'c> FnGen<'c> {
 
     /// Emits a `bool` condition.
     fn cond(&mut self, e: &Expr) -> R<()> {
+        if self.t(&e.ty).is_any() {
+            self.expr(e)?;
+            let f = anys::truthy_fn(self.ctx);
+            self.emit(I::Call(f));
+            return Ok(());
+        }
         if !matches!(self.t(&e.ty), Ty::Bool) {
             return Err(unsupported(
                 format!("a condition of type {} is", e.ty),

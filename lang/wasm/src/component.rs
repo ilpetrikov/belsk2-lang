@@ -16,66 +16,19 @@
 //! not grow over time.
 
 use belsk2_project::{WitFunc, WitTy, World};
-use belsk2_syntax::{Error, FloatKind, IntKind, Span, Ty};
-use wasm_encoder::{BlockType, ExportKind, Instruction as I, MemArg, ValType};
+use belsk2_syntax::{Error, Span, Ty};
+use wasm_encoder::{BlockType, ExportKind, Instruction as I, ValType};
 
+use crate::abi::{flat, lift, load, lower, mem, size_align, store};
 use crate::codegen::{Ctx, FnRef, R};
 use crate::helpers::{Asm, Helper};
 use crate::types::nullable;
 use crate::Unit;
 
-/// Where an export's result goes when it does not fit in one value.
-const RET_AREA: i32 = 0;
-/// Start of the heap (after the return area).
+/// Start of the heap.
 const HEAP_BASE: i32 = 8;
 /// Most flattened parameters a function may have (canonical ABI).
 const MAX_FLAT_PARAMS: usize = 16;
-
-fn mem(offset: u64) -> MemArg {
-    MemArg {
-        offset,
-        align: 0,
-        memory_index: 0,
-    }
-}
-
-/// The core types a value of `t` is passed as.
-fn flat(t: &WitTy) -> Vec<ValType> {
-    match t {
-        WitTy::Int(k) if k.bits() == 64 => vec![ValType::I64],
-        WitTy::Float(FloatKind::F32) => vec![ValType::F32],
-        WitTy::Float(FloatKind::F64) => vec![ValType::F64],
-        WitTy::String | WitTy::List(_) => vec![ValType::I32, ValType::I32],
-        _ => vec![ValType::I32],
-    }
-}
-
-/// Size and alignment of `t` stored in memory (as a list element).
-fn size_align(t: &WitTy) -> (i32, i32) {
-    match t {
-        WitTy::Bool | WitTy::Int(IntKind::I8 | IntKind::U8) => (1, 1),
-        WitTy::Int(IntKind::I16 | IntKind::U16) => (2, 2),
-        WitTy::Int(IntKind::I64 | IntKind::U64) | WitTy::Float(FloatKind::F64) => (8, 8),
-        WitTy::String | WitTy::List(_) => (8, 4),
-        _ => (4, 4),
-    }
-}
-
-/// Records, enums and variants are not supported in WASM builds yet.
-fn named(f: &WitFunc) -> bool {
-    fn has(t: &WitTy) -> bool {
-        match t {
-            WitTy::Named(_) => true,
-            WitTy::List(e) => has(e),
-            _ => false,
-        }
-    }
-    f.params.iter().any(|(_, t)| has(t)) || f.result.as_ref().is_some_and(has)
-}
-
-fn in_memory(t: &WitTy) -> bool {
-    matches!(t, WitTy::String | WitTy::List(_))
-}
 
 /// The name of a function in the core module (the "legacy" naming of
 /// `wit-component`).
@@ -94,13 +47,6 @@ pub fn imports(ctx: &mut Ctx, world: Option<&World>, wasi: bool) {
     for f in world.iter().flat_map(|w| w.imports.iter()) {
         if let Some(why) = &f.unsupported {
             ctx.unavailable.insert(f.name.clone(), why.clone());
-            continue;
-        }
-        if named(f) {
-            ctx.unavailable.insert(
-                f.name.clone(),
-                "WASM builds do not support WIT records and variants yet".to_string(),
-            );
             continue;
         }
         let mut params: Vec<ValType> = f.params.iter().flat_map(|(_, t)| flat(t)).collect();
@@ -138,7 +84,13 @@ pub fn imports(ctx: &mut Ctx, world: Option<&World>, wasi: bool) {
         .push(("memory".to_string(), ExportKind::Memory, 0));
 
     for (f, import) in core {
-        let wrapper = import_wrapper(ctx, f, import);
+        let wrapper = match import_wrapper(ctx, f, import) {
+            Ok(w) => w,
+            Err(e) => {
+                ctx.errors.push(e);
+                continue;
+            }
+        };
         let index = ctx.define(wrapper);
         let r = FnRef {
             index,
@@ -183,11 +135,6 @@ fn export(ctx: &mut Ctx, f: &WitFunc, units: &[Unit], exported: Option<usize>) -
     if let Some(why) = &f.unsupported {
         return Err(Error::compile(format!(
             "{what}, but {why}, which Belsk2 does not support yet"
-        )));
-    }
-    if named(f) {
-        return Err(Error::compile(format!(
-            "{what}, which uses WIT records or variants; WASM builds do not support them yet"
         )));
     }
     let unit = match &f.interface {
@@ -254,32 +201,39 @@ fn export(ctx: &mut Ctx, f: &WitFunc, units: &[Unit], exported: Option<usize>) -
             a.op(I::LocalGet(local + i));
         }
         local += n;
-        lift(ctx, &mut a, t);
+        lift(ctx, &mut a, t)?;
     }
     a.op(I::Call(target.index));
     let heap = ctx.heap.unwrap_or(0);
     let reset = [I::I32Const(ctx.heap_base), I::GlobalSet(heap)];
     match &f.result {
-        Some(t) if in_memory(t) => {
-            lower(ctx, &mut a, t);
-            let (p, l) = (a.local(ValType::I32), a.local(ValType::I32));
+        Some(t) if flat(t).len() > 1 => {
+            // The result goes to memory; its address is returned.
+            let (size, align) = size_align(t);
+            let realloc = ctx.realloc.unwrap_or(0);
+            let (v, area) = (a.local(ctx.types.val(&t.ty()).unwrap_or(ValType::I32)), a.local(ValType::I32));
             a.ops([
-                I::LocalSet(l),
-                I::LocalSet(p),
-                I::I32Const(RET_AREA),
-                I::LocalGet(p),
-                I::I32Store(mem(0)),
-                I::I32Const(RET_AREA),
-                I::LocalGet(l),
-                I::I32Store(mem(4)),
-                I::I32Const(RET_AREA),
+                I::LocalSet(v),
+                I::I32Const(0),
+                I::I32Const(0),
+                I::I32Const(align),
+                I::I32Const(size),
+                I::Call(realloc),
+                I::LocalSet(area),
+                I::LocalGet(v),
             ]);
+            store(ctx, &mut a, t, area, 0)?;
+            a.op(I::LocalGet(area));
             let mut post = Asm::new(vec![ValType::I32], Vec::new());
             post.ops(reset);
             let post = ctx.define(post);
             ctx.export(post, &format!("cabi_post_{}", core_name(f)));
         }
-        _ => a.ops(reset),
+        Some(t) => {
+            lower(ctx, &mut a, t)?;
+            a.ops(reset);
+        }
+        None => a.ops(reset),
     }
     let glue = ctx.define(a);
     ctx.export(glue, &core_name(f));
@@ -287,7 +241,7 @@ fn export(ctx: &mut Ctx, f: &WitFunc, units: &[Unit], exported: Option<usize>) -
 }
 
 /// A Belsk2-callable function that calls the host function `import`.
-fn import_wrapper(ctx: &mut Ctx, f: &WitFunc, import: u32) -> Asm {
+fn import_wrapper(ctx: &mut Ctx, f: &WitFunc, import: u32) -> R<Asm> {
     let params: Vec<ValType> = f
         .params
         .iter()
@@ -301,50 +255,32 @@ fn import_wrapper(ctx: &mut Ctx, f: &WitFunc, import: u32) -> Asm {
     let mut a = Asm::new(params, results);
     for (i, (_, t)) in f.params.iter().enumerate() {
         a.op(I::LocalGet(i as u32));
-        lower(ctx, &mut a, t);
+        lower(ctx, &mut a, t)?;
     }
     match &f.result {
-        Some(t) if in_memory(t) => {
+        Some(t) if flat(t).len() > 1 => {
+            // The host stores the result in memory we provide.
+            let (size, align) = size_align(t);
             let rp = a.local(ValType::I32);
             let realloc = ctx.realloc.unwrap_or(0);
             a.ops([
                 I::I32Const(0),
                 I::I32Const(0),
-                I::I32Const(4),
-                I::I32Const(8),
+                I::I32Const(align),
+                I::I32Const(size),
                 I::Call(realloc),
                 I::LocalTee(rp),
                 I::Call(import),
-                I::LocalGet(rp),
-                I::I32Load(mem(0)),
-                I::LocalGet(rp),
-                I::I32Load(mem(4)),
             ]);
-            lift(ctx, &mut a, t);
+            load(ctx, &mut a, t, rp, 0)?;
         }
-        Some(WitTy::Bool) => a.ops([I::Call(import), I::I32Const(0), I::I32Ne]),
-        _ => a.op(I::Call(import)),
+        Some(t) => {
+            a.op(I::Call(import));
+            lift(ctx, &mut a, t)?;
+        }
+        None => a.op(I::Call(import)),
     }
-    a
-}
-
-/// Turns the flattened value(s) of `t` on the stack into a Belsk2 value.
-fn lift(ctx: &mut Ctx, a: &mut Asm, t: &WitTy) {
-    match t {
-        WitTy::Bool => a.ops([I::I32Const(0), I::I32Ne]),
-        WitTy::String => a.op(I::Call(ctx.helper(Helper::LiftStr))),
-        WitTy::List(elem) => a.op(I::Call(ctx.helper(Helper::LiftList((**elem).clone())))),
-        _ => {}
-    }
-}
-
-/// Turns the Belsk2 value of `t` on the stack into its flattened values.
-fn lower(ctx: &mut Ctx, a: &mut Asm, t: &WitTy) {
-    match t {
-        WitTy::String => a.op(I::Call(ctx.helper(Helper::LowerStr))),
-        WitTy::List(elem) => a.op(I::Call(ctx.helper(Helper::LowerList((**elem).clone())))),
-        _ => {}
-    }
+    Ok(a)
 }
 
 /// `cabi_realloc(old, old_size, align, new_size)`: a bump allocator that
@@ -744,41 +680,12 @@ pub fn helper(ctx: &mut Ctx, h: &Helper) -> R<Asm> {
                 I::I32Add,
                 I::LocalSet(addr),
             ]);
-            let item = [I::LocalGet(raw), I::LocalGet(i), I::ArrayGet(at.raw)];
             if lower_side {
-                if in_memory(elem) {
-                    let (tp, tl) = (a.local(I32), a.local(I32));
-                    a.ops(item);
-                    lower(ctx, &mut a, elem);
-                    a.ops([
-                        I::LocalSet(tl),
-                        I::LocalSet(tp),
-                        I::LocalGet(addr),
-                        I::LocalGet(tp),
-                        I::I32Store(mem(0)),
-                        I::LocalGet(addr),
-                        I::LocalGet(tl),
-                        I::I32Store(mem(4)),
-                    ]);
-                } else {
-                    a.op(I::LocalGet(addr));
-                    a.ops(item);
-                    a.op(store(elem));
-                }
+                a.ops([I::LocalGet(raw), I::LocalGet(i), I::ArrayGet(at.raw)]);
+                store(ctx, &mut a, elem, addr, 0)?;
             } else {
                 a.ops([I::LocalGet(raw), I::LocalGet(i)]);
-                if in_memory(elem) {
-                    a.ops([
-                        I::LocalGet(addr),
-                        I::I32Load(mem(0)),
-                        I::LocalGet(addr),
-                        I::I32Load(mem(4)),
-                    ]);
-                    lift(ctx, &mut a, elem);
-                } else {
-                    a.ops([I::LocalGet(addr), load(elem)]);
-                    lift(ctx, &mut a, elem);
-                }
+                load(ctx, &mut a, elem, addr, 0)?;
                 a.op(I::ArraySet(at.raw));
             }
             inc(&mut a, i, 1);
@@ -797,30 +704,6 @@ pub fn helper(ctx: &mut Ctx, h: &Helper) -> R<Asm> {
         _ => return Err(Error::compile("internal compiler error: not an ABI helper")),
     }
     Ok(a)
-}
-
-fn store(t: &WitTy) -> I<'static> {
-    match t {
-        WitTy::Bool | WitTy::Int(IntKind::I8 | IntKind::U8) => I::I32Store8(mem(0)),
-        WitTy::Int(IntKind::I16 | IntKind::U16) => I::I32Store16(mem(0)),
-        WitTy::Int(IntKind::I64 | IntKind::U64) => I::I64Store(mem(0)),
-        WitTy::Float(FloatKind::F32) => I::F32Store(mem(0)),
-        WitTy::Float(FloatKind::F64) => I::F64Store(mem(0)),
-        _ => I::I32Store(mem(0)),
-    }
-}
-
-fn load(t: &WitTy) -> I<'static> {
-    match t {
-        WitTy::Bool | WitTy::Int(IntKind::U8) => I::I32Load8U(mem(0)),
-        WitTy::Int(IntKind::I8) => I::I32Load8S(mem(0)),
-        WitTy::Int(IntKind::U16) => I::I32Load16U(mem(0)),
-        WitTy::Int(IntKind::I16) => I::I32Load16S(mem(0)),
-        WitTy::Int(IntKind::I64 | IntKind::U64) => I::I64Load(mem(0)),
-        WitTy::Float(FloatKind::F32) => I::F32Load(mem(0)),
-        WitTy::Float(FloatKind::F64) => I::F64Load(mem(0)),
-        _ => I::I32Load(mem(0)),
-    }
 }
 
 /// Wraps a core module into a component of the world.

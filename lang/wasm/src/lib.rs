@@ -16,6 +16,7 @@
 //! `for`, `break`, `continue`. Dictionaries, `any` and formatting of
 //! floating-point numbers come later (see ROADMAP.md).
 
+mod abi;
 mod codegen;
 mod component;
 mod helpers;
@@ -135,6 +136,7 @@ pub fn compile_units(
     let units = all.as_slice();
     let exported = exported.map(|e| e + shift);
     let mut ctx = codegen::Ctx::default();
+    codegen::layout(&mut ctx, units);
     if world.is_some() || wasi {
         component::imports(&mut ctx, world, wasi);
     }

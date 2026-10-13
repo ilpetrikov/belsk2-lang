@@ -502,8 +502,9 @@ large or small doubles may show more digits). Dictionaries keep their
 insertion order and use a hash index once they grow. Values of type `any`
 can be stored, printed, compared, tested (`is`, `as`, `match`) and
 converted back (`int y = x;`, `int(x)`, which also parses a string), and
-operators on them work as in the interpreter (`x + 1`, `x < y`, `-x`,
-`total += x`); only `!x` needs a `bool` first.
+operators and conditions on them work as in the interpreter (`x + 1`,
+`x < y`, `-x`, `total += x`, `if x`, `!x`: `null`, zero, `""` and empty
+arrays and dictionaries count as false).
 Destructors are a compile error: WebAssembly's garbage collector does not
 run them.
 
@@ -540,8 +541,34 @@ package or from `wit/deps/`) is used with `using canvas;`, and an exported
 interface is implemented in `src/<interface>.belsk2`. `belsk2 bindgen`
 prints the whole world as Belsk2 declarations, and `belsk2 bindgen --stubs`
 adds stubs for exports that are not implemented yet.
-Supported WIT types: integers, `f32`, `f64`, `bool`, `char`, `string` and
-`list<T>`.
+Supported WIT types: integers, `f32`, `f64`, `bool`, `char`, `string`,
+`list<T>`, and these, which become Belsk2 types in a module `wit` that
+every module sees:
+
+| WIT | Belsk2 |
+| --- | --- |
+| `record point { x: s32, y: s32 }` | `struct Point { x: int; y: int; }` |
+| `enum color { red, dark-blue }` | `enum Color { Red, DarkBlue }` |
+| `variant shape { circle(f64), empty }` | `enum Shape { Circle(value: double), Empty }` |
+| `option<point>` | `enum OptionPoint { None, Some(value: Point) }` |
+| `result<u32, string>` | `enum ResultUintOrString { Ok(value: uint), Err(error: string) }` |
+
+```
+fn find(points: Point[], x: int): OptionPoint {
+    for p in points {
+        if p.x == x { return OptionPoint.Some(p); }
+    }
+    return OptionPoint.None;
+}
+
+match paint(shape, Color.DarkBlue) {
+    Ok(n) => prinb("painted " + str(n)),
+    Err(e) => prinb("failed: " + e),
+}
+```
+
+`belsk2 bindgen` shows every generated declaration. Tuples, flags and
+resources are not supported yet.
 
 `belsk2 run` builds a component project and runs it in wasmtime. It calls
 the exported `run` (or `main`); `belsk2 run --call greet -- Ann` calls any

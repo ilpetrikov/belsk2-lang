@@ -7,6 +7,7 @@ fn sum(xs: any[]): any {
 }
 
 fn main() {
+    conditions();
     any a = 7;
     any b = 2;
     prinb(a + b);
@@ -84,4 +85,33 @@ fn main() {
     prinb(double(small));
     any neg = "-8";
     prinb(long(neg) * 3L);
+}
+
+fn truth(x: any): string {
+    if x {
+        return "yes";
+    }
+    return "no";
+}
+
+enum Level { Low, High }
+
+fn conditions() {
+    any[] values = [0, 1, -2L, 0.0, 0.5f, "", "a", true, false, 'a', [1], {"k": 1}, Level.Low, null];
+    for v in values {
+        prinb(str(v) + ": " + truth(v) + " " + str(!v));
+    }
+    int[] empty = [];
+    any e = empty;
+    Dictionary<string, int> none = {};
+    any n = none;
+    prinb(truth(e) + " " + truth(n));
+    any count = 3;
+    while count {
+        count -= 1;
+    }
+    prinb(count);
+    any flag = true;
+    prinb(flag && count == 0);
+    prinb(!flag || false);
 }

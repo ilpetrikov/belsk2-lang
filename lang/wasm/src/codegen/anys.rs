@@ -254,7 +254,7 @@ impl FnGen<'_> {
         let name = match op {
             UnaryOp::Neg => "rtAnyNeg",
             UnaryOp::BitNot => "rtAnyBitNot",
-            UnaryOp::Not => return Err(unsupported("'!' on an any is".to_string(), span)),
+            UnaryOp::Not => return Err(unsupported("'!' on an any here is".to_string(), span)),
         };
         self.value(inner, &Ty::Any)?;
         let f = runtime_fn(self.ctx, name)?;
@@ -522,6 +522,100 @@ pub fn show_fn(ctx: &mut Ctx) -> u32 {
     let f = ctx.add_def(ty);
     ctx.show_any = Some(f);
     f
+}
+
+/// Reserves the function telling whether an `any` counts as true: not
+/// `null`, zero, `false`, an empty string, array or dictionary. Built when
+/// the module is finished, like [`show_fn`].
+pub fn truthy_fn(ctx: &mut Ctx) -> u32 {
+    if let Some(f) = ctx.truthy_any {
+        return f;
+    }
+    let ty = ctx.types.func(vec![any_type()], vec![ValType::I32]);
+    let f = ctx.add_def(ty);
+    ctx.truthy_any = Some(f);
+    f
+}
+
+/// The body of [`truthy_fn`].
+pub fn build_truthy(ctx: &mut Ctx) -> R<Asm> {
+    let s = ctx.types.string();
+    let boxes = ctx.types.boxes();
+    let mut a = Asm::new(vec![any_type()], vec![ValType::I32]);
+    a.ops([
+        I::LocalGet(0),
+        I::RefIsNull,
+        I::If(BlockType::Empty),
+        I::I32Const(0),
+        I::Return,
+        I::End,
+        I::LocalGet(0),
+        I::RefTestNonNull(HeapType::Concrete(s)),
+        I::If(BlockType::Empty),
+        I::LocalGet(0),
+        I::RefCastNonNull(HeapType::Concrete(s)),
+        I::ArrayLen,
+        I::I32Const(0),
+        I::I32Ne,
+        I::Return,
+        I::End,
+    ]);
+    for (bt, vt) in [
+        (boxes.i32, ValType::I32),
+        (boxes.i64, ValType::I64),
+        (boxes.f32, ValType::F32),
+        (boxes.f64, ValType::F64),
+    ] {
+        let get = |field| {
+            [
+                I::LocalGet(0),
+                I::RefCastNonNull(HeapType::Concrete(bt)),
+                I::StructGet {
+                    struct_type_index: bt,
+                    field_index: field,
+                },
+            ]
+        };
+        a.ops([
+            I::LocalGet(0),
+            I::RefTestNonNull(HeapType::Concrete(bt)),
+            I::If(BlockType::Empty),
+        ]);
+        a.ops(get(1));
+        match vt {
+            ValType::I32 => {
+                // Enums count as true whatever their case.
+                a.ops([I::I32Const(0), I::I32Ne]);
+                a.ops(get(0));
+                a.ops([I::I32Const(ENUM), I::I32GeS, I::I32Or]);
+            }
+            ValType::I64 => a.ops([I::I64Const(0), I::I64Ne]),
+            ValType::F32 => a.ops([I::F32Const(0.0.into()), I::F32Ne]),
+            _ => a.ops([I::F64Const(0.0.into()), I::F64Ne]),
+        }
+        a.ops([I::Return, I::End]);
+    }
+    for (ty, heap) in ctx.types.containers() {
+        let len = match &ty {
+            Ty::Array(_) => vec![I::StructGet {
+                struct_type_index: heap,
+                field_index: 1,
+            }],
+            Ty::Map(k, v) => super::maps::len_instrs(ctx, k, v)?,
+            _ => continue,
+        };
+        a.ops([
+            I::LocalGet(0),
+            I::RefTestNonNull(HeapType::Concrete(heap)),
+            I::If(BlockType::Empty),
+            I::LocalGet(0),
+            I::RefCastNonNull(HeapType::Concrete(heap)),
+        ]);
+        a.ops(len);
+        a.ops([I::I32Const(0), I::I32Ne, I::Return, I::End]);
+    }
+    a.op(I::I32Const(1));
+    Ok(a)
 }
 
 /// The body of [`show_fn`].

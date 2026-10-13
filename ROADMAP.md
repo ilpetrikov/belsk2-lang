@@ -53,7 +53,8 @@
           uses: `record` → `struct`, `enum` → `enum`, `variant`/`option`/`result` → enums
           with data (`OptionPoint { None, Some(value: Point) }`); checker, interpreter
           stubs, `belsk2 bindgen`.
-    - [ ] Canonical ABI for them in WASM builds.
+    - [x] Canonical ABI for them in WASM builds (flattening with joined variant slots,
+          memory layout for lists and large results).
     - [ ] Resources as classes.
   - Known differences from the interpreter: runtime errors are traps without a message;
     float-to-integer conversions saturate at the `long` range (the interpreter wraps
@@ -86,7 +87,7 @@
       compile error (no finalizers in WasmGC).
 - [x] WASM: dictionaries (insertion order, hash index from 8 entries), `KeyValuePair`
 - [x] WASM: `any` (an `eqref`; numbers, bools, chars and enums boxed with their kind)
-- [x] WASM: operators directly on `any` and parsing strings in `int(any)` (runtime in Belsk2)
+- [x] WASM: operators directly on `any`, conditions on `any` (`if x`, `!x`), parsing strings in `int(any)`
 - [x] `enum`: typed cases (`Mode.High`) with numbers (`Low = 1`), methods, `int(m)`, dictionary keys
 - [x] Enums with data (`Circle(radius: double)`)
 - [x] `class`: fields, methods, constructors, `this`; reference semantics, `null`
